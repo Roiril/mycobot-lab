@@ -85,6 +85,11 @@ LAN 公開する場合は `--bind 0.0.0.0 --token <secret>` 必須。
 - **[settings.json](.claude/settings.json)** — 権限・hook
 - **[settings.local.json](.claude/settings.local.json)** — ローカル許可（コミット対象外）
 
+## AI エージェント向けドキュメント
+
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — 設計思想・モジュール構造・抽象化。新機能を追加する前に読む
+- **[docs/AGENT_API.md](docs/AGENT_API.md)** — AI が arm を制御する API リファレンス。動作 verb・Pose ポリシー・エラーコード・retry_hints
+
 ## 共有ハーネス (.agent/)
 
 - [安全規約](.agent/rules/safety.md) — **モーション追加前に必読**
