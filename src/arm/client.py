@@ -1,4 +1,4 @@
-"""myCobot 320-M5 client wrapper. Handles port discovery, safe defaults, context manager."""
+"""myCobot 320-M5 client wrapper. Handles port discovery, power, motion, close."""
 from __future__ import annotations
 import time
 from contextlib import contextmanager
@@ -7,9 +7,9 @@ from typing import Iterator, Sequence
 from pymycobot import MyCobot320
 from serial.tools import list_ports
 
+from .constants import MAX_SPEED, DEFAULT_SPEED
+
 BAUD = 115200
-DEFAULT_SPEED = 30
-MAX_SPEED = 80  # hard cap to prevent dangerous moves
 
 
 def find_port() -> str:
@@ -39,18 +39,22 @@ class Arm:
         self.mc.power_off()
 
     def release(self) -> None:
-        """Release all servos (arm goes limp). Make sure arm is supported or in a low-fall pose first."""
+        """Release all servos (arm goes limp — make sure it's supported)."""
         self.mc.release_all_servos()
 
+    def close(self) -> None:
+        """Close the underlying serial port."""
+        try:
+            sp = getattr(self.mc, "_serial_port", None)
+            if sp is not None and getattr(sp, "is_open", False):
+                sp.close()
+        except Exception as e:
+            print(f"[warn] arm.close: {e}")
+
     # --- state ---
-    def version(self):
-        return self.mc.get_system_version()
-
-    def angles(self):
-        return self.mc.get_angles()
-
-    def coords(self):
-        return self.mc.get_coords()
+    def version(self): return self.mc.get_system_version()
+    def angles(self):  return self.mc.get_angles()
+    def coords(self):  return self.mc.get_coords()
 
     # --- motion ---
     def move(self, angles: Sequence[float], speed: int = DEFAULT_SPEED, wait: float | None = None) -> None:
@@ -65,6 +69,13 @@ class Arm:
         self.mc.send_angle(joint, deg, speed)
         time.sleep(wait)
 
+    def move_to(self, coords, speed: int = DEFAULT_SPEED, mode: int = 0, wait: float = 2.0) -> None:
+        self._check_speed(speed)
+        if len(coords) != 6:
+            raise ValueError("coords must be length-6 [x,y,z,rx,ry,rz]")
+        self.mc.send_coords(list(coords), speed, mode)
+        time.sleep(wait)
+
     @staticmethod
     def _check_speed(speed: int) -> None:
         if not 1 <= speed <= MAX_SPEED:
@@ -72,18 +83,15 @@ class Arm:
 
     @staticmethod
     def _estimate_duration(speed: int) -> float:
-        # Rough heuristic: slower speed -> longer wait. Tune as needed.
         return max(2.0, 5.0 - speed * 0.03)
 
 
 @contextmanager
 def connect(port: str | None = None) -> Iterator[Arm]:
-    """Open arm, power on, ensure release on exit only after returning to a safe pose."""
+    """Open arm and power on. Caller is responsible for moving to a safe pose before exit."""
     arm = Arm(port)
     arm.power_on()
     try:
         yield arm
     finally:
-        # Do NOT release servos on exit by default — the arm would fall.
-        # Caller should move to rest pose before context exits.
-        pass
+        arm.close()

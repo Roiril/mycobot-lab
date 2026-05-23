@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mycobot-server",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["scripts/server.py", "--offline"],
+      "port": 8000
+    }
+  ]
+}

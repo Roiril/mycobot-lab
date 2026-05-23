@@ -29,28 +29,41 @@ Elephant Robotics **myCobot 320-M5**（6-DoF 卓上協働アーム）を Python 
 
 | パス | 役割 |
 |---|---|
-| `src/arm/client.py` | `MyCobot320` のラッパ（接続・電源・安全停止）|
-| `src/arm/poses.py` | 名前付き姿勢（home, ready, rest 等）|
-| `src/main.py` | エントリポイント |
+| `src/arm/constants.py` | 全モジュール共通の定数（speed cap、安全マージン、ツール長等）|
+| `src/arm/kinematics.py` | Modified DH FK（リンク位置・ツール先端）|
+| `src/arm/safety.py` | 関節限界・床干渉・自己干渉チェック（純関数）|
+| `src/arm/planner.py` | 関節空間経路計画 + 各 waypoint 検証 |
+| `src/arm/hub.py` | `HubBase` ABC + 実機 `Hub` / `VirtualHub` |
+| `src/arm/client.py` | `MyCobot320` のラッパ（接続・電源・close）|
+| `src/arm/poses.py` | 名前付き姿勢 |
+| `scripts/server.py` | HTTP サーバ（JSON API + UI 配信）|
+| `scripts/ui.html` | three.js 3D 操作 UI（関節スライダ + drag gizmo + IK）|
 | `scripts/check.py` | 状態確認（角度・電源・バージョン）|
 | `scripts/move.py` | 基本動作テスト |
 | `scripts/sweep.py` | 診断: ボーレート探索 |
+| `tests/` | safety / kinematics / planner の単体テスト |
 
 ## 起動コマンド
 
 ```bash
 pip install -r requirements.txt
-python scripts/check.py    # 接続確認
-python scripts/move.py     # 基本動作デモ
+python scripts/server.py            # 実機、loopback のみ
+python scripts/server.py --offline  # 仮想アーム（UI 開発用）
+python -m unittest discover tests   # 単体テスト
 ```
+
+ブラウザで http://localhost:8000/ を開いて操作。
+
+LAN 公開する場合は `--bind 0.0.0.0 --token <secret>` 必須。
 
 ## コーディング規約
 
 - **安全第一**: [.agent/rules/safety.md](.agent/rules/safety.md) を必読。新規モーション追加前に必ず参照。
-- **速度**: 動作速度は 50 以下を既定とする（公式 1-100 範囲、過大値は危険）。
-- **姿勢ハードコード禁止**: 再利用する姿勢は `src/arm/poses.py` に名前で登録。マジックナンバーをスクリプトに散らさない。
-- **接続管理**: スクリプト終了時は必ず `mc.release_all_servos()` または安全姿勢へ復帰してから切断（脱力で落下を防ぐ場合は復帰優先）。
+- **速度**: `MAX_SPEED=40` を上限（`src/arm/constants.py`）。
+- **姿勢ハードコード禁止**: 再利用姿勢は `src/arm/poses.py` に。マジックナンバーは `constants.py` に集約。
+- **接続管理**: `Hub.shutdown()` がカメラ + シリアル両方を確実に閉じる。スクリプト終了時は必ず安全姿勢へ復帰してから切断。
 - **COM 自動検出**: ポート固定はしない。`src/arm/client.py` の `find_port()` を使う。
+- **safety/kinematics は純関数**: ハード依存無し → テスト容易。`/move` は HUB を介してのみ。
 
 ## 禁止事項
 

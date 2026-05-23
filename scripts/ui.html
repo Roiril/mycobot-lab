@@ -1,0 +1,1099 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<title>myCobot 320 control</title>
+<style>
+ html,body{margin:0;height:100%;background:#1e1e1e;color:#ddd;font:13px system-ui,sans-serif;overflow:hidden;min-width:840px}
+ #root{display:flex;height:100%}
+ #scene{flex:1;position:relative;min-width:400px}
+ #side{width:440px;border-left:1px solid #333;display:flex;flex-direction:column;padding:10px;gap:8px;overflow:auto}
+ .panel{background:#252526;border:1px solid #333;border-radius:6px;padding:10px}
+ .panel.danger{border-color:#a1260d;border-width:2px}
+ .panel.danger label{background:rgba(161,38,13,.15);padding:4px;border-radius:3px;display:block}
+ h2{font-size:11px;margin:0 0 6px;color:#9d9d9d;text-transform:uppercase;letter-spacing:1px;display:flex;justify-content:space-between;align-items:center;gap:6px}
+ button{background:#0e639c;color:#fff;border:0;padding:6px 12px;border-radius:3px;cursor:pointer;font:13px system-ui;margin-right:4px}
+ button:hover:not(:disabled){background:#1177bb}
+ button:disabled{background:#444;color:#7a7a7a;cursor:not-allowed;opacity:.7}
+ button.warn{background:#a1260d}
+ button.warn:hover:not(:disabled){background:#c93b1b}
+ button.apply{background:#0a8043;font-weight:600;width:100%;padding:10px;font-size:15px;margin:0}
+ button.apply:hover:not(:disabled){background:#10a052}
+ button.apply:disabled{background:#3a3a3a;color:#7a7a7a;border:1px dashed #555}
+ button.abort{background:#c93b1b;color:#fff;width:100%;padding:10px;font-size:15px;margin:0;font-weight:600}
+ button.abort:hover:not(:disabled){background:#e04425}
+ button.abort:disabled{background:#5a2a20;color:#9a8a82}
+ input[type=number],input[type=text]{background:#3c3c3c;color:#ddd;border:1px solid #555;padding:3px;border-radius:3px;font-family:ui-monospace,"SF Mono",Consolas,"Liberation Mono",monospace}
+ input[type=number]{width:64px}
+ input.coord{width:64px;text-align:right}
+ input.invalid{border-color:#f48771;background:#3a2020}
+ input:disabled{opacity:.5;cursor:not-allowed}
+ .joint{display:grid;grid-template-columns:24px 1fr 60px 36px;gap:6px;align-items:center;margin-bottom:3px}
+ .joint label{color:#9d9d9d;font-family:ui-monospace,Consolas,monospace;cursor:pointer}
+ .joint label.bad{color:#f48771;font-weight:bold}
+ .joint label.bad::before{content:"⚠ "}
+ .joint input[type=range]{width:100%}
+ .joint input[type=range].bad{accent-color:#f48771}
+ .joint input[type=range].bad::-webkit-slider-runnable-track{background:#3a2020}
+ .joint .tgt{color:#ce9178;text-align:right;font-family:ui-monospace,Consolas,monospace;font-size:11px}
+ .joint .delta{color:#9d9d9d;text-align:right;font-family:ui-monospace,Consolas,monospace;font-size:10px}
+ .joint .delta.large{color:#dcdc6a}
+ #statusLog{font-family:ui-monospace,Consolas,monospace;font-size:11px;max-height:160px;overflow-y:auto;border-top:1px solid #333;padding-top:4px;margin-top:6px}
+ #statusLog .line{padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ #statusLog .err{color:#f48771}
+ #statusLog .ok{color:#6a9955}
+ #statusLog .warn{color:#dcdc6a}
+ #statusLog time{color:#8a8a8a;margin-right:6px}
+ .badge{padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+ .badge.ok{background:#0a8043;color:#fff}
+ .badge.err{background:#a1260d;color:#fff}
+ .badge.warn{background:#7a6a00;color:#fff}
+ .badge.gray{background:#555;color:#ccc}
+ .coords-grid{display:grid;grid-template-columns:20px 1fr 80px;gap:6px;align-items:center;font-family:ui-monospace,Consolas,monospace}
+ .coords-grid .lbl{color:#9d9d9d}
+ .coords-grid .cur{color:#9cdcfe;text-align:right;font-size:11px}
+ #camPip{position:absolute;bottom:10px;right:10px;width:240px;height:180px;border:1px solid #444;background:#000;border-radius:4px;overflow:hidden;transition:height .2s}
+ #camPip.min{height:24px}
+ #camPip img{width:100%;height:calc(100% - 18px);object-fit:cover;display:block}
+ #camPip .bar{position:absolute;top:0;left:0;right:0;height:18px;background:#222;color:#aaa;font-size:10px;padding:2px 6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none}
+ #hint{position:absolute;top:10px;left:10px;color:#aaa;background:rgba(0,0,0,.75);padding:6px 10px;border-radius:4px;font-size:11px;max-width:420px;transition:opacity .5s}
+ #hint kbd{background:#444;color:#fff;border-radius:3px;padding:1px 4px;font-size:10px;border:1px solid #555}
+ #hint.fade{opacity:.15;pointer-events:none}
+ #hint.fade:hover{opacity:1}
+ .legend{display:flex;gap:12px;font-size:11px;color:#bbb;margin-top:4px}
+ .sw{display:inline-block;width:10px;height:10px;margin-right:4px;vertical-align:middle;border-radius:2px}
+ #connBadge{font-size:10px;padding:2px 6px;border-radius:3px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+ #connBadge.ok{background:#1a3a1a;color:#7ac76a;border:1px solid #2a5a2a}
+ #connBadge.err{background:#5a1d10;color:#fff;animation:pulse 1s infinite}
+ @keyframes pulse{50%{opacity:.4}}
+ button.poseBtn{padding:4px 8px;font-size:11px;background:#3a3a3a;color:#bbb;border:1px solid #555;margin:0}
+ button.poseBtn:hover:not(:disabled){background:#4a4a4a;color:#fff}
+ button.poseBtn.active{background:#0a8043;color:#fff;border-color:#10a052}
+</style></head><body>
+<div id="root">
+  <div id="scene">
+    <div id="hint">
+      <strong style="color:#ffd02f">黄球</strong>=ゴール / <strong style="color:#ce9178">橙ゴースト</strong>=IK 結果 / <strong style="color:#9cdcfe">青</strong>=実機&nbsp;
+      <strong style="color:#ffa040">橙ワイヤ</strong>=物体 / <strong style="color:#ffa040">↓</strong>接近 <strong style="color:#6acccc">↑</strong>引上げ<br>
+      <kbd>1</kbd>-<kbd>6</kbd> 関節&nbsp;<kbd>←</kbd><kbd>→</kbd> 微調整&nbsp;
+      <kbd>S</kbd> 目標=現在&nbsp;<kbd>H</kbd> HOME&nbsp;<kbd>Enter</kbd> APPLY&nbsp;<kbd>Esc</kbd> ABORT
+    </div>
+    <div id="camPip">
+      <div class="bar"><span>camera (PIP)</span><span id="camToggle">[ - ]</span></div>
+      <img id="cam" src="/frame.jpg" alt="camera">
+    </div>
+  </div>
+  <div id="side">
+    <div class="panel">
+      <h2>
+        <span>関節 (J1-J6, deg)</span>
+        <span style="display:flex;gap:4px;align-items:center">
+          <span id="connBadge" class="ok">CONN</span>
+          <span class="badge ok" id="powerBadge">通電</span>
+          <span class="badge warn" id="offlineBadge" style="display:none">OFFLINE</span>
+        </span>
+      </h2>
+      <div id="joints"></div>
+      <div class="legend">
+        <span><span class="sw" style="background:#9cdcfe"></span>現在</span>
+        <span><span class="sw" style="background:#ce9178"></span>目標</span>
+        <span><span class="sw" style="background:#dcdc6a"></span>差分大</span>
+      </div>
+      <div style="margin-top:10px">
+        <button class="apply" id="btnApply" disabled title="目標が安全範囲内になると有効">APPLY (Enter)</button>
+      </div>
+      <div style="margin-top:6px">
+        <button class="abort" id="btnAbort" disabled title="動作中のみ有効">ABORT (Esc)</button>
+      </div>
+      <div style="margin-top:8px">
+        <button id="btnSync">目標=現在 (S)</button>
+        <button id="btnHome">HOME (H)</button>
+        <label style="margin-left:8px;color:#9d9d9d">speed <input id="speed" type="number" min="5" max="40" value="20" aria-label="動作速度 5-40"></label>
+      </div>
+      <div id="statusLog" aria-live="polite"></div>
+    </div>
+
+    <div class="panel">
+      <h2>カルテジアン (mm) <span style="color:#8a8a8a;text-transform:none;font-weight:normal">編集して IK</span></h2>
+      <div class="coords-grid">
+        <span class="lbl">X</span><input class="coord" id="ix" type="number" step="0.5" aria-label="目標 X 座標 mm"><span class="cur" id="cx">—</span>
+        <span class="lbl">Y</span><input class="coord" id="iy" type="number" step="0.5" aria-label="目標 Y 座標 mm"><span class="cur" id="cy">—</span>
+        <span class="lbl">Z</span><input class="coord" id="iz" type="number" step="0.5" aria-label="目標 Z 座標 mm"><span class="cur" id="cz">—</span>
+      </div>
+      <div style="margin-top:8px">
+        <button id="btnIK">IK 解いてプレビュー</button>
+        <button id="btnPullTip">現在 tip 値を入力</button>
+      </div>
+      <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">
+        <div style="color:#9d9d9d;font-size:11px;margin-bottom:4px">姿勢ポリシー <span id="poseModeIndicator" style="margin-left:6px"></span></div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          <button class="poseBtn active" data-pose="extend_toward" title="指差すように手首を伸ばす（人間の自然な reach）">指差し</button>
+          <button class="poseBtn" data-pose="align_+z" title="上から把持（ツールが下を向く）">↓上から</button>
+          <button class="poseBtn" data-pose="align_side_auto" title="横から（目標位置から自動で軸を選ぶ）">↦横から</button>
+          <button class="poseBtn" data-pose="preserve" title="現在の手首向きを維持">維持</button>
+          <details style="display:inline-block">
+            <summary style="cursor:pointer;color:#888;font-size:11px;padding:4px">…詳細軸</summary>
+            <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+              <button class="poseBtn" data-pose="align_+x" title="+X 方向から接近（tool→ -X）">+X側から</button>
+              <button class="poseBtn" data-pose="align_-x" title="-X 方向から接近（tool→ +X）">-X側から</button>
+              <button class="poseBtn" data-pose="align_+y" title="+Y 方向から接近（tool→ -Y）">+Y側から</button>
+              <button class="poseBtn" data-pose="align_-y" title="-Y 方向から接近（tool→ +Y）">-Y側から</button>
+              <button class="poseBtn" data-pose="align_-z" title="下から（ツールが上を向く・特殊）">↑下から</button>
+            </div>
+          </details>
+        </div>
+      </div>
+      <div style="margin-top:8px;border-top:1px solid #333;padding-top:8px">
+        <div style="color:#888;font-size:11px;margin-bottom:4px">cartesian-IK モード</div>
+        <div style="display:flex;gap:4px;margin-bottom:4px">
+          <label style="color:#888;font-size:11px">経路<select id="cartMode" style="background:#3c3c3c;color:#ddd;border:1px solid #555">
+            <option value="auto" selected>auto</option>
+            <option value="linear">linear (直線)</option>
+            <option value="lift">lift-translate-lower</option>
+          </select></label>
+        </div>
+        <button class="apply" style="background:#286090" id="btnMoveCart">cartesian 実行</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>ターゲット物体 (掴み対象)</h2>
+      <div style="font-size:11px;color:#aaa;margin-bottom:6px">
+        黄球位置に物体があると想定。半径を物体サイズに合わせる。
+        実行で <strong>上空 → 接近 → 把持位置 → 引き上げ</strong> の3段モーション（グリッパは現状無効）。
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <label style="color:#aaa">半径 <input id="targetRadius" type="number" min="5" max="60" value="20" step="1" style="width:50px" aria-label="物体半径 mm"></label>
+        <span style="color:#9d9d9d">mm</span>
+        <label style="color:#aaa;margin-left:auto"><input type="checkbox" id="cbShowTarget" checked> 表示</label>
+      </div>
+      <div style="margin-top:4px;display:flex;gap:6px;align-items:center">
+        <span id="targetReach" class="badge gray">未確認</span>
+        <span style="color:#9d9d9d;font-size:11px">(位置のみ・3段判定)</span>
+      </div>
+      <div style="margin-top:8px">
+        <button id="btnGrasp" disabled>接近 &amp; 引上げ（把持は無効）</button>
+      </div>
+    </div>
+
+    <div class="panel" id="monPanel">
+      <h2>サーボ電流監視 <span class="badge ok" id="monBadge">ON</span></h2>
+      <div id="currentDisplay" style="font-family:Consolas,monospace;font-size:11px;line-height:1.4">—</div>
+      <div style="margin-top:6px">
+        <label><input type="checkbox" id="cbMonitor" checked> 監視ON（過電流で自動abort）</label>
+      </div>
+      <div id="monWarn" style="display:none;margin-top:6px;padding:6px;background:#5a1d10;color:#fff;border-radius:3px;font-size:11px">⚠ 過電流監視 OFF — 衝突しても自動停止しません</div>
+    </div>
+
+    <div class="panel danger">
+      <h2>緊急操作</h2>
+      <button class="warn" id="btnRelease" style="width:100%;padding:8px">脱力（落下注意・確認あり）</button>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{"imports":{
+  "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+
+THREE.Object3D.DEFAULT_UP.set(0,0,1);
+const D = Math.PI/180;
+
+// --- kinematics + server constants (fetched from server at boot) ---
+let DH = null, LIMITS = null, TOOL = 0, FLOOR_Z = 40;
+let GRASP_APPROACH_MM = 80, GRASP_LIFT_MM = 100, GRASP_SPEED_DEFAULT = 15, GRASP_SPEED_MAX = 25;
+let GRIPPER_TIP_CLEARANCE = 5, GRIPPER_PRESENT = false;
+async function loadKinematics(){
+  const r = await fetch('/kinematics').then(r=>r.json());
+  DH = r.dh; LIMITS = r.joint_limits; TOOL = r.tool_length; FLOOR_Z = r.floor_z;
+  if(r.grasp_approach_offset_mm) GRASP_APPROACH_MM = r.grasp_approach_offset_mm;
+  if(r.grasp_lift_offset_mm) GRASP_LIFT_MM = r.grasp_lift_offset_mm;
+  if(r.grasp_approach_speed_default) GRASP_SPEED_DEFAULT = r.grasp_approach_speed_default;
+  if(r.grasp_approach_speed_max) GRASP_SPEED_MAX = r.grasp_approach_speed_max;
+  if(r.gripper_tip_clearance_mm) GRIPPER_TIP_CLEARANCE = r.gripper_tip_clearance_mm;
+  GRIPPER_PRESENT = !!r.gripper_present;
+  return r;
+}
+
+function mat4Identity(){ return [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]; }
+function matMul(a,b){
+  const r = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+  for(let i=0;i<4;i++) for(let j=0;j<4;j++)
+    for(let k=0;k<4;k++) r[i][j] += a[i][k]*b[k][j];
+  return r;
+}
+function linkTf(alphaDeg, a, d, thetaDeg){
+  const al = alphaDeg*D, th = thetaDeg*D;
+  const ca = Math.cos(al), sa = Math.sin(al);
+  const ct = Math.cos(th), st = Math.sin(th);
+  return [
+    [ct,         -st,        0,    a],
+    [st*ca,    ct*ca,      -sa,  -sa*d],
+    [st*sa,    ct*sa,       ca,   ca*d],
+    [0,            0,        0,     1],
+  ];
+}
+function linkFrames(angles){
+  const T = [mat4Identity()];
+  for(let i=0;i<6;i++){
+    const [alpha,a,d,off] = DH[i];
+    T.push(matMul(T[T.length-1], linkTf(alpha, a, d, angles[i]+off)));
+  }
+  return T;
+}
+function jointPositions(angles){
+  return linkFrames(angles).map(T => new THREE.Vector3(T[0][3], T[1][3], T[2][3]));
+}
+function endEffector(angles){
+  const T6 = linkFrames(angles)[6];
+  return new THREE.Vector3(
+    T6[0][3] + TOOL*T6[0][2], T6[1][3] + TOOL*T6[1][2], T6[2][3] + TOOL*T6[2][2]
+  );
+}
+
+// --- scene ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1e1e1e);
+const cont = document.getElementById('scene');
+const camera = new THREE.PerspectiveCamera(50, cont.clientWidth/cont.clientHeight, 1, 5000);
+camera.position.set(600, -500, 500); camera.lookAt(100, 0, 200);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(cont.clientWidth, cont.clientHeight);
+cont.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const dl = new THREE.DirectionalLight(0xffffff, 0.8); dl.position.set(500,500,1000); scene.add(dl);
+
+// floor
+const floorMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(1200, 1200),
+  new THREE.MeshStandardMaterial({color:0x2a2a32, transparent:true, opacity:0.5})
+);
+scene.add(floorMesh);
+const grid = new THREE.GridHelper(1000, 20, 0x555555, 0x333333);
+grid.rotation.x = Math.PI/2; scene.add(grid);
+scene.add(new THREE.AxesHelper(120));
+
+// arm builders
+function buildArm(color, opacity){
+  const mat = new THREE.MeshStandardMaterial({color, metalness:0.3, roughness:0.6, transparent: opacity<1, opacity});
+  const jmat = new THREE.MeshStandardMaterial({color, metalness:0.6, roughness:0.4, transparent: opacity<1, opacity});
+  const group = new THREE.Group();
+  const cyl = []; for(let i=0;i<6;i++){ const m=new THREE.Mesh(new THREE.CylinderGeometry(1,1,1,12), mat); group.add(m); cyl.push(m); }
+  const joints = []; for(let i=0;i<7;i++){ const m=new THREE.Mesh(new THREE.SphereGeometry(22,16,12), jmat); group.add(m); joints.push(m); }
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(15,12,8), new THREE.MeshStandardMaterial({color, emissive:color, emissiveIntensity:0.4, transparent:opacity<1, opacity}));
+  group.add(tip);
+  scene.add(group);
+  return {group, cyl, joints, tip, mat, jmat};
+}
+function updateArm(arm, angles){
+  if(!DH) return;
+  const pts = jointPositions(angles);
+  const tip = endEffector(angles);
+  for(let i=0;i<7;i++) arm.joints[i].position.copy(pts[i]);
+  arm.tip.position.copy(tip);
+  for(let i=0;i<6;i++){
+    const a = pts[i], b = (i===5)?tip:pts[i+1];
+    const d = a.distanceTo(b);
+    const m = arm.cyl[i];
+    if(d<1){ m.visible=false; continue; }
+    m.visible = true;
+    m.position.copy(a).add(b).multiplyScalar(0.5);
+    m.scale.set(20, d, 20);
+    const dir = new THREE.Vector3().subVectors(b,a).normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+    m.quaternion.copy(q);
+  }
+}
+function tintArm(arm, color){
+  arm.mat.color.setHex(color); arm.jmat.color.setHex(color); arm.tip.material.color.setHex(color); arm.tip.material.emissive.setHex(color);
+}
+
+const armCurrent = buildArm(0x9cdcfe, 1.0);    // opaque = real arm
+const armTarget  = buildArm(0xce9178, 0.45);   // translucent ghost = IK preview
+
+// --- goal sphere: yellow, independent from any arm. User's primary drag target. ---
+const goalMat = new THREE.MeshStandardMaterial({color:0xffd02f, emissive:0xffd02f, emissiveIntensity:0.35});
+const goalSphere = new THREE.Mesh(new THREE.SphereGeometry(18, 20, 14), goalMat);
+goalSphere.position.set(215, -89, 374);
+scene.add(goalSphere);
+
+// --- target object: wireframe sphere centered on goal, size = radius slider ---
+// depthWrite:false so it doesn't occlude arm geometry when goal is "inside" the wrist
+const TARGET_COLOR = {ok: 0x6acc6a, fail: 0xff4040, unknown: 0xffa040};
+const targetMat = new THREE.MeshBasicMaterial({color:TARGET_COLOR.unknown, wireframe:true, transparent:true, opacity:0.55, depthWrite:false});
+const targetObj = new THREE.Mesh(new THREE.SphereGeometry(20, 18, 14), targetMat);
+targetObj.renderOrder = -1;
+targetObj.position.copy(goalSphere.position);
+scene.add(targetObj);
+// Approach: down arrow (pre-grasp → grasp). Lift: up arrow (grasp → lift end).
+const approachArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1), new THREE.Vector3(0,0,0), 80, 0xffa040, 18, 10);
+scene.add(approachArrow);
+const liftArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,0), 100, 0x6acccc, 18, 10);
+scene.add(liftArrow);
+let targetRadius = 20;
+let lastGeomRadius = -1;
+function updateTargetObject(){
+  const p = goalSphere.position;
+  targetObj.position.copy(p);
+  if(targetRadius !== lastGeomRadius){
+    targetObj.geometry.dispose();
+    targetObj.geometry = new THREE.SphereGeometry(targetRadius, 18, 14);
+    lastGeomRadius = targetRadius;
+  }
+  // Approach arrow: starts at pre-grasp, points down, length = approach_offset
+  approachArrow.position.set(p.x, p.y, p.z + GRASP_APPROACH_MM);
+  approachArrow.setLength(GRASP_APPROACH_MM - (targetRadius + GRIPPER_TIP_CLEARANCE), 18, 10);
+  // Lift arrow: starts at grasp z, points up, length = lift_offset - (grasp_z - z)
+  approachArrow.position.set(p.x, p.y, p.z + GRASP_APPROACH_MM);
+  liftArrow.position.set(p.x, p.y, p.z + (targetRadius + GRIPPER_TIP_CLEARANCE));
+  liftArrow.setLength(GRASP_LIFT_MM - (targetRadius + GRIPPER_TIP_CLEARANCE), 18, 10);
+}
+function setTargetVisible(on){
+  targetObj.visible = on; approachArrow.visible = on; liftArrow.visible = on;
+}
+
+const orbit = new OrbitControls(camera, renderer.domElement);
+orbit.target.set(100, 0, 200); orbit.update();
+const tcontrol = new TransformControls(camera, renderer.domElement);
+tcontrol.setSize(1.0);
+tcontrol.attach(goalSphere);
+scene.add(tcontrol);
+tcontrol.addEventListener('dragging-changed', e=>{
+  orbit.enabled = !e.value;
+  if(!e.value) onGoalDragEnd();
+});
+
+let lastGoodTarget = null;
+
+function setGoalColor(state_){
+  const c = state_ === 'fail' ? 0xff4040 : (state_ === 'calc' ? 0xffffff : 0xffd02f);
+  goalMat.color.setHex(c); goalMat.emissive.setHex(c);
+}
+
+async function onGoalDragEnd(){
+  if(state.busy){ setStatus('動作中はゴール変更不可','err'); return; }
+  const p = goalSphere.position;
+  setStatus(`IK 計算中 (${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)})`);
+  setGoalColor('calc');
+  goalSphere.scale.set(1.2, 1.2, 1.2);
+  const ok = await runIK(p.x, p.y, p.z);
+  goalSphere.scale.set(1, 1, 1);
+  if(!ok){
+    setGoalColor('fail');
+    state.ikFailed = true;
+    btnApply.disabled = true;
+    btnApply.title = '赤球(到達不可)。届く場所へドラッグしてください';
+  } else {
+    setGoalColor('ok');
+    state.ikFailed = false;
+    btnApply.title = '目標が安全範囲内になると有効';
+    lastGoodTarget = [...state.target];
+  }
+  updateTargetObject();
+  // also pre-check grasp reachability: pre-grasp pose 80mm above
+  await checkGraspReachability();
+}
+
+let reachSeq = 0;
+async function checkGraspReachability(){
+  if(state.busy) return;
+  const seq = ++reachSeq;
+  const p = goalSphere.position;
+  const badge = document.getElementById('targetReach');
+  const btn = document.getElementById('btnGrasp');
+  badge.textContent = '確認中'; badge.className = 'badge gray'; btn.disabled = true;
+  // Check all 3 stages: pre-grasp (z+approach), grasp (z+radius+clearance), lift (z+lift)
+  const graspZ = p.z + targetRadius + GRIPPER_TIP_CLEARANCE;
+  const stages = [
+    ['pre-grasp', p.x, p.y, p.z + GRASP_APPROACH_MM],
+    ['grasp',     p.x, p.y, graspZ],
+    ['lift',      p.x, p.y, p.z + GRASP_LIFT_MM],
+  ];
+  try{
+    const results = [];
+    for(const [name, x, y, z] of stages){
+      const j = await fetch('/solve_ik',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({x, y, z})}).then(r=>r.json());
+      if(seq !== reachSeq) return;  // newer check started; abandon stale result
+      results.push({name, ok: j.ok, msg: j.msg});
+      if(!j.ok) break;
+    }
+    if(seq !== reachSeq) return;
+    const allOk = results.every(r => r.ok);
+    if(allOk){
+      badge.textContent = '3段OK'; badge.className = 'badge ok';
+      targetMat.color.setHex(TARGET_COLOR.ok);
+      btn.disabled = state.busy || !state.power;
+    } else {
+      const failed = results.find(r => !r.ok);
+      badge.textContent = `${failed.name} NG`; badge.className = 'badge err';
+      targetMat.color.setHex(TARGET_COLOR.fail);
+      btn.disabled = true;
+    }
+  }catch(e){
+    if(seq !== reachSeq) return;
+    badge.textContent = 'チェック失敗'; badge.className = 'badge warn';
+    targetMat.color.setHex(TARGET_COLOR.unknown);
+  }
+}
+function invalidateReachability(){
+  // Slider/joint change → previous reachability result is stale
+  const badge = document.getElementById('targetReach');
+  badge.textContent = '未確認'; badge.className = 'badge gray';
+  targetMat.color.setHex(TARGET_COLOR.unknown);
+  document.getElementById('btnGrasp').disabled = true;
+}
+
+// Reset color on drag start so user knows the failure state is being re-evaluated
+tcontrol.addEventListener('mouseDown', ()=>{
+  if(state.ikFailed) setGoalColor('ok');  // tentative — fail returns on bad release
+});
+
+function syncGoalSphereToTarget(){
+  if(!DH) return;
+  const tip = endEffector(state.target);
+  if(!tcontrol.dragging){
+    goalSphere.position.copy(tip);
+    setGoalColor('ok');
+    state.ikFailed = false;
+  }
+  updateTargetObject();
+}
+
+// --- state ---
+const state = {
+  current: [0,0,-90,0,0,0],
+  target:  [0,0,-90,0,0,0],
+  offline: false,
+  busy: false,
+  power: true,
+  lastSavedCurrent: [0,0,-90,0,0,0],   // for drift detection
+  userTouched: false,
+  busyWatchdog: null,
+  ikFailed: false,
+  lastDriftWarn: 0,
+};
+
+// --- joint sliders ---
+const jointsDiv = document.getElementById('joints');
+const sliders=[], targetCells=[], deltaCells=[], labels=[];
+function buildSliders(){
+  jointsDiv.innerHTML = '';
+  for(let i=0;i<6;i++){
+    const row = document.createElement('div'); row.className='joint';
+    row.innerHTML = `<label data-i="${i}" for="jslider${i}">J${i+1}</label>
+      <input id="jslider${i}" type="range" min="${LIMITS[i][0]}" max="${LIMITS[i][1]}" step="0.5" value="0"
+        aria-label="関節${i+1} 角度 (deg)" aria-valuetext="0">
+      <span class="tgt">0.0</span><span class="delta">0</span>`;
+    jointsDiv.appendChild(row);
+    const s = row.querySelector('input[type=range]');
+    sliders.push(s);
+    labels.push(row.querySelector('label'));
+    targetCells.push(row.querySelector('.tgt'));
+    deltaCells.push(row.querySelector('.delta'));
+    s.addEventListener('input', ()=>{ state.target[i] = parseFloat(s.value); state.userTouched = true; clearActivePoseHighlight(); onTargetChange(); });
+    row.querySelector('label').addEventListener('click', ()=>{ s.focus(); });
+  }
+}
+function setSlidersFrom(angles){
+  for(let i=0;i<6;i++){
+    sliders[i].value = angles[i];
+    sliders[i].setAttribute('aria-valuetext', angles[i].toFixed(1) + ' deg');
+    targetCells[i].textContent = angles[i].toFixed(1);
+  }
+}
+
+// --- status log (history, 6 lines) ---
+const statusLog = document.getElementById('statusLog');
+function setStatus(msg, kind=''){
+  const t = new Date(); const hh=`${t.getHours()}`.padStart(2,'0'), mm=`${t.getMinutes()}`.padStart(2,'0'), ss=`${t.getSeconds()}`.padStart(2,'0');
+  const line = document.createElement('div'); line.className='line '+kind;
+  line.innerHTML = `<time>${hh}:${mm}:${ss}</time>${msg}`;
+  statusLog.insertBefore(line, statusLog.firstChild);
+  while(statusLog.children.length > 6) statusLog.removeChild(statusLog.lastChild);
+}
+
+// --- check & UI update ---
+let checkSeq = 0;
+async function onTargetChange(){
+  updateArm(armTarget, state.target);
+  syncGoalSphereToTarget();
+  invalidateReachability();  // slider/joint change → stale; re-check on demand or via debounce below
+  const tip = endEffector(state.target);
+  // numeric updates
+  for(let i=0;i<6;i++){
+    targetCells[i].textContent = state.target[i].toFixed(1);
+    const d = state.target[i] - state.current[i];
+    const cell = deltaCells[i];
+    cell.textContent = (d>0?'+':'') + d.toFixed(0);
+    cell.classList.toggle('large', Math.abs(d) > 30);
+  }
+  // safety check (async, race-protected)
+  const seq = ++checkSeq;
+  try{
+    const j = await fetch('/check',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({angles: state.target})}).then(r=>r.json());
+    if(seq !== checkSeq) return;
+    // clear joint highlights
+    labels.forEach(l=>l.classList.remove('bad'));
+    sliders.forEach(s=>s.classList.remove('bad'));
+    if(j.ok){
+      document.getElementById('btnApply').disabled = state.busy || !state.power;
+      tintArm(armTarget, 0xce9178);
+      setStatusOnce('OK — APPLY で実行');
+    } else {
+      document.getElementById('btnApply').disabled = true;
+      tintArm(armTarget, 0xff4040);
+      (j.badJoints||[]).forEach(idx => {
+        if(labels[idx-1]) labels[idx-1].classList.add('bad');
+        if(sliders[idx-1]) sliders[idx-1].classList.add('bad');
+      });
+      setStatusOnce('NG: ' + j.msg, 'err');
+    }
+  }catch(e){ /* network hiccup */ }
+}
+let lastStatusOnce = '';
+function setStatusOnce(msg, kind=''){
+  if(msg === lastStatusOnce) return;
+  lastStatusOnce = msg; setStatus(msg, kind);
+}
+
+// --- polling ---
+let pollCount = 0;
+let connFail = 0;
+function setConnState(ok){
+  const b = document.getElementById('connBadge');
+  if(ok){ if(connFail >= 3) setStatus('サーバ接続復帰','ok'); connFail = 0; b.className = 'ok'; b.textContent = 'CONN'; }
+  else {
+    connFail++;
+    if(connFail >= 3){
+      b.className = 'err'; b.textContent = 'NO CONN';
+      // Reset target color to unknown when disconnected
+      targetMat.color.setHex(TARGET_COLOR.unknown);
+      const badge = document.getElementById('targetReach');
+      if(badge){ badge.textContent = '接続切'; badge.className = 'badge warn'; }
+    }
+  }
+}
+async function pollCurrent(){
+  try{
+    const j = await fetch('/angles').then(r=>r.json());
+    setConnState(true);
+    if(j.angles){
+      const prev = state.current;
+      state.current = j.angles;
+      updateArm(armCurrent, state.current);
+      const tip = endEffector(state.current);
+      document.getElementById('cx').textContent = tip.x.toFixed(1);
+      document.getElementById('cy').textContent = tip.y.toFixed(1);
+      document.getElementById('cz').textContent = tip.z.toFixed(1);
+      if(j.offline){ state.offline = true; document.getElementById('offlineBadge').style.display='inline-block'; }
+      if(!window.__inited){
+        window.__inited = true;
+        if(!state.userTouched){
+          state.target = [...state.current];
+          setSlidersFrom(state.target);
+          state.lastSavedCurrent = [...state.current];
+          await onTargetChange();
+        }
+      } else {
+        // drift detection: warn if real arm moved noticeably while we weren't moving
+        if(!state.busy){
+          const drift = Math.max(...prev.map((p,i)=>Math.abs(p-state.current[i])));
+          // Rate-limit + round to 0.5° to avoid noise + tab-throttle false alarms
+          const now = Date.now();
+          const rounded = Math.round(drift * 2) / 2;
+          if(drift > 2.0 && (now - state.lastDriftWarn > 5000)){
+            setStatus(`現在位置が ${rounded.toFixed(1)}° 変化 — 目標を再確認`, 'warn');
+            state.lastDriftWarn = now;
+          }
+        }
+      }
+      // delta cells need refresh as current changes
+      for(let i=0;i<6;i++){
+        const d = state.target[i] - state.current[i];
+        deltaCells[i].textContent = (d>0?'+':'') + d.toFixed(0);
+        deltaCells[i].classList.toggle('large', Math.abs(d) > 30);
+      }
+    }
+  }catch(e){ setConnState(false); setStatusOnce('接続切', 'err'); }
+}
+async function pollPower(){
+  try{
+    const j = await fetch('/power').then(r=>r.json());
+    setConnState(true);
+    state.power = !!j.ok;
+    const b = document.getElementById('powerBadge');
+    b.textContent = j.ok ? '通電' : '脱力';
+    b.className = 'badge ' + (j.ok ? 'ok' : 'err');
+    if(!j.ok) document.getElementById('btnApply').disabled = true;
+  }catch(e){ setConnState(false); }
+}
+
+// --- actions ---
+const btnApply = document.getElementById('btnApply');
+btnApply.onclick = async ()=>{
+  if(state.busy || !state.power || state.ikFailed) return;
+  setBusy(true); btnApply.disabled = true;
+  const speed = clampSpeed();
+  setStatus(`実行中… speed=${speed}`);
+  try{
+    const r = await fetch('/move',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({angles: state.target, speed, expected_current: state.current})});
+    const j = await r.json();
+    if(j.error){ setStatus('NG: '+j.error,'err'); }
+    else { setStatus(`到達 ${j.nWaypoints}wp / ${j.elapsed}s`, 'ok'); }
+  }catch(e){ setStatus('送信失敗: '+e,'err'); }
+  finally { setBusy(false); }
+};
+document.getElementById('btnSync').onclick = async ()=>{
+  state.target = [...state.current];
+  setSlidersFrom(state.target);
+  state.userTouched = false;
+  await onTargetChange();
+};
+document.getElementById('btnHome').onclick = async ()=>{
+  if(state.busy) return;
+  setBusy(true);
+  setStatus('HOME へ…');
+  try{
+    const r = await fetch('/home',{method:'POST'}).then(r=>r.json());
+    if(r.error) setStatus('HOME NG: '+r.error,'err');
+    else setStatus(`HOME 到着 / ${r.elapsed}s`, 'ok');
+  }catch(e){ setStatus('HOME 失敗: '+e,'err'); }
+  finally { setBusy(false); }
+};
+document.getElementById('btnRelease').onclick = async ()=>{
+  if(!confirm('サーボを脱力します。手で支えないと落下します。実行しますか？')) return;
+  try{
+    const res = await fetch('/release',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const j = await res.json();
+    if(res.status === 409){
+      setStatus('動作中。先に ABORT (Esc) を押してから再度脱力してください','err');
+    } else {
+      setStatus(j.warning || j.error || '脱力済','err');
+    }
+  }catch(e){ setStatus('release 失敗: '+e,'err'); }
+};
+// ABORT is always visible (enabled only when busy). Watchdog releases stuck busy.
+const btnAbort = document.getElementById('btnAbort');
+btnAbort.onclick = abort;
+function setBusy(on){
+  state.busy = on;
+  btnAbort.disabled = !on;
+  // Lock all motion-issuing controls during motion
+  const locked = ['btnHome','btnSync','btnMoveCart','btnIK','btnRelease','speed','cartMode'];
+  for(const id of locked){
+    const el = document.getElementById(id);
+    if(el) el.disabled = on;
+  }
+  tcontrol.enabled = !on;
+  document.title = on ? 'myCobot — 実行中' : 'myCobot 320 control';
+  if(on){
+    // 120s watchdog: if a fetch never resolves, recover UI
+    clearTimeout(state.busyWatchdog);
+    state.busyWatchdog = setTimeout(()=>{
+      if(state.busy){
+        setStatus('busy watchdog: タイムアウトで状態解除','warn');
+        setBusy(false);
+      }
+    }, 120000);
+  } else {
+    clearTimeout(state.busyWatchdog);
+    // Re-evaluate APPLY (may have been re-enabled if target is OK)
+    onTargetChange();
+  }
+}
+async function abort(){
+  // Always sendable — server ignores if nothing to abort
+  try{ await fetch('/abort',{method:'POST'}); setStatus('中断要求送信','warn'); }
+  catch(e){ setStatus('abort 失敗: '+e,'err'); }
+}
+
+// --- cartesian IK ---
+// Pose policy: default = extend_toward (natural reach pose).
+let posePolicy = 'extend_toward';
+const POLICY_LABEL = {
+  'extend_toward': '指差し',
+  'align_+z': '上から', 'align_-z': '下から',
+  'align_+x': '+X側から', 'align_-x': '-X側から',
+  'align_+y': '+Y側から', 'align_-y': '-Y側から',
+  'align_side_auto': '横から(自動)',
+  'preserve': '維持',
+};
+const MODE_BADGE = {
+  'full':          {text:'完全', cls:'ok',   tip:'要求姿勢を達成'},
+  'firmware':      {text:'完全', cls:'ok',   tip:'firmware IK で要求姿勢を達成'},
+  'relaxed_roll':  {text:'近似', cls:'warn', tip:'要求姿勢から ±15-45° 緩和して達成'},
+  'position_only': {text:'位置のみ', cls:'err', tip:'姿勢無視（IK 失敗のため位置だけ）'},
+  'failed':        {text:'失敗', cls:'err',  tip:'IK 解なし'},
+};
+
+function buildPoseSpec(target){
+  if(posePolicy === 'extend_toward') return {kind:'extend_toward', target:[target.x, target.y, target.z]};
+  if(posePolicy === 'preserve')      return {kind:'preserve'};
+  if(posePolicy === 'align_side_auto'){
+    // Auto-pick: side direction nearest goal's horizontal direction from base
+    const ax = Math.abs(target.x), ay = Math.abs(target.y);
+    const axis = ax >= ay ? (target.x >= 0 ? '+x' : '-x') : (target.y >= 0 ? '+y' : '-y');
+    return {kind:'align_tool', approach:axis};
+  }
+  if(posePolicy.startsWith('align_')){
+    const axis = posePolicy.slice(6);
+    return {kind:'align_tool', approach:axis};
+  }
+  return {kind:'preserve'};
+}
+
+function setPoseModeBadge(mode){
+  const ind = document.getElementById('poseModeIndicator');
+  if(!ind) return;
+  const m = MODE_BADGE[mode] || {text:mode, cls:'gray', tip:''};
+  ind.innerHTML = `<span class="badge ${m.cls}" title="${m.tip}">${m.text}</span>`;
+}
+
+function clearPoseBadge(){ const ind = document.getElementById('poseModeIndicator'); if(ind) ind.innerHTML = ''; }
+
+async function runIK(x, y, z, fallbackChain = ['extend_toward', 'align_+z']){
+  try{
+    const poseSpec = buildPoseSpec({x, y, z});
+    const j = await fetch('/solve_ik',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({x, y, z, pose: poseSpec})}).then(r=>r.json());
+    if(!j.ok || !j.angles){
+      const err = j.error || {};
+      const code = err.code || 'UNKNOWN';
+      // Specific recovery: if orientation infeasible, try fallback chain in order
+      if(code === 'ORIENTATION_INFEASIBLE' && posePolicy === 'extend_toward'
+         && fallbackChain.includes('align_+z') && fallbackChain.length){
+        setStatus(`指差し不可（姿勢不可）→ 上から に自動切替`, 'warn');
+        const orig = posePolicy;
+        posePolicy = 'align_+z';
+        const ok2 = await runIK(x, y, z, []);
+        if(!ok2) posePolicy = orig;
+        return ok2;
+      }
+      // Surface structured error
+      document.querySelectorAll('.poseBtn').forEach(b => b.classList.remove('active'));
+      setPoseModeBadge('failed');
+      const codeLabel = {
+        'OUT_OF_REACH':           '到達不可',
+        'ORIENTATION_INFEASIBLE': '姿勢不可',
+        'SAFETY_VIOLATION':       '安全違反',
+        'SOLVER_NONCONVERGENT':   '収束失敗',
+        'UNKNOWN':                'IK 失敗',
+      }[code] || code;
+      setStatus(`[${codeLabel}] ${err.message || j.msg || 'IK NG'}`, 'err');
+      // Log retry hints to console for debug/AI inspection
+      if(err.retry_hints && err.retry_hints.length){
+        console.info('IK retry_hints:', err.retry_hints);
+      }
+      return false;
+    }
+    state.target = j.angles;
+    setSlidersFrom(state.target);
+    state.userTouched = true;
+    await onTargetChange();
+    setPoseModeBadge(j.ikMode || 'full');
+    const label = POLICY_LABEL[posePolicy] || posePolicy;
+    const mode = j.ikMode || 'full';
+    const modeText = MODE_BADGE[mode]?.text || mode;
+    setStatus(`IK OK [${label}] 達成度=${modeText}`, mode === 'position_only' ? 'warn' : 'ok');
+    return true;
+  }catch(e){ setStatus('IK エラー: '+e,'err'); return false; }
+}
+
+// Pose policy buttons
+document.querySelectorAll('.poseBtn').forEach(btn => {
+  btn.addEventListener('click', ()=>{
+    if(btn.dataset.pose === posePolicy) return;  // no-op if unchanged
+    document.querySelectorAll('.poseBtn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    posePolicy = btn.dataset.pose;
+    savePrefs();
+    setStatus(`姿勢ポリシー: ${POLICY_LABEL[posePolicy] || posePolicy}`);
+    const p = goalSphere.position;
+    runIK(p.x, p.y, p.z);
+  });
+});
+
+// Slider edit invalidates active pose policy (manual joint = not policy-driven anymore)
+function clearActivePoseHighlight(){
+  document.querySelectorAll('.poseBtn').forEach(b => b.classList.remove('active'));
+  clearPoseBadge();
+}
+document.getElementById('btnIK').onclick = async ()=>{
+  const x = parseFloat(document.getElementById('ix').value);
+  const y = parseFloat(document.getElementById('iy').value);
+  const z = parseFloat(document.getElementById('iz').value);
+  if(![x,y,z].every(Number.isFinite)){ setStatus('X/Y/Z に数値を入れてください','err'); return; }
+  await runIK(x,y,z);
+};
+document.getElementById('btnPullTip').onclick = ()=>{
+  const tip = endEffector(state.target);
+  document.getElementById('ix').value = tip.x.toFixed(1);
+  document.getElementById('iy').value = tip.y.toFixed(1);
+  document.getElementById('iz').value = tip.z.toFixed(1);
+};
+
+async function moveCartesian(){
+  if(state.busy || !state.power) return;
+  const x = parseFloat(document.getElementById('ix').value);
+  const y = parseFloat(document.getElementById('iy').value);
+  const z = parseFloat(document.getElementById('iz').value);
+  const mode = document.getElementById('cartMode').value;
+  if(![x,y,z].every(Number.isFinite)){ setStatus('X/Y/Z 数値を入れてください','err'); return; }
+  setBusy(true);
+  setStatus(`cartesian ${mode} 実行中…`);
+  const speed = clampSpeed();
+  try{
+    const r = await fetch('/move_cartesian',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({x, y, z, speed, mode, expected_current: state.current})});
+    const j = await r.json();
+    if(j.error){
+      setStatus('cartesian NG: '+j.error,'err');
+      highlightAbortJoint(j);
+    } else {
+      setStatus(`cartesian 到達 ${j.nJointWp}wp (cart ${j.nCartWp}) / ${j.elapsed}s`,'ok');
+      if(j.angles){ state.target = [...j.angles]; setSlidersFrom(state.target); state.userTouched = false; }
+    }
+  }catch(e){ setStatus('送信失敗: '+e,'err'); }
+  finally { setBusy(false); }
+}
+function clampSpeed(){
+  const inp = document.getElementById('speed');
+  let v = parseInt(inp.value);
+  if(isNaN(v) || v < 5) v = 5;
+  if(v > 40) v = 40;
+  inp.value = v;
+  return v;
+}
+document.getElementById('speed').addEventListener('change', clampSpeed);
+document.getElementById('btnMoveCart').onclick = moveCartesian;
+
+// --- target object: radius, visibility, grasp execute ---
+document.getElementById('targetRadius').addEventListener('change', (e)=>{
+  let r = Math.round(parseFloat(e.target.value));
+  if(isNaN(r) || r < 5) r = 5; if(r > 60) r = 60;
+  e.target.value = r; targetRadius = r;
+  updateTargetObject();
+  invalidateReachability(); checkGraspReachability();
+  savePrefs();
+});
+document.getElementById('cbShowTarget').addEventListener('change', (e)=>{
+  setTargetVisible(e.target.checked);
+});
+
+document.getElementById('btnGrasp').onclick = async ()=>{
+  if(state.busy || !state.power) return;
+  const p = goalSphere.position;
+  const graspZ = p.z + targetRadius + GRIPPER_TIP_CLEARANCE;
+  const preZ = p.z + GRASP_APPROACH_MM;
+  const liftZ = p.z + GRASP_LIFT_MM;
+  const speed = Math.min(clampSpeed(), GRASP_SPEED_MAX);
+  const msg = `物体 (${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)}) r=${targetRadius}mm\n\n` +
+    `1) pre-grasp:  上空 z=${preZ.toFixed(0)}mm\n` +
+    `2) approach:   降下 z=${graspZ.toFixed(0)}mm (物体表面+${GRIPPER_TIP_CLEARANCE}mm — 衝突回避)\n` +
+    `3) lift:       引上げ z=${liftZ.toFixed(0)}mm\n\n` +
+    `速度: ${speed} (grasp cap: ${GRASP_SPEED_MAX})\n` +
+    `把持: ${GRIPPER_PRESENT ? '有効' : '無効（ハード未接続）'}\n\n実行しますか？`;
+  if(!confirm(msg)) return;
+  setBusy(true);
+  setStatus('grasp sequence 実行中…');
+  try{
+    const r = await fetch('/grasp_sequence',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({x:p.x, y:p.y, z:p.z, radius:targetRadius, speed, expected_current:state.current})});
+    const j = await r.json();
+    if(j.error){
+      setStatus(`grasp NG${j.stage?`[${j.stage}]`:''}: ${j.error}`, 'err');
+      highlightAbortJoint(j);
+    } else {
+      setStatus(`grasp 完了 ${j.nJointWp}wp / ${j.elapsed}s (tip stopped at z=${j.graspZ?.toFixed?.(0) ?? '?'}mm)`, 'ok');
+      if(j.angles){ state.target = [...j.angles]; setSlidersFrom(state.target); state.userTouched = false; }
+    }
+  }catch(e){ setStatus('送信失敗: '+e,'err'); }
+  finally { setBusy(false); }
+};
+
+function highlightAbortJoint(j){
+  if(j.peakJoint){
+    const idx = j.peakJoint - 1;
+    if(labels[idx]){ labels[idx].classList.add('bad'); setTimeout(()=>labels[idx].classList.remove('bad'), 5000); }
+    setStatus(`J${j.peakJoint} で過電流 ${j.peakValue}mA`, 'err');
+  }
+}
+
+// monitor toggle + current display
+document.getElementById('cbMonitor').addEventListener('change', async e=>{
+  const enabled = e.target.checked;
+  if(!enabled){
+    if(!confirm('過電流監視を無効化します。衝突しても自動停止しません。続行しますか？')){
+      e.target.checked = true; return;
+    }
+  }
+  await fetch('/monitor',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+  const b = document.getElementById('monBadge');
+  b.textContent = enabled ? 'ON' : 'OFF'; b.className = 'badge ' + (enabled?'ok':'err');
+  document.getElementById('monWarn').style.display = enabled ? 'none' : 'block';
+  document.getElementById('monPanel').classList.toggle('danger', !enabled);
+});
+async function pollCurrents(){
+  try{
+    const j = await fetch('/currents').then(r=>r.json());
+    const d = document.getElementById('currentDisplay');
+    if(j.currents){
+      const thr = j.threshold_mA;
+      // bar visualization
+      const rows = j.currents.map((c,i)=>{
+        const ratio = Math.min(1, Math.abs(c) / thr);
+        const blocks = Math.round(ratio * 10);
+        const bar = '▮'.repeat(blocks) + '░'.repeat(10 - blocks);
+        const color = ratio > 1 ? '#f48771' : (ratio > 0.7 ? '#dcdc6a' : '#9cdcfe');
+        return `<div style="color:${color}">J${i+1} <span style="font-family:monospace">${bar}</span> ${String(Math.abs(c)).padStart(4)}mA</div>`;
+      }).join('');
+      d.innerHTML = rows + `<div style="color:#666;margin-top:2px">閾値 ${thr}mA / ${j.poll_hz}Hz / ${j.sustained_polls}連続</div>`;
+    } else { d.textContent = '— (取得不可)'; }
+  }catch(e){}
+}
+
+// --- keyboard ---
+let focusJoint = -1;
+function focusSlider(i){ focusJoint = i; sliders[i].focus(); }
+document.addEventListener('keydown', e=>{
+  const isText = ['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName);
+  const isCoord = e.target.classList && e.target.classList.contains('coord');
+  const isRange = e.target.type === 'range';
+  // Esc: always send abort (server is idempotent). Kill switch must work even when desync.
+  if(e.key === 'Escape'){ abort(); e.preventDefault(); return; }
+  // Enter: only outside text inputs and only if APPLY enabled
+  if(e.key === 'Enter' && !btnApply.disabled && (!isText || isRange)){ btnApply.click(); return; }
+  if(isText && !isRange) return;
+  if(e.key === 'h' || e.key === 'H'){ document.getElementById('btnHome').click(); return; }
+  if(e.key === 's' || e.key === 'S'){ document.getElementById('btnSync').click(); return; }
+  if(/^[1-6]$/.test(e.key)){ focusSlider(parseInt(e.key)-1); e.preventDefault(); return; }
+  if((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && focusJoint >= 0){
+    const step = e.shiftKey ? 5 : 1;
+    const dir = e.key === 'ArrowRight' ? 1 : -1;
+    const i = focusJoint;
+    state.target[i] = Math.max(LIMITS[i][0], Math.min(LIMITS[i][1], state.target[i] + dir*step));
+    sliders[i].value = state.target[i]; state.userTouched = true;
+    onTargetChange();
+    e.preventDefault();
+  }
+});
+
+// --- camera + polling ---
+const camImg = document.getElementById('cam');
+let camErrCount = 0;
+camImg.onerror = ()=>{
+  camErrCount++;
+  if(camErrCount === 1) setStatus('カメラ切','warn');
+};
+camImg.onload = ()=>{ camErrCount = 0; };
+
+// PIP minimize toggle
+document.getElementById('camToggle').onclick = (e)=>{
+  e.stopPropagation();
+  const pip = document.getElementById('camPip');
+  pip.classList.toggle('min');
+  e.target.textContent = pip.classList.contains('min') ? '[ + ]' : '[ - ]';
+};
+let camTimer, coordTimer, powerTimer;
+let currentsTimer;
+function startTimers(){
+  // Camera: skip refresh when errors are sustained (backoff to avoid network spam)
+  camTimer = setInterval(()=>{
+    if(camErrCount > 5 && camErrCount % 20 !== 0) return;  // retry every 20th tick after backoff
+    camImg.src = '/frame.jpg?t='+Date.now();
+  }, state.busy ? 150 : 250);
+  coordTimer = setInterval(pollCurrent, state.busy ? 200 : 600);
+  powerTimer = setInterval(pollPower, 1500);
+  currentsTimer = setInterval(pollCurrents, state.busy ? 150 : 500);
+}
+window.addEventListener('beforeunload', ()=>{ clearInterval(camTimer); clearInterval(coordTimer); clearInterval(powerTimer); clearInterval(currentsTimer); });
+
+// --- resize ---
+window.addEventListener('resize', ()=>{
+  camera.aspect = cont.clientWidth/cont.clientHeight; camera.updateProjectionMatrix();
+  renderer.setSize(cont.clientWidth, cont.clientHeight);
+});
+(function loop(){ requestAnimationFrame(loop); renderer.render(scene, camera); })();
+
+// --- localStorage persist (speed, mode, last XYZ. NOT joint target — stale = dangerous) ---
+const LSKEY = 'mycobot.ui.v1';
+function loadPrefs(){
+  try{ return JSON.parse(localStorage.getItem(LSKEY) || '{}'); } catch { return {}; }
+}
+function savePrefs(){
+  try{
+    localStorage.setItem(LSKEY, JSON.stringify({
+      speed: document.getElementById('speed').value,
+      mode: document.getElementById('cartMode').value,
+      ix: document.getElementById('ix').value,
+      iy: document.getElementById('iy').value,
+      iz: document.getElementById('iz').value,
+      posePolicy: posePolicy,
+    }));
+  } catch {}
+}
+['speed','cartMode','ix','iy','iz','targetRadius'].forEach(id => {
+  const el = document.getElementById(id);
+  if(el) el.addEventListener('change', savePrefs);
+});
+
+// Hint auto-fade after first interaction
+let hintFaded = false;
+function fadeHint(){
+  if(hintFaded) return;
+  hintFaded = true;
+  document.getElementById('hint').classList.add('fade');
+}
+tcontrol.addEventListener('mouseDown', fadeHint);
+document.addEventListener('keydown', fadeHint, {once: true});
+
+// pointercancel recovery — touch lifted off-screen mid-drag would leave gizmo stuck
+window.addEventListener('pointercancel', ()=>{
+  if(tcontrol.dragging){
+    setStatus('pointer cancel — gizmo 状態復帰','warn');
+    orbit.enabled = true;
+  }
+});
+
+// --- boot ---
+(async ()=>{
+  try{
+    await loadKinematics();
+    buildSliders();
+    // restore prefs
+    const p = loadPrefs();
+    if(p.speed) document.getElementById('speed').value = p.speed;
+    if(p.mode) document.getElementById('cartMode').value = p.mode;
+    if(p.ix !== undefined) document.getElementById('ix').value = p.ix;
+    if(p.iy !== undefined) document.getElementById('iy').value = p.iy;
+    if(p.iz !== undefined) document.getElementById('iz').value = p.iz;
+    if(p.targetRadius !== undefined){
+      document.getElementById('targetRadius').value = p.targetRadius;
+      targetRadius = parseFloat(p.targetRadius) || 20;
+    }
+    if(p.posePolicy && POLICY_LABEL[p.posePolicy]){
+      posePolicy = p.posePolicy;
+      document.querySelectorAll('.poseBtn').forEach(b => {
+        b.classList.toggle('active', b.dataset.pose === posePolicy);
+      });
+    }
+    startTimers();
+    await pollCurrent();
+    await pollPower();
+  }catch(e){ setStatus('boot 失敗: '+e,'err'); }
+})();
+
+// expose for tests
+window.__state = state;
+window.__fk = { jointPositions, endEffector };
+</script>
+</body></html>
