@@ -182,6 +182,49 @@ def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
 _APPROX_MAX_REACH = 380.0  # arm physical reach (mm) — matches ik_numeric._MAX_REACH_MM
 
 
+def _append_observation_log(direction, j1, angles, flange_xyz, query, perceive_result) -> pathlib.Path:
+    """Append a human-readable observation entry to data/observation_log.md.
+
+    Returns the log path.
+    """
+    log = ROOT / "data" / "observation_log.md"
+    log.parent.mkdir(exist_ok=True)
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    objects = perceive_result.get("objects") or []
+    placeholder = any((o.get("uncalibrated") for o in objects))
+    lines = []
+    lines.append(f"## {ts}  direction={direction!r} J1={j1:.1f}°")
+    lines.append(f"- flange (mm): ({flange_xyz[0]:.0f}, {flange_xyz[1]:.0f}, {flange_xyz[2]:.0f})")
+    lines.append(f"- angles (deg): [{', '.join(f'{a:.1f}' for a in angles)}]")
+    lines.append(f"- query: {query}")
+    if placeholder:
+        lines.append(f"- ⚠ hand-eye calibration が placeholder のため世界座標は概算値")
+    if not perceive_result.get("ok", True):
+        err = perceive_result.get("error") or {}
+        lines.append(f"- ❌ perceive 失敗: [{err.get('code','?')}] {err.get('message','')}")
+    elif not objects:
+        lines.append(f"- (検出物なし)")
+    else:
+        lines.append(f"- 検出 {len(objects)} 件:")
+        for obj in objects:
+            xyz = obj.get("world_xyz_mm") or [None]*3
+            label = obj.get("label", "?")
+            conf = obj.get("confidence")
+            radius = obj.get("radius_mm")
+            cam = obj.get("source_cam", "?")
+            sxyz = "(" + ", ".join(f"{v:.0f}" if v is not None else "?" for v in xyz) + ")"
+            extra = []
+            if conf is not None: extra.append(f"conf={conf:.2f}")
+            if radius is not None: extra.append(f"r={radius:.0f}mm")
+            extra.append(f"cam={cam}")
+            if obj.get("out_of_workspace"): extra.append("⚠out_of_workspace")
+            lines.append(f"  - {label} @ {sxyz} mm  [{' / '.join(extra)}]")
+    lines.append("")
+    with log.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return log
+
+
 def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles, *, skip_repeat_solve=False) -> dict:
     """When IK fails entirely, diagnose why so the caller (UI or LLM) gets a structured reason.
 
@@ -844,6 +887,86 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(500, {"error": str(e)}); return
                 finally:
                     HUB.motion_lock.release()
+
+            if path == "/observe":
+                """Move to a horizontal-camera observation pose, run perceive,
+                append the result to data/observation_log.md as text.
+
+                Body: {
+                  direction: 'front'|'left'|'right'|'back' | float (J1 deg),
+                  query?: str (default: "周囲にある物体を全て検出"),
+                  append_log?: bool (default true)
+                }
+
+                Observe pose is HOME [0,0,-90,0,0,0] with J1 rotated:
+                  back  → J1=  0  (-Y)   ← HOME default; camera looks at -Y
+                  right → J1= 90  (+X)
+                  front → J1=180  (+Y)
+                  left  → J1=-90  (-X)
+                At this pose, flange +Z (camera optical axis under placeholder
+                hand-eye calibration) is horizontal in the base XY plane.
+                """
+                if VISION is None:
+                    self._json(503, {"ok": False, "error": {"code": "VISION_UNAVAILABLE",
+                                     "message": "vision サブシステム未初期化"}}); return
+                direction = body.get("direction", "back")
+                query = str(body.get("query", "周囲にある物体を全て検出")).strip() or "周囲にある物体を全て検出"
+                append_log = bool(body.get("append_log", True))
+                # Resolve direction → J1
+                if isinstance(direction, (int, float)):
+                    j1 = float(direction)
+                else:
+                    dirmap = {"back": 0.0, "right": 90.0, "front": 180.0, "left": -90.0}
+                    j1 = dirmap.get(str(direction).lower())
+                    if j1 is None:
+                        self._json(400, {"error": f"unknown direction '{direction}'; expected front|left|right|back or numeric J1 deg"}); return
+                # Clamp J1 to limits
+                lo, hi = JOINT_LIMITS[0]
+                if not lo <= j1 <= hi:
+                    self._json(400, {"error": f"J1={j1}° outside limits [{lo},{hi}]"}); return
+                observe_angles = [j1, 0.0, -90.0, 0.0, 0.0, 0.0]
+                # Move under motion_lock
+                if not HUB.motion_lock.acquire(blocking=False):
+                    self._json(409, {"error": "motion in progress"}); return
+                try:
+                    cur = HUB.angles()
+                    if cur is None:
+                        self._json(503, {"error": "angles unavailable"}); return
+                    waypoints, ok, msg, bad = plan_and_validate(cur, observe_angles)
+                    if not ok:
+                        self._json(422, {"error": f"観測姿勢への経路 NG: {msg}", "badJoints": bad}); return
+                    code, mov = _execute_joint_waypoints(waypoints, speed=20)
+                    if code != 200:
+                        self._json(code, {**mov, "stage": "move_to_observe"}); return
+                finally:
+                    HUB.motion_lock.release()
+                # Capture + perceive at the observation pose
+                angles = HUB.angles()
+                if angles is None:
+                    self._json(503, {"error": "angles lost after move"}); return
+                result = VISION.perceive(
+                    query=query, angles_deg=angles,
+                    use_table_plane=True, confidence_threshold=0.5,
+                    allow_uncalibrated=True,  # placeholder calibration is OK for journal use
+                    save_frame=False,
+                )
+                # Annotate result with observation context
+                from arm.kinematics import joint_positions
+                pts = joint_positions(angles)
+                flange = pts[6]
+                result["observe"] = {
+                    "direction": direction, "j1_deg": j1,
+                    "angles_deg": [round(a, 2) for a in angles],
+                    "flange_mm": [round(x, 1) for x in flange],
+                }
+                # Append log
+                if append_log:
+                    try:
+                        log_path = _append_observation_log(direction, j1, angles, flange, query, result)
+                        result["observe"]["log_path"] = str(log_path.relative_to(ROOT))
+                    except Exception as e:
+                        result.setdefault("warnings", []).append(f"log append failed: {e}")
+                self._json(200, result); return
 
             if path == "/perceive":
                 """Body: {query, cameras?, use_table_plane?, confidence_threshold?, consensus?, refine?}
