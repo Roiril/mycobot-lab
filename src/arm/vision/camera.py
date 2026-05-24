@@ -32,6 +32,9 @@ class Camera:
     T_base_cam_fixed: Optional[List[List[float]]] = None   # for non-wrist (overhead/side)
     calibrated: bool = False
     placeholder: bool = False
+    # Observability — populated on first frame read
+    frame_size_actual: Optional[tuple] = None  # (w, h) actually delivered by capture
+    calibrated_at: Optional[str] = None        # ISO string from calibration.json
 
     @property
     def is_wrist(self) -> bool:
@@ -62,6 +65,7 @@ def _build_camera(cam_id: str, cfg: Dict[str, Any]) -> Camera:
         T_base_cam_fixed=fixed,
         calibrated=calibrated,
         placeholder=placeholder,
+        calibrated_at=cfg.get("calibrated_at"),
     )
 
 
@@ -92,6 +96,9 @@ class CameraRegistry:
         self._last_jpeg: Dict[str, Optional[bytes]] = {cid: None for cid in self.cameras}
         self._external_cap = None  # set via attach_capture for legacy hub.cap reuse
         self._external_cam_id: Optional[str] = None
+        # Observability — first-frame resolution check + frame age tracking
+        self._first_frame_checked: Dict[str, bool] = {cid: False for cid in self.cameras}
+        self._last_frame_ts: Dict[str, Optional[float]] = {cid: None for cid in self.cameras}
 
     def attach_capture(self, cam_id: str, cap):
         """Reuse an externally-managed cv2.VideoCapture (e.g. Hub.cap)."""
@@ -100,13 +107,47 @@ class CameraRegistry:
 
     def list(self) -> List[Dict[str, Any]]:
         out = []
+        now = time.time()
         for cid, cam in self.cameras.items():
+            K = cam.intrinsics.get("K") if cam.intrinsics else None
+            intrinsics_summary = None
+            if K is not None:
+                try:
+                    intrinsics_summary = {
+                        "fx": float(K[0][0]), "fy": float(K[1][1]),
+                        "cx": float(K[0][2]), "cy": float(K[1][2]),
+                    }
+                except Exception:
+                    intrinsics_summary = None
+            is_open = (cid in self._caps and self._caps[cid] is not None) or (
+                self._external_cap is not None and cid == self._external_cam_id
+            )
+            last_ts = self._last_frame_ts.get(cid)
+            last_age_ms = None if last_ts is None else round((now - last_ts) * 1000.0, 1)
+            # hand_eye_present: not identity-like (best-effort placeholder check)
+            hep = False
+            if cam.hand_eye_T_ee_cam is not None:
+                T = cam.hand_eye_T_ee_cam
+                try:
+                    # identity if diag ≈ 1, off-diag ≈ 0, translation ≈ 0
+                    diag_ok = all(abs(T[i][i] - 1.0) < 1e-6 for i in range(4))
+                    trans_zero = all(abs(T[i][3]) < 1e-6 for i in range(3))
+                    hep = not (diag_ok and trans_zero)
+                except Exception:
+                    hep = True
             out.append({
                 "id": cid,
                 "role": cam.role,
                 "resolution": list(cam.resolution),
                 "calibrated": cam.calibrated,
                 "placeholder": cam.placeholder,
+                # observability additions
+                "intrinsics_summary": intrinsics_summary,
+                "is_open": bool(is_open),
+                "last_frame_age_ms": last_age_ms,
+                "hand_eye_present": bool(hep),
+                "calibrated_at": cam.calibrated_at,
+                "frame_size_actual": list(cam.frame_size_actual) if cam.frame_size_actual else None,
             })
         return out
 
@@ -150,7 +191,10 @@ class CameraRegistry:
         if cam_id not in self.cameras:
             return None
         if self.offline:
-            return self._offline_frame(cam_id)
+            frame = self._offline_frame(cam_id)
+            if frame is not None:
+                self._record_frame(cam_id, frame)
+            return frame
         lock = self._locks.setdefault(cam_id, threading.Lock())
         with lock:
             cap = self._open(cam_id)
@@ -159,7 +203,29 @@ class CameraRegistry:
             ok, frame = cap.read()
             if not ok:
                 return None
+            self._record_frame(cam_id, frame)
             return frame
+
+    def _record_frame(self, cam_id: str, frame: np.ndarray):
+        """Bookkeeping after a successful frame read: stamp time and check resolution."""
+        self._last_frame_ts[cam_id] = time.time()
+        cam = self.cameras.get(cam_id)
+        if cam is None:
+            return
+        try:
+            fh, fw = frame.shape[:2]
+        except Exception:
+            return
+        cam.frame_size_actual = (int(fw), int(fh))
+        if not self._first_frame_checked.get(cam_id, False):
+            self._first_frame_checked[cam_id] = True
+            dw, dh = cam.resolution
+            if (int(dw), int(dh)) != (int(fw), int(fh)):
+                log.warning(
+                    "camera %s frame size mismatch: declared=%dx%d actual=%dx%d "
+                    "(pixel→ray projection will be inaccurate until calibration updated)",
+                    cam_id, dw, dh, fw, fh,
+                )
 
     def get_jpeg(self, cam_id: str, quality: int = 85) -> Optional[bytes]:
         """Read and JPEG-encode a frame. Returns the encoded bytes, or the last-known

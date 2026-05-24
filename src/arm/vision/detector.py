@@ -170,6 +170,10 @@ class ClaudeVLMDetector(Detector):
         self.model = model
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self._client = None  # lazy
+        # Observability: every detect() call overwrites this so VisionHub can
+        # echo diagnostics into the /perceive response, even when 0 detections
+        # are returned (parse failure or "no match").
+        self.last_call_diagnostics: Dict[str, Any] = {}
 
     def _ensure_client(self):
         if self._client is not None:
@@ -185,10 +189,22 @@ class ClaudeVLMDetector(Detector):
 
     def detect(self, frame: np.ndarray, query: str, image_meta: Dict[str, Any]) -> List[Detection]:
         t0 = time.time()
+        # Reset diagnostics for this call.
+        self.last_call_diagnostics = {
+            "vlm_model": self.model,
+            "vlm_raw_text": "",
+            "vlm_request_id": None,
+            "vlm_input_tokens": None,
+            "vlm_output_tokens": None,
+            "vlm_latency_ms": 0.0,
+            "parse_ok": False,
+            "parse_error_message": None,
+        }
         try:
             client = self._ensure_client()
         except RuntimeError as e:
             log.warning("ClaudeVLMDetector unavailable: %s", e)
+            self.last_call_diagnostics["parse_error_message"] = f"client unavailable: {e}"
             raise
         b64, sent_w, sent_h, orig_w, orig_h = _bgr_to_jpeg_b64(frame)
         # scale factor from VLM-sent image back to original frame
@@ -210,6 +226,8 @@ class ClaudeVLMDetector(Detector):
             )
         except Exception as e:
             log.warning("Claude vision API error: %s", e)
+            self.last_call_diagnostics["vlm_latency_ms"] = round((time.time() - t0) * 1000.0, 1)
+            self.last_call_diagnostics["parse_error_message"] = f"api_error: {type(e).__name__}"
             raise
 
         text = ""
@@ -220,14 +238,34 @@ class ClaudeVLMDetector(Detector):
         except Exception:
             text = str(resp)
 
+        # Capture observability fields (best-effort — SDK shape may vary).
+        try:
+            self.last_call_diagnostics["vlm_request_id"] = getattr(resp, "id", None)
+        except Exception:
+            pass
+        try:
+            usage = getattr(resp, "usage", None)
+            if usage is not None:
+                self.last_call_diagnostics["vlm_input_tokens"] = getattr(usage, "input_tokens", None)
+                self.last_call_diagnostics["vlm_output_tokens"] = getattr(usage, "output_tokens", None)
+        except Exception:
+            pass
+        self.last_call_diagnostics["vlm_raw_text"] = (text or "")[:2000]
+
         parsed = _extract_json(text)
         latency_ms = (time.time() - t0) * 1000.0
+        self.last_call_diagnostics["vlm_latency_ms"] = round(latency_ms, 1)
         out: List[Detection] = []
         if not parsed or "objects" not in parsed:
             # Truncate to 200 chars to avoid leaking long noise (incl. any unexpected
             # secret-like substrings) into upstream logs.
             log.warning("VLM returned unparseable response (truncated): %r", text[:200])
+            self.last_call_diagnostics["parse_ok"] = False
+            self.last_call_diagnostics["parse_error_message"] = (
+                "json parse failed" if not parsed else "no 'objects' key in parsed JSON"
+            )
             return out
+        self.last_call_diagnostics["parse_ok"] = True
         for obj in parsed.get("objects", []):
             try:
                 bbox = obj.get("bbox_px")
@@ -258,7 +296,15 @@ class ClaudeVLMDetector(Detector):
                     bbox_px=(x, y, bw, bh),
                     confidence=max(0.0, min(1.0, conf)),
                     estimated_size_class=sclass,
-                    extras={"detect_ms": round(latency_ms, 1), "raw": obj},
+                    extras={
+                        "detect_ms": round(latency_ms, 1),
+                        "raw": obj,
+                        "vlm_raw_text": self.last_call_diagnostics.get("vlm_raw_text"),
+                        "vlm_request_id": self.last_call_diagnostics.get("vlm_request_id"),
+                        "vlm_input_tokens": self.last_call_diagnostics.get("vlm_input_tokens"),
+                        "vlm_output_tokens": self.last_call_diagnostics.get("vlm_output_tokens"),
+                        "vlm_model": self.last_call_diagnostics.get("vlm_model"),
+                    },
                 )
                 out.append(det)
             except Exception as e:
@@ -283,6 +329,18 @@ class FixtureDetector(Detector):
     def __init__(self, fixtures_path: pathlib.Path):
         self.fixtures_path = fixtures_path
         self._fixtures = self._load()
+        # Mirror the public attribute exposed by ClaudeVLMDetector so VisionHub
+        # can echo diagnostics uniformly without isinstance checks.
+        self.last_call_diagnostics: Dict[str, Any] = {
+            "vlm_model": "fixture",
+            "vlm_raw_text": "",
+            "vlm_request_id": None,
+            "vlm_input_tokens": None,
+            "vlm_output_tokens": None,
+            "vlm_latency_ms": 0.0,
+            "parse_ok": True,
+            "parse_error_message": None,
+        }
 
     def _load(self) -> List[Dict[str, Any]]:
         if not self.fixtures_path.exists():
@@ -317,6 +375,17 @@ class FixtureDetector(Detector):
         h, w = frame.shape[:2]
         T_cam_base = image_meta.get("T_cam_base")
         K = image_meta.get("K")
+        # Reset diagnostics for this call (fixture detector — no VLM call).
+        self.last_call_diagnostics = {
+            "vlm_model": "fixture",
+            "vlm_raw_text": "",
+            "vlm_request_id": None,
+            "vlm_input_tokens": None,
+            "vlm_output_tokens": None,
+            "vlm_latency_ms": 0.0,
+            "parse_ok": True,
+            "parse_error_message": None,
+        }
         for obj in self._fixtures:
             if not self._match(obj, query):
                 continue
@@ -357,6 +426,7 @@ class FixtureDetector(Detector):
                 estimated_size_class=obj.get("size_class", "medium"),
                 extras=extras,
             ))
+        self.last_call_diagnostics["vlm_latency_ms"] = round((time.time() - t0) * 1000.0, 1)
         return out
 
 

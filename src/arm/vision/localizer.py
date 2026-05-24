@@ -196,10 +196,26 @@ def localize_on_table(detection: Dict[str, Any],
     cos_n = max(0.2, abs(dir_b[2]))
     depth_uncertainty_mm = height_guess / cos_n
 
+    # Re-normalize dir_b (apply_rot for an orthonormal T should already be unit,
+    # but numerical drift is possible).
+    dn = math.sqrt(dir_b[0]*dir_b[0] + dir_b[1]*dir_b[1] + dir_b[2]*dir_b[2])
+    if dn > 1e-9:
+        dir_b_unit = (dir_b[0]/dn, dir_b[1]/dn, dir_b[2]/dn)
+    else:
+        dir_b_unit = dir_b
+    # Plane normal points +z in base frame; cos angle between ray and -normal
+    # (we want |dir.z| because rays going down should give cos close to 1).
+    cos_normal = abs(dir_b_unit[2])
+
     return {
         "xyz_base": [pt[0], pt[1], pt[2]],
         "radius_mm": radius_mm,
         "depth_uncertainty_mm": depth_uncertainty_mm,
         "source": "table_plane",
         "depth_along_ray_mm": depth_along_ray,
+        # observability — optional fields used by VisionHub diagnostics
+        "ray_origin_base": [origin_b[0], origin_b[1], origin_b[2]],
+        "ray_dir_base": [dir_b_unit[0], dir_b_unit[1], dir_b_unit[2]],
+        "cos_normal": cos_normal,
+        "bbox_center_px": [cu, cv],
     }

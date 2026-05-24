@@ -517,6 +517,67 @@ POST /perceive {query: "コップ"}
 - **refine は未実装**: 検出後の zoom-in 再撮影は Phase 2。Phase 1 では受信して `warnings` に通知、ignore。
 - **workspace cube**: localize 結果が `reach > 380mm` または `z ∉ [FLOOR_Z, 500]` の object は除外。全部該当なら `OUT_OF_WORKSPACE`、一部のみなら除外して `diagnostics.out_of_workspace_excluded` で件数通知。
 
+### 8.9 Diagnostics と観測性
+
+`/perceive` の応答（success / error 両方）には `diagnostics` (success 時はトップレベル、error 時は `error.diagnostics`) が含まれ、実機デバッグに必要な情報が echo される。
+
+#### 基本フィールド（毎回入る）
+
+| key | 型 | 内容 |
+|---|---|---|
+| `timestamp_iso` | str | perceive 開始時刻 (Asia/Tokyo, ISO8601) |
+| `cameras_used` | list[str] | 実際に試したカメラ id 配列 |
+| `angles_at_capture` | list[6] | perceive 呼出し時の関節角スナップショット |
+| `tip_at_capture` | `{xyz: [3], rpy: [3]}` | FK で計算した tip 位置/姿勢 |
+| `vlm` | dict | 直近 detect() 呼出しの VLM 情報（下記参照） |
+
+`vlm` の中身: `vlm_model` / `vlm_raw_text`（先頭 2000 文字、parse 失敗デバッグ用）/ `vlm_request_id` / `vlm_input_tokens` / `vlm_output_tokens` / `vlm_latency_ms` / `parse_ok` / `parse_error_message`。
+
+#### Localize 中間値（diagnostics.objects[i].localize）
+
+検出された各物体について以下を echo: `xyz_base` / `ray_origin_base` / `ray_dir_base`（単位ベクトル、base frame）/ `cos_normal`（光線と plane normal の内積）/ `bbox_center_px` / `depth_along_ray_mm` / `radius_mm` / `depth_uncertainty_mm`。
+
+`cos_normal` が 0.3 以下なら depth uncertainty が大きい — OBSERVE_HIGH で再撮影推奨。
+
+#### Reject 直前の状態（diagnostics.rejected[i]）
+
+`OUT_OF_WORKSPACE` 等で reject された物体については、reject 直前の localize 結果と理由を `rejected` 配列に残す。「workspace 外と判定された world 座標がそもそも妥当か」を確認するのに使う。
+
+#### 失敗時 frame_path
+
+エラー時、その時点の frame は `data/perceive_log/{ISO_ts}_{error_code}_{cam_id}.jpg` として自動保存され、`diagnostics.frame_path` に相対パスが入る。ログは LRU 200 件を超えると古いものから自動削除。
+
+成功時は保存されない（容量爆発防止）。明示的に成功時 frame を保存したい場合は `POST /perceive` に `"save_frame": true` を渡す（または URL に `?save_frame=true`）。
+
+#### warnings 配列
+
+トップレベルの `warnings: list[str]` に非致命的問題を通知:
+
+- `frame_size_mismatch[cam_id]: declared=WxH, actual=WxH; pixel-to-ray will be inaccurate` — calibration.json の `resolution` と実カメラの吐く解像度が不一致。校正の `resolution` を実測値に合わせること。
+- `consensus not implemented in Phase 1 (ignored)` / `refine not implemented in Phase 1 (ignored)`
+
+#### `/frame.jpg?annotate=last`
+
+直近の **成功した** perceive で検出された bbox + label + confidence を重畳描画した JPEG を返す。緑 = top 候補、黄 = それ以下。
+
+```
+GET /frame.jpg?cam=wrist&annotate=last
+  → image/jpeg (annotated)、response header `X-Annotation: last`
+```
+
+annotated キャッシュが無い場合は素の frame を返す + `X-Annotation: none`。
+
+#### `/cameras` 拡張フィールド
+
+各 camera エントリに追加: `intrinsics_summary: {fx, fy, cx, cy}` / `is_open: bool` / `last_frame_age_ms: float|null` / `hand_eye_present: bool` / `calibrated_at: str|null` / `frame_size_actual: [w, h]|null`。
+
+#### 実機デバッグの典型フロー
+
+1. `OBJECT_NOT_FOUND` 等 → `error.diagnostics.frame_path` の JPEG を確認（実際に何が写っていたか）
+2. `error.diagnostics.vlm.vlm_raw_text` を確認（VLM が何と答えたか — parse 失敗 or 「該当なし」かを判別）
+3. 検出はあるが workspace 外 → `error.diagnostics.rejected[].localize.ray_dir_base` / `cos_normal` を確認、hand_eye の符号誤り or `table_z_mm` ドリフトを疑う
+4. `/frame.jpg?annotate=last` で前回検出の bbox を確認 — VLM の見え方と人間の認識を突き合わせる
+
 ## 12. 参考
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — 設計思想と内部構造

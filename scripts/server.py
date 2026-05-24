@@ -305,17 +305,23 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/frame.jpg":
                 q = parse_qs(urlparse(self.path).query)
                 cam_id_arg = q.get("cam", [None])[0]
+                annotate_arg = q.get("annotate", [None])[0]
                 buf = None
-                if cam_id_arg and VISION is not None:
-                    if cam_id_arg not in VISION.registry.cameras:
-                        self._json(404, {"error": f"unknown camera id: {cam_id_arg}",
+                annotation_status = "none"
+                target_cam_id = cam_id_arg
+                if target_cam_id is None and VISION is not None:
+                    target_cam_id = VISION.registry.default_cam_id()
+                if target_cam_id is not None and VISION is not None:
+                    if target_cam_id not in VISION.registry.cameras:
+                        self._json(404, {"error": f"unknown camera id: {target_cam_id}",
                                          "available": list(VISION.registry.cameras.keys())}); return
-                    buf = VISION.registry.get_jpeg(cam_id_arg)
-                elif VISION is not None:
-                    # default = wrist (back-compat)
-                    default_cam = VISION.registry.default_cam_id()
-                    if default_cam:
-                        buf = VISION.registry.get_jpeg(default_cam)
+                    if annotate_arg == "last":
+                        ann = VISION.get_last_annotated_jpeg(target_cam_id)
+                        if ann:
+                            buf = ann
+                            annotation_status = "last"
+                    if buf is None:
+                        buf = VISION.registry.get_jpeg(target_cam_id)
                 if not buf:
                     # legacy fallback to Hub's own frame_jpeg
                     buf = HUB.frame_jpeg()
@@ -324,6 +330,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Annotation", annotation_status)
                 self.send_header("Content-Length", str(len(buf)))
                 self.end_headers()
                 self.wfile.write(buf); return
@@ -679,6 +686,14 @@ class Handler(BaseHTTPRequestHandler):
                 consensus = bool(body.get("consensus", False))
                 refine = bool(body.get("refine", False))
                 allow_uncalibrated = bool(body.get("allow_uncalibrated", False))
+                # save_frame: body wins, query param "save_frame=true" also supported
+                save_frame_flag = bool(body.get("save_frame", False))
+                try:
+                    qs = parse_qs(urlparse(self.path).query)
+                    if qs.get("save_frame", [None])[0] in ("1", "true", "True"):
+                        save_frame_flag = True
+                except Exception:
+                    pass
                 angles = HUB.angles()
                 if angles is None:
                     self._json(503, {
@@ -701,6 +716,7 @@ class Handler(BaseHTTPRequestHandler):
                     consensus=consensus,
                     refine=refine,
                     allow_uncalibrated=allow_uncalibrated,
+                    save_frame=save_frame_flag,
                 )
                 self._json(200, result); return
 

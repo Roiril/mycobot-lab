@@ -22,10 +22,15 @@ from .vision.localizer import localize_on_table
 from .vision.transforms import (
     T_base_cam_wrist, invert, mat_mul, T_base_ee,
 )
+from .kinematics import end_effector
 from .constants import (
     FLOOR_Z, WORKSPACE_REACH_MAX_MM, WORKSPACE_Z_MAX_MM,
 )
 from . import poses as _poses
+
+
+PERCEIVE_LOG_DIR_NAME = "perceive_log"
+PERCEIVE_LOG_MAX_FILES = 200
 
 log = logging.getLogger("mycobot.vision_hub")
 
@@ -126,6 +131,10 @@ class VisionHub:
             self.detector = ClaudeVLMDetector()
         self.fixtures_path = fixtures_path
         self.offline = offline
+        # data/ root (sibling of calibration.json)
+        self._data_root = calibration_path.parent
+        # per-camera annotated JPEG cache, last successful perceive
+        self._last_annotated_jpeg: Dict[str, bytes] = {}
 
     def attach_motion_cap(self, cam_id: str, cap):
         self.registry.attach_capture(cam_id, cap)
@@ -147,6 +156,115 @@ class VisionHub:
         # fixed camera
         return cam.T_base_cam_fixed
 
+    # ------------------------------------------------------------------
+    # Observability helpers
+    # ------------------------------------------------------------------
+    def _now_iso(self) -> str:
+        # Asia/Tokyo (UTC+9). Avoid pulling zoneinfo on systems without tzdata.
+        return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).isoformat(timespec="seconds")
+
+    def _build_base_diagnostics(self,
+                                 angles_deg: Optional[Sequence[float]],
+                                 cameras_used: List[str]) -> Dict[str, Any]:
+        diag: Dict[str, Any] = {
+            "timestamp_iso": self._now_iso(),
+            "cameras_used": list(cameras_used),
+            "angles_at_capture": None,
+            "tip_at_capture": None,
+        }
+        if angles_deg is not None:
+            try:
+                diag["angles_at_capture"] = [float(a) for a in angles_deg]
+                tip = end_effector(list(angles_deg))
+                # FK returns 6-tuple (x,y,z,rx,ry,rz). Some FKs may return only xyz.
+                t = list(tip)
+                if len(t) >= 6:
+                    diag["tip_at_capture"] = {
+                        "xyz": [float(t[0]), float(t[1]), float(t[2])],
+                        "rpy": [float(t[3]), float(t[4]), float(t[5])],
+                    }
+                elif len(t) >= 3:
+                    diag["tip_at_capture"] = {
+                        "xyz": [float(t[0]), float(t[1]), float(t[2])],
+                        "rpy": None,
+                    }
+            except Exception:
+                log.exception("diagnostics: FK computation failed")
+        return diag
+
+    def _save_failure_frame(self,
+                             frame,
+                             cam_id: str,
+                             error_code: str) -> Optional[str]:
+        """Save the frame to data/perceive_log/ and return relative path on success."""
+        if frame is None:
+            return None
+        try:
+            log_dir = self._data_root / PERCEIVE_LOG_DIR_NAME
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+            fname = f"{ts}_{error_code}_{cam_id}.jpg"
+            fpath = log_dir / fname
+            import cv2
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok:
+                return None
+            with open(fpath, "wb") as f:
+                f.write(buf.tobytes())
+            self._rotate_perceive_log(log_dir)
+            try:
+                return str(fpath.relative_to(self._data_root.parent))
+            except Exception:
+                return str(fpath)
+        except Exception:
+            log.exception("perceive_log: save failed (cam=%s code=%s)", cam_id, error_code)
+            return None
+
+    def _rotate_perceive_log(self, log_dir: pathlib.Path):
+        try:
+            files = sorted(
+                [p for p in log_dir.iterdir() if p.is_file()],
+                key=lambda p: p.stat().st_mtime,
+            )
+            excess = len(files) - PERCEIVE_LOG_MAX_FILES
+            if excess > 0:
+                for p in files[:excess]:
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _render_annotated_jpeg(self,
+                                frame,
+                                ok_results: List[Dict[str, Any]]) -> Optional[bytes]:
+        """Draw bboxes + labels onto a copy of the frame and return JPEG bytes."""
+        try:
+            import cv2
+            import numpy as _np
+            disp = frame.copy()
+            for i, r in enumerate(ok_results):
+                bbox = r.get("bbox_px")
+                if not bbox or len(bbox) != 4:
+                    continue
+                x, y, w, h = [int(round(float(v))) for v in bbox]
+                color = (0, 200, 0) if i == 0 else (0, 220, 220)
+                cv2.rectangle(disp, (x, y), (x + w, y + h), color, 2)
+                label = f"{r.get('label', '?')} (conf={r.get('confidence', 0):.2f})"
+                cv2.putText(disp, label, (x, max(0, y - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+            ok2, buf = cv2.imencode(".jpg", disp, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok2:
+                return None
+            return buf.tobytes()
+        except Exception:
+            log.exception("annotate render failed")
+            return None
+
+    def get_last_annotated_jpeg(self, cam_id: str) -> Optional[bytes]:
+        return self._last_annotated_jpeg.get(cam_id)
+
     def perceive(self,
                  query: str,
                  cameras: Optional[List[str]] = None,
@@ -155,7 +273,8 @@ class VisionHub:
                  angles_deg: Optional[Sequence[float]] = None,
                  consensus: bool = False,
                  refine: bool = False,
-                 allow_uncalibrated: bool = False) -> Dict[str, Any]:
+                 allow_uncalibrated: bool = False,
+                 save_frame: bool = False) -> Dict[str, Any]:
         """Run perception on the given cameras and return objects + meta.
 
         `angles_deg` is required for wrist cameras (caller supplies from motion_hub).
@@ -180,8 +299,63 @@ class VisionHub:
                 default = self.registry.default_cam_id()
                 cameras = [default] if default else []
 
+        # Seed top-level diagnostics — every return path merges these in.
+        base_diag = self._build_base_diagnostics(angles_deg, list(cameras))
+        # Per-object localize results echo and rejected list (filled below).
+        per_object_localize: List[Dict[str, Any]] = []
+        rejected_localize: List[Dict[str, Any]] = []
+        last_frame_for_save = None
+        last_cam_id_for_save = None
+
+        def _attach_warnings(resp: Dict[str, Any]) -> Dict[str, Any]:
+            # Append any frame-size-mismatch warnings produced by the cameras used.
+            for cid in base_diag.get("cameras_used", []):
+                _c = self.registry.get(cid)
+                if _c is None or _c.frame_size_actual is None:
+                    continue
+                dw, dh = _c.resolution
+                aw, ah = _c.frame_size_actual
+                if (int(dw), int(dh)) != (int(aw), int(ah)):
+                    msg = (f"frame_size_mismatch[{cid}]: declared={dw}x{dh}, "
+                           f"actual={aw}x{ah}; pixel-to-ray will be inaccurate")
+                    if msg not in resp.get("warnings", []):
+                        resp.setdefault("warnings", []).append(msg)
+            return resp
+
+        def _finish_error(resp: Dict[str, Any], error_code: str) -> Dict[str, Any]:
+            # Merge top-level diagnostics into error.diagnostics (preserve existing keys).
+            err = resp.get("error", {})
+            edx = err.get("diagnostics") or {}
+            for k, v in base_diag.items():
+                edx.setdefault(k, v)
+            if per_object_localize:
+                edx.setdefault("objects", per_object_localize)
+            if rejected_localize:
+                edx.setdefault("rejected", rejected_localize)
+            # VLM diagnostics echo
+            try:
+                vlm_diag = dict(getattr(self.detector, "last_call_diagnostics", {}) or {})
+                if vlm_diag:
+                    edx.setdefault("vlm", vlm_diag)
+            except Exception:
+                pass
+            # save failure frame (best-effort)
+            frame_path = None
+            if last_frame_for_save is not None:
+                frame_path = self._save_failure_frame(
+                    last_frame_for_save,
+                    last_cam_id_for_save or "unknown",
+                    error_code,
+                )
+            if frame_path:
+                edx["frame_path"] = frame_path
+            err["diagnostics"] = edx
+            resp["error"] = err
+            resp.setdefault("warnings", warnings)
+            return _attach_warnings(resp)
+
         if not cameras:
-            return {
+            return _finish_error({
                 "ok": False,
                 "error": {
                     "code": "CALIBRATION_MISSING",
@@ -195,7 +369,7 @@ class VisionHub:
                     ],
                 },
                 "warnings": warnings,
-            }
+            }, "CALIBRATION_MISSING")
 
         # Determine if any selected camera is fully calibrated (non-placeholder).
         # If not, and caller did not allow_uncalibrated, return a dedicated terminal error.
@@ -206,7 +380,7 @@ class VisionHub:
             for cid in cameras
         )
         if not has_fully_calibrated and not allow_uncalibrated:
-            return {
+            return _finish_error({
                 "ok": False,
                 "error": {
                     "code": "CALIBRATION_PLACEHOLDER_ONLY",
@@ -226,7 +400,7 @@ class VisionHub:
                     ],
                 },
                 "warnings": warnings,
-            }
+            }, "CALIBRATION_PLACEHOLDER_ONLY")
 
         all_results: List[Dict[str, Any]] = []
         vlm_latency_ms = 0.0
@@ -246,6 +420,9 @@ class VisionHub:
             if frame is None:
                 skipped_reasons.append(f"{cam_id}: frame unavailable")
                 continue
+            # Track most recent (cam, frame) pair so error returns can save it.
+            last_frame_for_save = frame
+            last_cam_id_for_save = cam_id
             fh, fw = frame.shape[:2]
             T_cam_base = invert(T_base_cam)
             # Note: `scale_to_orig` is intentionally NOT supplied here. The detector
@@ -271,7 +448,7 @@ class VisionHub:
                     terminal = True
                 if not self._api_key_present():
                     terminal = True
-                return {
+                return _finish_error({
                     "ok": False,
                     "error": {
                         "code": "VLM_API_ERROR",
@@ -286,7 +463,7 @@ class VisionHub:
                         ],
                     },
                     "warnings": warnings,
-                }
+                }, "VLM_API_ERROR")
             # collect per-detection latency
             for d in detections:
                 vlm_latency_ms = max(vlm_latency_ms, float(d.extras.get("detect_ms", 0.0)))
@@ -318,6 +495,14 @@ class VisionHub:
                      "estimated_size_class": det.estimated_size_class},
                     cam, T_base_cam, table_z_mm=self.registry.table_z_mm,
                 )
+                # Echo localize intermediate values for observability (success or fail).
+                localize_echo = {
+                    "label": det.label,
+                    "source_cam": cam_id,
+                    "bbox_px": list(det.bbox_px),
+                    "localize": dict(loc),
+                }
+                per_object_localize.append(localize_echo)
                 if "error" in loc:
                     err_code = loc["error"]
                     # Map BBOX_OUT_OF_FRAME / BBOX_INVALID into occluded status so
@@ -351,6 +536,12 @@ class VisionHub:
                              or wz > WORKSPACE_Z_MAX_MM)
                 if out_of_ws:
                     out_of_workspace_count += 1
+                    rejected_localize.append({
+                        "reason": "out_of_workspace",
+                        "label": det.label, "source_cam": cam_id,
+                        "world_xyz_mm": [wx, wy, wz],
+                        "localize": dict(loc),
+                    })
                     all_results.append({
                         "label": det.label,
                         "world_xyz_mm": [round(wx, 1), round(wy, 1), round(wz, 1)],
@@ -398,7 +589,7 @@ class VisionHub:
         elapsed_ms = (time.time() - t_start) * 1000.0
 
         if not all_results:
-            return {
+            return _finish_error({
                 "ok": False,
                 "error": {
                     "code": "OBJECT_NOT_FOUND",
@@ -417,10 +608,10 @@ class VisionHub:
                 "vlm_latency_ms": round(vlm_latency_ms, 1),
                 "elapsed_ms": round(elapsed_ms, 1),
                 "warnings": warnings,
-            }
+            }, "OBJECT_NOT_FOUND")
 
         if not ok_results and occluded:
-            return {
+            return _finish_error({
                 "ok": False,
                 "error": {
                     "code": "OCCLUDED",
@@ -436,10 +627,10 @@ class VisionHub:
                 "vlm_latency_ms": round(vlm_latency_ms, 1),
                 "elapsed_ms": round(elapsed_ms, 1),
                 "warnings": warnings,
-            }
+            }, "OCCLUDED")
 
         if not ok_results and oow_results:
-            return {
+            return _finish_error({
                 "ok": False,
                 "error": {
                     "code": "OUT_OF_WORKSPACE",
@@ -464,7 +655,7 @@ class VisionHub:
                 "vlm_latency_ms": round(vlm_latency_ms, 1),
                 "elapsed_ms": round(elapsed_ms, 1),
                 "warnings": warnings,
-            }
+            }, "OUT_OF_WORKSPACE")
 
         # rank by confidence
         ok_results.sort(key=lambda r: r["confidence"], reverse=True)
@@ -475,7 +666,7 @@ class VisionHub:
             top2 = ok_results[1]
             if top["confidence"] > confidence_threshold and top2["confidence"] > confidence_threshold:
                 if top["confidence"] - top2["confidence"] < AMBIGUITY_DELTA:
-                    return {
+                    return _finish_error({
                         "ok": False,
                         "error": {
                             "code": "MULTIPLE_AMBIGUOUS",
@@ -492,11 +683,11 @@ class VisionHub:
                         "vlm_latency_ms": round(vlm_latency_ms, 1),
                         "elapsed_ms": round(elapsed_ms, 1),
                         "warnings": warnings,
-                    }
+                    }, "MULTIPLE_AMBIGUOUS")
 
         # confidence threshold check
         if top["confidence"] < confidence_threshold:
-            return {
+            return _finish_error({
                 "ok": False,
                 "error": {
                     "code": "LOW_CONFIDENCE",
@@ -514,11 +705,11 @@ class VisionHub:
                 "vlm_latency_ms": round(vlm_latency_ms, 1),
                 "elapsed_ms": round(elapsed_ms, 1),
                 "warnings": warnings,
-            }
+            }, "LOW_CONFIDENCE")
 
         # depth check
         if top.get("depth_uncertainty_mm", 0) > DEPTH_UNCERTAINTY_LIMIT_MM:
-            return {
+            return _finish_error({
                 "ok": False,
                 "error": {
                     "code": "DEPTH_UNCERTAIN",
@@ -529,7 +720,7 @@ class VisionHub:
                 "vlm_latency_ms": round(vlm_latency_ms, 1),
                 "elapsed_ms": round(elapsed_ms, 1),
                 "warnings": warnings,
-            }
+            }, "DEPTH_UNCERTAIN")
 
         # success — strip _status / private diags, populate recommended_speed
         clean = []
@@ -537,11 +728,35 @@ class VisionHub:
             r2 = {k: v for k, v in r.items() if not k.startswith("_")}
             clean.append(r2)
 
-        diagnostics = {}
+        diagnostics = dict(base_diag)
         if out_of_workspace_count > 0:
             diagnostics["out_of_workspace_excluded"] = out_of_workspace_count
+        if per_object_localize:
+            diagnostics["objects"] = per_object_localize
+        if rejected_localize:
+            diagnostics["rejected"] = rejected_localize
+        try:
+            vlm_diag = dict(getattr(self.detector, "last_call_diagnostics", {}) or {})
+            if vlm_diag:
+                diagnostics["vlm"] = vlm_diag
+        except Exception:
+            pass
 
-        return {
+        # Annotated JPEG cache (one per cam_id that produced ok_results)
+        if last_frame_for_save is not None and last_cam_id_for_save is not None:
+            ann = self._render_annotated_jpeg(last_frame_for_save, clean)
+            if ann:
+                self._last_annotated_jpeg[last_cam_id_for_save] = ann
+
+        # Optional success-time frame save (explicit opt-in only).
+        if save_frame and last_frame_for_save is not None:
+            fp = self._save_failure_frame(last_frame_for_save,
+                                           last_cam_id_for_save or "unknown",
+                                           "ok")
+            if fp:
+                diagnostics["frame_path"] = fp
+
+        resp = {
             "ok": True,
             "objects": clean,
             "vlm_latency_ms": round(vlm_latency_ms, 1),
@@ -551,6 +766,7 @@ class VisionHub:
             "warnings": warnings,
             "diagnostics": diagnostics,
         }
+        return _attach_warnings(resp)
 
     def shutdown(self):
         try:
