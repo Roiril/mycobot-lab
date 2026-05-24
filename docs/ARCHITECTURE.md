@@ -314,9 +314,86 @@ precedence ルール：
 - **gripper actuation は未実装**：Phase 3。`grasp` は approach + lift のみで、tip は object surface + clearance で停止する。
 - **接近方向は top-down のみ**：`/grasp_sequence` は approach="+z" 固定。横/前は将来拡張。
 
-## 9. 参考
+## 9. Vision Stack (Phase 1)
 
-- [AGENT_API.md](AGENT_API.md) — AI エージェント向け API リファレンス
+read-only な視覚層。motion 層とは独立、`Hub` には触らず `angles()` のみ参照。
+
+### 9.1 レイヤ図
+
+```
+                 ┌── transforms.py ──┐
+                 │  (pure SE(3))     │
+                 │                   │
+camera.py        ▼                   ▼
+(VideoCapture) ─→ Camera ──→ T_base_cam ──→ localizer.py
+                                          │  (pixel→ray→plane)
+                                          ▼
+detector.py ──→ Detection[] ──────────→ LocalizedObject
+(VLM / Fixture)                          │
+                                         ▼
+                                    vision_hub.py
+                                    (perceive())
+                                         │
+                                    server.py
+                                    /perceive /cameras /frame.jpg?cam
+```
+
+すべて pure 関数 (transforms / localizer) + interface (Detector ABC) で構成され、numpy 以外の外部依存は最小。`ClaudeVLMDetector` だけが `anthropic` SDK を必要とする。
+
+### 9.2 Detector ABC の交換可能性
+
+```python
+class Detector(abc.ABC):
+    def detect(self, frame: np.ndarray, query: str, image_meta: dict) -> list[Detection]: ...
+```
+
+Phase 1 は 2 実装：
+- `ClaudeVLMDetector` — 本番、Anthropic vision API、JSON 強制プロンプト
+- `FixtureDetector` — offline、`data/fixtures/objects.json` から逆投影で bbox 生成
+
+Phase 2 候補：YOLO / SAM / 自前 fine-tune。同じ ABC で差し替え可能。
+
+### 9.3 Calibration data flow
+
+```
+data/calibration.json (commit, Phase 1 は placeholder)
+        │
+        ▼
+CameraRegistry._load()
+        │   {Camera id, K, dist, hand_eye_T_ee_cam / T_base_cam, resolution}
+        ▼
+perceive()
+   for each camera:
+        T_base_cam = T_base_ee(angles) @ hand_eye_T_ee_cam    (wrist)
+                    | T_base_cam_fixed                          (overhead/side)
+        frame = registry.get_frame(cam_id)
+        detections = detector.detect(frame, query, image_meta)
+        for each detection:
+            world_xyz = localize_on_table(det, cam, T_base_cam, table_z)
+```
+
+`scripts/calibrate_intrinsics.py` がチェッカーボード画像から K, dist を計算して JSON を更新。hand-eye は Phase 1 では手測 (`--hand-eye x,y,z,rx,ry,rz`)。
+
+### 9.4 安全との関係
+
+`/perceive` は **motion を起こさない**ので CurrentMonitor 等の動作層は触らない。ただし perceive の結果が誤って `/grasp_sequence` に渡ると物理的事故になりうる。これを抑止する設計：
+
+- `recommended_speed` を response に同梱（confidence 別 5/10/20）
+- `depth_uncertainty_mm > 50` で構造化エラー（採用不可信号）
+- 把持系 endpoint は別途 `/solve_ik` で姿勢可否を確認する preview-then-commit を引き続き要求
+
+### 9.5 ロードマップ
+
+| Phase | スコープ |
+|---|---|
+| **Phase 1 (current)** | VLM 検出 + 平面投影 + placeholder calibration + offline fixture + intrinsics 校正 CLI |
+| Phase 2 | ChArUco hand-eye 自動校正 / consensus (2-shot 一致) / refine (zoom-in 再撮影) / 複数カメラ統合 / overhead カメラ |
+| Phase 3 | 物体追跡 / depth refinement (shape prior) / VLM の fine-tune 検討 |
+
+## 10. 参考
+
+- [AGENT_API.md](AGENT_API.md) — AI エージェント向け API リファレンス（§8 Vision API 含む）
 - [.agent/rules/safety.md](../.agent/rules/safety.md) — 物理動作の安全規約
 - [.agent/rules/connection-troubleshooting.md](../.agent/rules/connection-troubleshooting.md) — 接続トラブルシュート
+- [.agent/plans/2026-05-24_vision-phase1.md](../.agent/plans/2026-05-24_vision-phase1.md) — Vision Phase 1 実装記録
 - [CLAUDE.md](../CLAUDE.md) — プロジェクト規約とエージェント指示

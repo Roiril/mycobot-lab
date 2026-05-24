@@ -335,6 +335,106 @@ motion 全体の elapsed 目安：
 
 これを言語化できないなら、まだ `/solve_ik` で preview すべきタイミング。
 
+## 8. Vision API (Phase 1)
+
+視覚で物体を見つけて world 座標に投影する read-only API。motion を起こさないので動的安全性とは独立。
+
+### 8.1 エンドポイント
+
+| Path | Method | Returns |
+|---|---|---|
+| `/cameras` | GET | `{cameras:[{id,role,resolution,calibrated,placeholder}], workspace:{table_z_mm,table_z_uncertainty_mm}}` |
+| `/frame.jpg?cam=<id>` | GET | JPEG。`cam` 省略時は wrist（後方互換）。不明 id は 404 + JSON |
+| `/perceive` | POST | `{ok, objects?, error?, vlm_latency_ms, recommended_speed?}` |
+
+### 8.2 `/perceive` request / response
+
+**Request:**
+```jsonc
+{
+  "query": "コップ",                  // required
+  "cameras": ["wrist"],               // optional, default = 全 calibrated
+  "use_table_plane": true,            // optional, default true
+  "confidence_threshold": 0.5,        // optional, default 0.5
+  "consensus": false,                 // Phase 2 で実装、Phase 1 は受信のみ
+  "refine": false                     // Phase 2、Phase 1 は ignore
+}
+```
+
+**Success response:**
+```jsonc
+{
+  "ok": true,
+  "objects": [
+    {
+      "label": "コップ",
+      "world_xyz_mm": [200.0, 0.0, 30.0],
+      "radius_mm": 25.0,
+      "confidence": 0.83,
+      "depth_uncertainty_mm": 18.5,
+      "source_cam": "wrist",
+      "frame_id": "wrist_20260524_103045_123",
+      "bbox_px": [320, 240, 80, 80],
+      "estimated_size_class": "medium"
+    }
+  ],
+  "vlm_latency_ms": 1840.0,
+  "elapsed_ms": 1920.5,
+  "recommended_speed": 20,             // confidence>=0.8→20, 0.5-0.8→10, <0.5→5
+  "consensus_used": false
+}
+```
+
+### 8.3 エラーコード
+
+`/solve_ik` と同じ `{code, message, diagnostics, retry_hints[]}` 構造化エラー：
+
+| Code | 意味 | 主な retry_hints |
+|---|---|---|
+| `OBJECT_NOT_FOUND` | detection 0 件 | observe_from_another_angle / narrow_query / use_different_camera |
+| `LOW_CONFIDENCE` | top 候補 confidence < threshold | observe_from_another_angle / lower_confidence_threshold |
+| `MULTIPLE_AMBIGUOUS` | top-2 差 < 0.15 かつ両者 > threshold | narrow_query / lower_confidence_threshold |
+| `OCCLUDED` | bbox 端 5% 内 or 面積 < 100px | observe_from_another_angle / zoom_in |
+| `DEPTH_UNCERTAIN` | depth_uncertainty > 50mm | observe_from_overhead / refine_with_known_object_height |
+| `VLM_API_ERROR` | Anthropic API 例外 | retry_after_delay / fallback_to_fixture |
+| `CALIBRATION_MISSING` | calibration.json 無し or 対象カメラ無し | configure_camera |
+
+各 hint は `{action, patch, rationale}` 構造で、`/solve_ik` の retry_hints と同じ運用：元 request に `patch` をマージして再 POST する。
+
+### 8.4 AI 呼出しシーケンス（grasp の前段）
+
+```jsonc
+// 1. 観察位置に移動（人間が事前に置いた observe_pose、または HOME）
+POST /move {angles: OBSERVE_ANGLES, speed: 25, expected_current: [...]}
+
+// 2. 視覚で物体を探す
+POST /perceive {query: "コップ", confidence_threshold: 0.6}
+→ {ok: true, objects: [{world_xyz_mm: [200,0,30], radius_mm: 25, ...}],
+   recommended_speed: 20}
+
+// 3. IK preview（把持姿勢で到達可確認）
+POST /solve_ik {
+  x: 200, y: 0, z: 30,
+  pose: {kind: "align_tool", approach: "+z"}
+}
+→ {ok: true, ikMode: "firmware", angles: [...]}
+
+// 4. 把持シーケンス（perceive の recommended_speed を採用）
+POST /grasp_sequence {
+  x: 200, y: 0, z: 30, radius: 25,
+  speed: 20,
+  expected_current: [...]
+}
+```
+
+### 8.5 注意 (Phase 1 制限)
+
+- **placeholder calibration**: `data/calibration.json` の初期値は仮値。intrinsics と hand_eye_T_ee_cam を `scripts/calibrate_intrinsics.py` で校正するまで、world_xyz_mm は信用できない（実機で +20-50mm ズレうる）。
+- **手首カメラ 1 台のみ**: overhead カメラ等は calibration.json に追加可能だが Phase 1 は wrist 推奨。
+- **VLM レイテンシ**: 1-3 秒。連続 perceive は避ける。
+- **consensus は未実装**: 2 回連続検出 + 一致確認は Phase 2。
+- **refine は未実装**: 検出後の zoom-in 再撮影は Phase 2。
+
 ## 12. 参考
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — 設計思想と内部構造

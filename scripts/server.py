@@ -37,6 +37,7 @@ from arm.path_cartesian import linear as cart_linear, lift_translate_lower  # no
 from arm.ik_path import plan_ik_path  # noqa: E402
 from arm.pose_resolver import resolve_pose  # noqa: E402
 from arm.hub import Hub, VirtualHub, HubBase  # noqa: E402
+from arm.vision_hub import VisionHub, VirtualVisionHub  # noqa: E402
 from arm.constants import (  # noqa: E402
     MAX_SPEED, DEFAULT_PORT, DEFAULT_CAM_INDEX, HOME_ANGLES,
     ANGLE_DRIFT_TOL, TOOL_LENGTH, FLOOR_Z, LINK_RADIUS, TABLE_MARGIN, FK_TOOL_SLOP,
@@ -52,6 +53,7 @@ from arm.constants import (  # noqa: E402
 log = logging.getLogger("mycobot.server")
 
 HUB: HubBase | None = None
+VISION: VisionHub | None = None
 INDEX_HTML = ""
 AUTH_TOKEN: str | None = None
 SHUTTING_DOWN = False
@@ -272,8 +274,33 @@ class Handler(BaseHTTPRequestHandler):
                 if len(a) != 6:
                     self._json(400, {"error": "angles must be 6 comma-separated values"}); return
                 self._json(200, {"joints": joint_positions(a), "tip": list(end_effector(a))}); return
+            if path == "/cameras":
+                if VISION is None:
+                    self._json(200, {"cameras": []}); return
+                self._json(200, {
+                    "cameras": VISION.registry.list(),
+                    "workspace": {
+                        "table_z_mm": VISION.registry.table_z_mm,
+                        "table_z_uncertainty_mm": VISION.registry.table_z_uncertainty_mm,
+                    },
+                }); return
             if path == "/frame.jpg":
-                buf = HUB.frame_jpeg()
+                q = parse_qs(urlparse(self.path).query)
+                cam_id_arg = q.get("cam", [None])[0]
+                buf = None
+                if cam_id_arg and VISION is not None:
+                    if cam_id_arg not in VISION.registry.cameras:
+                        self._json(404, {"error": f"unknown camera id: {cam_id_arg}",
+                                         "available": list(VISION.registry.cameras.keys())}); return
+                    buf = VISION.registry.get_jpeg(cam_id_arg)
+                elif VISION is not None:
+                    # default = wrist (back-compat)
+                    default_cam = VISION.registry.default_cam_id()
+                    if default_cam:
+                        buf = VISION.registry.get_jpeg(default_cam)
+                if not buf:
+                    # legacy fallback to Hub's own frame_jpeg
+                    buf = HUB.frame_jpeg()
                 if not buf:
                     self.send_response(503); self.end_headers(); return
                 self.send_response(200)
@@ -586,6 +613,50 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     HUB.motion_lock.release()
 
+            if path == "/perceive":
+                """Body: {query, cameras?, use_table_plane?, confidence_threshold?, consensus?, refine?}
+                Read-only — no motion. Returns localized objects in base coords.
+                """
+                if VISION is None:
+                    self._json(200, {
+                        "ok": False,
+                        "error": {
+                            "code": "CALIBRATION_MISSING",
+                            "message": "vision サブシステムが初期化されていない",
+                            "diagnostics": {},
+                            "retry_hints": [
+                                {"action": "configure_camera", "patch": None,
+                                 "rationale": "data/calibration.json を作成してサーバ再起動"},
+                            ],
+                        },
+                    }); return
+                query = str(body.get("query", "")).strip()
+                if not query:
+                    self._json(400, {"error": "query (string) required"}); return
+                cameras = body.get("cameras")
+                if cameras is not None and not isinstance(cameras, list):
+                    self._json(400, {"error": "cameras must be a list of camera ids"}); return
+                use_plane = bool(body.get("use_table_plane", True))
+                try:
+                    conf_thresh = float(body.get("confidence_threshold", 0.5))
+                except (TypeError, ValueError):
+                    self._json(400, {"error": "confidence_threshold not numeric"}); return
+                if not 0.0 <= conf_thresh <= 1.0:
+                    self._json(400, {"error": "confidence_threshold must be 0..1"}); return
+                consensus = bool(body.get("consensus", False))
+                # refine is ignored in Phase 1 (Phase 2)
+                angles = HUB.angles()
+                if angles is None:
+                    self._json(503, {"error": "current angles unavailable (servo readback)"}); return
+                result = VISION.perceive(
+                    query=query, cameras=cameras,
+                    use_table_plane=use_plane,
+                    confidence_threshold=conf_thresh,
+                    angles_deg=angles,
+                    consensus=consensus,
+                )
+                self._json(200, result); return
+
             if path == "/abort":
                 HUB.abort_flag.set()
                 self._json(200, {"ok": True}); return
@@ -660,6 +731,25 @@ def main():
         _c.CURRENT_THRESHOLD_MA = SAFE_MODE_CURRENT_MA
 
     HUB = VirtualHub() if args.offline else Hub(cam_index=args.cam)
+
+    # Initialize vision subsystem (Phase 1). Tolerate missing calibration — endpoints will
+    # return structured CALIBRATION_MISSING errors instead of crashing the server.
+    calib_path = ROOT / "data" / "calibration.json"
+    fixtures_path = ROOT / "data" / "fixtures" / "objects.json"
+    try:
+        if args.offline:
+            VISION = VirtualVisionHub(calibration_path=calib_path, fixtures_path=fixtures_path)
+        else:
+            VISION = VisionHub(calibration_path=calib_path, fixtures_path=fixtures_path, offline=False)
+            # Reuse the motion Hub's already-opened wrist VideoCapture so we don't fight over /dev/video0.
+            wrist_cam_id = VISION.registry.default_cam_id()
+            if wrist_cam_id is not None and getattr(HUB, "cap", None) is not None:
+                VISION.attach_motion_cap(wrist_cam_id, HUB.cap)
+        log.info("vision initialized: cameras=%s", [c["id"] for c in VISION.registry.list()])
+    except Exception as e:
+        log.warning("vision init failed (continuing without): %s", e)
+        VISION = None
+
     INDEX_HTML = (ROOT / "scripts" / "ui.html").read_text(encoding="utf-8")
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     mode = "OFFLINE" if args.offline else "live"
@@ -681,6 +771,11 @@ def main():
         else:
             print("motion did not finish in time; skipping home")
         srv.shutdown()
+        try:
+            if VISION is not None:
+                VISION.shutdown()
+        except Exception as e:
+            print(f"vision shutdown failed: {e}")
         HUB.shutdown()
 
 

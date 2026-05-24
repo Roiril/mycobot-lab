@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "_comment": "Phase 1 placeholder calibration. Replace with real values from scripts/calibrate_intrinsics.py (intrinsics) and a future Phase 2 hand-eye calibration script.",
+  "cameras": {
+    "wrist": {
+      "index": 0,
+      "role": "wrist",
+      "resolution": [640, 480],
+      "intrinsics": {
+        "K": [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
+        "dist": [0.0, 0.0, 0.0, 0.0, 0.0]
+      },
+      "hand_eye_T_ee_cam": [
+        [1.0, 0.0, 0.0, 30.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0]
+      ],
+      "calibrated_at": "2026-05-24T00:00:00Z",
+      "placeholder": true
+    }
+  },
+  "workspace": {
+    "table_z_mm": 0.0,
+    "table_z_uncertainty_mm": 5.0
+  }
+}

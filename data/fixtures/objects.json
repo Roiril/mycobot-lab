@@ -1,0 +1,29 @@
+{
+  "_comment": "Offline fixture objects for VirtualVisionHub. Each object appears when query matches its label or 'aliases'. Returned in world (base) coords.",
+  "objects": [
+    {
+      "label": "コップ",
+      "aliases": ["cup", "mug", "カップ"],
+      "world_xyz_mm": [200.0, 0.0, 30.0],
+      "radius_mm": 25.0,
+      "size_class": "medium",
+      "confidence": 0.85
+    },
+    {
+      "label": "ペン",
+      "aliases": ["pen", "ペンシル", "pencil"],
+      "world_xyz_mm": [180.0, 80.0, 10.0],
+      "radius_mm": 8.0,
+      "size_class": "small",
+      "confidence": 0.78
+    },
+    {
+      "label": "箱",
+      "aliases": ["box", "ボックス"],
+      "world_xyz_mm": [150.0, -60.0, 40.0],
+      "radius_mm": 45.0,
+      "size_class": "large",
+      "confidence": 0.92
+    }
+  ]
+}
