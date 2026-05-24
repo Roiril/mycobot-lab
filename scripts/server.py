@@ -759,6 +759,24 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     for s in specs:
                         resolve_label(s)
+                        # For point_at: use the extending-arm geometry (shoulder
+                        # lifted, elbow extended, J5 tilted to target elevation,
+                        # J6 set for upright camera). Hand-tuned, safety-clean.
+                        # Falls back to compact heuristic only if extending pose
+                        # somehow fails safety (shouldn't happen for typical
+                        # targets but kept as backstop).
+                        if s.get("kind") == "point_at" and "target_xyz" in s:
+                            ext_step = gestures_mod.point_at_extending(
+                                s["target_xyz"], label=s.get("label"),
+                            )
+                            from arm.safety import check_angles as _ck
+                            ok, msg, _bad = _ck(ext_step[0]["angles"])
+                            if ok:
+                                steps.extend(ext_step)
+                                if s.get("return_home", False):
+                                    steps.extend(gestures_mod.go_home())
+                                continue
+                            log.info("point_at extending pose unsafe (%s), falling back to compact", msg)
                         steps.extend(gestures_mod.build(s))
                         if s.get("return_home", False):
                             steps.extend(gestures_mod.go_home())

@@ -43,6 +43,60 @@ def bow(direction, *, depth_deg: float = 25.0, hold_s: float = 0.5) -> list:
     ]
 
 
+def point_at_extending(target_xyz, *, label: Optional[str] = None) -> list:
+    """Whole-arm pointing: shoulder lifts, elbow extends, J1 + J5 fine-tuned
+    so the tool z-axis points at the target, J6 keeps camera upright.
+
+    Algorithm: fix J2=-35, J3=-45, J4=0 (an obviously extended arm shape).
+    Search (J1, J5) over a coarse grid to minimize the angle between the
+    achieved tool z-axis and the line (flange → target). Returns the best pose.
+
+    Always safety-clean (the search space is bounded and J2/J3/J4 fixed are safe).
+    """
+    from .kinematics import link_frames
+    tx, ty, tz = float(target_xyz[0]), float(target_xyz[1]), float(target_xyz[2])
+    J2, J3, J4 = -35.0, -45.0, 0.0
+    # Initial J1 guess: target XY → arm forward. At J1=0 arm extends in -Y, so
+    # for world angle α, J1 ≈ α + 90.
+    alpha = math.degrees(math.atan2(ty, tx))
+    j1_init = max(-165.0, min(165.0, alpha + 90.0))
+
+    def align_error(j1, j5):
+        T = link_frames([j1, J2, J3, J4, j5, CAMERA_UPRIGHT_J6_DEG])[-1]
+        tz_v = (T[0][2], T[1][2], T[2][2])
+        fl = (T[0][3], T[1][3], T[2][3])
+        dx, dy, dz_ = tx - fl[0], ty - fl[1], tz - fl[2]
+        n = math.sqrt(dx*dx + dy*dy + dz_*dz_)
+        if n < 1.0: return 999.0
+        dot = (tz_v[0]*dx + tz_v[1]*dy + tz_v[2]*dz_) / n
+        dot = max(-1.0, min(1.0, dot))
+        return math.degrees(math.acos(dot))
+
+    # Coarse grid around initial guess, then refine
+    best = (align_error(j1_init, 0.0), j1_init, 0.0)
+    for j1 in [j1_init + d for d in (-40,-25,-15,-8,-4,0,4,8,15,25,40)]:
+        if not -165.0 <= j1 <= 165.0: continue
+        for j5 in range(-60, 61, 6):
+            e = align_error(j1, j5)
+            if e < best[0]: best = (e, j1, float(j5))
+    # Finer 2nd pass
+    _, j1c, j5c = best
+    for j1 in [j1c + d*0.5 for d in range(-8, 9)]:
+        if not -165.0 <= j1 <= 165.0: continue
+        for j5 in [j5c + d*0.5 for d in range(-8, 9)]:
+            if not -60.0 <= j5 <= 60.0: continue
+            e = align_error(j1, j5)
+            if e < best[0]: best = (e, j1, j5)
+    err, j1, j5 = best
+    pretty = (f"{label}に手を伸ばして指差し (誤差{err:.0f}°)"
+              if label else f"指差し ({tx:.0f},{ty:.0f},{tz:.0f}) 誤差{err:.0f}°")
+    return [{
+        "label": pretty,
+        "angles": [j1, J2, J3, J4, j5, CAMERA_UPRIGHT_J6_DEG],
+        "speed": 25, "pause_s": 0.8,
+    }]
+
+
 def point_at(target_xyz, *, j5_extend_deg: float = 0.0, label: Optional[str] = None) -> list:
     """Point the wrist toward a target XYZ in base coords.
 
