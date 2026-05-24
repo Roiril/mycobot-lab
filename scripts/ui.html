@@ -695,7 +695,10 @@ btnApply.onclick = async ()=>{
     const r = await fetch('/move',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({angles: state.target, speed, expected_current: state.current})});
     const j = await r.json();
-    if(j.error){ setStatus('NG: '+j.error,'err'); }
+    if(j.error){
+      setStatus('NG: '+j.error,'err');
+      highlightAbortJoint(j);
+    }
     else { setStatus(`到達 ${j.nWaypoints}wp / ${j.elapsed}s`, 'ok'); }
   }catch(e){ setStatus('送信失敗: '+e,'err'); }
   finally { setBusy(false); }
@@ -1006,6 +1009,21 @@ document.getElementById('btnGrasp').onclick = async ()=>{
 };
 
 function highlightAbortJoint(j){
+  // Stall detection (preferred — current-based monitor is unreliable on this firmware)
+  if(j.stall && j.stall.stuck_joints && j.stall.stuck_joints.length){
+    const stuck = j.stall.stuck_joints;
+    stuck.forEach(ji => {
+      const idx = ji - 1;
+      if(labels[idx]){
+        labels[idx].classList.add('bad');
+        setTimeout(()=>labels[idx].classList.remove('bad'), 6000);
+      }
+    });
+    const cur = j.stall.current, tgt = j.stall.target;
+    const detail = stuck.map(ji => `J${ji}=${cur[ji-1]}°≠${tgt[ji-1]}°`).join(', ');
+    setStatus(`衝突検知 (stall): ${detail}`, 'err');
+    return;
+  }
   if(j.peakJoint){
     const idx = j.peakJoint - 1;
     if(labels[idx]){ labels[idx].classList.add('bad'); setTimeout(()=>labels[idx].classList.remove('bad'), 5000); }

@@ -119,6 +119,7 @@ def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
     """
     import arm.constants as _c
     HUB.abort_flag.clear()
+    HUB.last_stall_info = None
     HUB.start_monitor()
     t0 = time.time()
     try:
@@ -130,15 +131,17 @@ def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
             reached, actual = HUB.send_angles_and_wait(final, speed)
             if not reached:
                 if HUB.abort_flag.is_set():
+                    stall = HUB.last_stall_info
                     triggered = HUB._monitor and HUB._monitor.triggered
-                    tag = "over-current" if triggered else "user"
-                    body = {"error": f"aborted ({tag})", "lastActual": actual}
+                    tag = "stall" if stall else ("over-current" if triggered else "user")
+                    body = {"error": f"aborted ({tag})", "lastActual": actual, "stall": stall}
                     if HUB._monitor:
                         body["currents"] = HUB._monitor.last_currents
                         body["peakJoint"] = HUB._monitor.peak_joint
                         body["peakValue"] = HUB._monitor.peak_value
                     return 499, body
-                return 503, {"error": "single-shot 到達タイムアウト", "lastActual": actual}
+                return 503, {"error": "single-shot 到達タイムアウト", "lastActual": actual,
+                             "stall": HUB.last_stall_info}
             peak = HUB._monitor.peak_currents if HUB._monitor else None
             return 200, {"angles": HUB.angles(), "elapsed": round(time.time() - t0, 2),
                          "peakCurrents": peak, "monitorEnabled": HUB.monitor_enabled,
@@ -146,9 +149,15 @@ def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
         # Chunked path (non-monotonic or single-shot disabled)
         for idx, wp in enumerate(joint_wps):
             if HUB.abort_flag.is_set():
+                stall = HUB.last_stall_info
                 triggered = HUB._monitor and HUB._monitor.triggered
-                tag = "over-current" if triggered else "user"
-                body = {"error": f"aborted ({tag})", "lastIndex": idx}
+                if stall:
+                    tag = "stall"
+                elif triggered:
+                    tag = "over-current"
+                else:
+                    tag = "user"
+                body = {"error": f"aborted ({tag})", "lastIndex": idx, "stall": stall}
                 if HUB._monitor:
                     body["currents"] = HUB._monitor.last_currents
                     body["peakJoint"] = HUB._monitor.peak_joint
@@ -156,7 +165,12 @@ def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
                 return 499, body
             reached, actual = HUB.send_angles_and_wait(wp, speed)
             if not reached:
-                return 503, {"error": f"waypoint {idx+1}/{len(joint_wps)} 到達タイムアウト", "lastActual": actual}
+                if HUB.abort_flag.is_set():
+                    stall = HUB.last_stall_info
+                    return 499, {"error": f"aborted ({'stall' if stall else 'user'})",
+                                 "lastIndex": idx, "lastActual": actual, "stall": stall}
+                return 503, {"error": f"waypoint {idx+1}/{len(joint_wps)} 到達タイムアウト",
+                             "lastActual": actual, "stall": HUB.last_stall_info}
         peak = HUB._monitor.peak_currents if HUB._monitor else None
         return 200, {"angles": HUB.angles(), "elapsed": round(time.time() - t0, 2),
                      "peakCurrents": peak, "monitorEnabled": HUB.monitor_enabled,
@@ -591,7 +605,30 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     err, cur, speed = _preflight(body)
                     if err: self._json(err.pop("code", 400), err); return
-                    waypoints, ok, msg, bad = plan_and_validate(cur, target)
+                    # Rescue mode: if the CURRENT pose itself is unsafe, the normal
+                    # plan_and_validate would block all motion. Allow bypass only when
+                    # explicitly requested AND the target itself passes safety AND the
+                    # target keeps every joint at LEAST as high (or higher) than now —
+                    # i.e. we only escape upward, never deeper.
+                    rescue = bool(body.get("rescue", False))
+                    if rescue:
+                        ok_t, msg_t, bad_t = check_angles(target)
+                        if not ok_t:
+                            self._json(422, {"error": f"rescue mode: 目標自体が NG: {msg_t}", "badJoints": bad_t}); return
+                        # Verify "monotonic safety improvement" by FK: every joint's z must
+                        # not decrease from current to target.
+                        from arm.kinematics import joint_positions
+                        cur_pts = joint_positions(cur); tgt_pts = joint_positions(target)
+                        for ji in range(1, 7):
+                            if tgt_pts[ji][2] < cur_pts[ji][2] - 5.0:  # 5mm tolerance
+                                self._json(422, {"error": f"rescue mode: J{ji} が下がる ({cur_pts[ji][2]:.0f}→{tgt_pts[ji][2]:.0f}mm) - 上向きの脱出のみ許可"}); return
+                        log.warning("RESCUE MODE move: cur=%s target=%s", cur, target)
+                        # Build path; do NOT run per-waypoint safety check
+                        from arm.planner import plan_joint_path
+                        waypoints = plan_joint_path(cur, target)
+                        ok, msg, bad = True, "rescue", []
+                    else:
+                        waypoints, ok, msg, bad = plan_and_validate(cur, target)
                     if not ok:
                         self._json(422, {"error": msg, "badJoints": bad, "nWaypoints": len(waypoints)}); return
                     code, resp = _execute_joint_waypoints(waypoints, speed)

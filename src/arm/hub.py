@@ -11,6 +11,7 @@ from typing import Optional, List, Tuple
 from .constants import (
     DEFAULT_CAM_INDEX, HOME_ANGLES,
     WAYPOINT_WAIT, WAYPOINT_TOLERANCE, WAYPOINT_TIMEOUT,
+    STALL_WINDOW_S, STALL_MIN_PROGRESS_DEG, STALL_GRACE_S, STALL_MIN_REMAINING_DEG,
 )
 from .planner import plan_and_validate
 from .current_monitor import CurrentMonitor
@@ -172,6 +173,7 @@ class Hub(HubBase):
         self._cam_warned = False
         self.monitor_enabled = True
         self._monitor = None
+        self.last_stall_info = None  # populated by send_angles_and_wait on stall detect
 
     def angles(self):
         with self.io_lock:
@@ -204,10 +206,17 @@ class Hub(HubBase):
         time.sleep(WAYPOINT_WAIT)
         t0 = time.time()
         power_check_cnt = 0
+        # Stall detection ring buffer: (timestamp, angles)
+        # When the arm hits something (table, self, joint limit, latched servo),
+        # angles stop progressing while the command is still pending. This is far
+        # more reliable than current monitoring (which doesn't reflect torque on
+        # this firmware — observed peak 24mA even when user pushes hard).
+        recent = []
+        # Track what triggered termination so callers (UI / abort handler) can show it
+        self.last_stall_info = None
         while time.time() - t0 < WAYPOINT_TIMEOUT:
             if self.abort_flag.is_set():
                 return False, self.angles()
-            # check power every ~500ms during the wait (catches mid-motion E-stop quickly)
             power_check_cnt += 1
             if power_check_cnt % 5 == 0 and not self.power_ok():
                 log.warning("power lost mid-motion → abort")
@@ -218,6 +227,37 @@ class Hub(HubBase):
                 time.sleep(0.1); continue
             if all(abs(c - a) <= WAYPOINT_TOLERANCE for c, a in zip(cur, angles)):
                 return True, cur
+            # stall detection: enough samples covering the window, max joint
+            # movement across the window < threshold, and we're still far from target
+            now = time.time()
+            recent.append((now, cur))
+            recent = [(t, a) for t, a in recent if now - t <= STALL_WINDOW_S]
+            elapsed = now - t0
+            if (elapsed >= STALL_GRACE_S
+                and len(recent) >= 4
+                and (now - recent[0][0]) >= STALL_WINDOW_S * 0.7):
+                # max range of each joint over window
+                max_move = max(
+                    max(a[j] for _, a in recent) - min(a[j] for _, a in recent)
+                    for j in range(6)
+                )
+                remaining = [abs(cur[j] - angles[j]) for j in range(6)]
+                far_from_target = any(r > STALL_MIN_REMAINING_DEG for r in remaining)
+                if max_move < STALL_MIN_PROGRESS_DEG and far_from_target:
+                    stuck = [j + 1 for j in range(6) if remaining[j] > STALL_MIN_REMAINING_DEG]
+                    msg = (f"motion stall: joints {stuck} stopped at {[round(cur[j-1],1) for j in stuck]}"
+                           f" (target {[round(angles[j-1],1) for j in stuck]}, max_move={max_move:.2f}°)")
+                    log.warning(msg)
+                    self.last_stall_info = {
+                        "stuck_joints": stuck,
+                        "current": [round(c, 2) for c in cur],
+                        "target":  [round(a, 2) for a in angles],
+                        "remaining_deg": [round(r, 2) for r in remaining],
+                        "max_move_in_window_deg": round(max_move, 2),
+                        "window_s": STALL_WINDOW_S,
+                    }
+                    self.abort_flag.set()
+                    return False, cur
             time.sleep(0.1)
         log.warning("waypoint readback timeout: target=%s actual=%s", angles, self.angles())
         return False, self.angles()

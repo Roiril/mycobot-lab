@@ -38,6 +38,15 @@ DEGENERATE_LINK_MM = 5.0    # below this length, skip a link in collision pairs
 # Set this when a gripper / tool is attached; 0 = bare flange.
 TOOL_LENGTH = 0.0
 
+# --- motion stall (collision/latch) detection ---
+# Replaces the dead current-based monitor: watches whether commanded joints
+# actually progress. When the arm hits something (table, self, joint limit, or
+# a latched servo), the angles stop changing — that's the signal.
+STALL_WINDOW_S = 0.8        # sliding window of angle readback (s)
+STALL_MIN_PROGRESS_DEG = 0.6 # max joint movement in window below which we call stall
+STALL_GRACE_S = 0.4         # initial grace period after send_angles (servo accel)
+STALL_MIN_REMAINING_DEG = 4.0 # only flag stall if any joint is still > N° from target
+
 # --- current / force monitoring ---
 # pymycobot.get_servo_currents() returns per-joint current in mA (range 0~3250 per official docs).
 # These defaults are conservative starting points; they MUST be calibrated empirically:
