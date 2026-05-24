@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -86,14 +87,20 @@ size_class の意味（物理サイズ・直径ベース）：
 """
 
 
-def _bgr_to_jpeg_b64(frame: np.ndarray, max_w: int = 640, quality: int = 85) -> tuple[str, int, int]:
-    """Return (base64_str, width, height) of JPEG-encoded frame, downscaled if needed."""
+def _bgr_to_jpeg_b64(frame: np.ndarray, max_w: int = 640, quality: int = 85):
+    """Return (base64_str, sent_w, sent_h, orig_w, orig_h) of JPEG-encoded frame.
+
+    The frame may be downscaled to fit within `max_w`. Both the sent size (what
+    the VLM sees and returns bboxes for) and the original size are returned so
+    the caller can compute the correct `scale_to_orig = orig_w / sent_w` and
+    map bboxes back to the original frame coordinates.
+    """
     try:
         import cv2
     except Exception as e:
         raise RuntimeError(f"cv2 unavailable: {e}")
-    h, w = frame.shape[:2]
-    scale = 1.0
+    orig_h, orig_w = frame.shape[:2]
+    h, w = orig_h, orig_w
     if w > max_w:
         scale = max_w / float(w)
         new_w = int(w * scale)
@@ -104,16 +111,20 @@ def _bgr_to_jpeg_b64(frame: np.ndarray, max_w: int = 640, quality: int = 85) -> 
     if not ok:
         raise RuntimeError("jpeg encode failed")
     b64 = base64.standard_b64encode(buf.tobytes()).decode("ascii")
-    return b64, w, h
+    return b64, w, h, orig_w, orig_h
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-    """Try strict JSON parse, then look for a top-level {...} block as fallback."""
+    """Try strict JSON parse, then look for a top-level {...} block as fallback.
+
+    `parse_constant=lambda c: None` is passed so NaN/Infinity (which the JSON
+    spec forbids but some VLM outputs include) become None instead of float NaN.
+    """
     if not text:
         return None
     text = text.strip()
     try:
-        return json.loads(text)
+        return json.loads(text, parse_constant=lambda c: None)
     except Exception:
         pass
     # find a brace-balanced JSON object
@@ -121,9 +132,35 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     if not m:
         return None
     try:
-        return json.loads(m.group(0))
+        return json.loads(m.group(0), parse_constant=lambda c: None)
     except Exception:
         return None
+
+
+def _validate_and_clamp_bbox(x: float, y: float, w: float, h: float,
+                             frame_w: int, frame_h: int):
+    """Reject malformed bboxes; clamp surviving ones to frame extent.
+
+    Returns (x, y, w, h) clamped, or None if the bbox should be skipped.
+    """
+    for v in (x, y, w, h):
+        if not math.isfinite(v):
+            return None
+    if w <= 0 or h <= 0:
+        return None
+    # bbox center
+    cx = x + w * 0.5
+    cy = y + h * 0.5
+    if cx < 0 or cx > frame_w or cy < 0 or cy > frame_h:
+        return None
+    # Clamp top-left into frame, then trim w/h so the box stays inside.
+    nx = max(0.0, min(float(frame_w), x))
+    ny = max(0.0, min(float(frame_h), y))
+    nw = max(0.0, min(float(frame_w) - nx, w + (x - nx)))
+    nh = max(0.0, min(float(frame_h) - ny, h + (y - ny)))
+    if nw <= 0 or nh <= 0:
+        return None
+    return (nx, ny, nw, nh)
 
 
 class ClaudeVLMDetector(Detector):
@@ -153,8 +190,10 @@ class ClaudeVLMDetector(Detector):
         except RuntimeError as e:
             log.warning("ClaudeVLMDetector unavailable: %s", e)
             raise
-        b64, w, h = _bgr_to_jpeg_b64(frame)
-        prompt = VLM_PROMPT_TEMPLATE.format(query=query, w=w, h=h)
+        b64, sent_w, sent_h, orig_w, orig_h = _bgr_to_jpeg_b64(frame)
+        # scale factor from VLM-sent image back to original frame
+        scale_to_orig = float(orig_w) / float(sent_w) if sent_w > 0 else 1.0
+        prompt = VLM_PROMPT_TEMPLATE.format(query=query, w=sent_w, h=sent_h)
         try:
             resp = client.messages.create(
                 model=self.model,
@@ -185,18 +224,32 @@ class ClaudeVLMDetector(Detector):
         latency_ms = (time.time() - t0) * 1000.0
         out: List[Detection] = []
         if not parsed or "objects" not in parsed:
-            log.warning("VLM returned unparseable response: %r", text[:300])
+            # Truncate to 200 chars to avoid leaking long noise (incl. any unexpected
+            # secret-like substrings) into upstream logs.
+            log.warning("VLM returned unparseable response (truncated): %r", text[:200])
             return out
-        scale = image_meta.get("scale_to_orig", 1.0)
         for obj in parsed.get("objects", []):
             try:
-                bbox = obj["bbox_px"]
-                if len(bbox) != 4:
+                bbox = obj.get("bbox_px")
+                if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
                     continue
                 # Rescale bbox from downscaled image back to original frame size
-                x, y, bw, bh = (float(bbox[0]) * scale, float(bbox[1]) * scale,
-                                float(bbox[2]) * scale, float(bbox[3]) * scale)
-                conf = float(obj.get("confidence", 0.0))
+                x = float(bbox[0]) * scale_to_orig
+                y = float(bbox[1]) * scale_to_orig
+                bw = float(bbox[2]) * scale_to_orig
+                bh = float(bbox[3]) * scale_to_orig
+                clamped = _validate_and_clamp_bbox(x, y, bw, bh, orig_w, orig_h)
+                if clamped is None:
+                    log.info("skipping invalid/out-of-frame bbox: %r", bbox)
+                    continue
+                x, y, bw, bh = clamped
+                conf_raw = obj.get("confidence", 0.0)
+                try:
+                    conf = float(conf_raw)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(conf):
+                    continue
                 sclass = obj.get("estimated_size_class", "medium")
                 if sclass not in SIZE_CLASSES:
                     sclass = "medium"

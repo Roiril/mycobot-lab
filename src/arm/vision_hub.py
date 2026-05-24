@@ -22,6 +22,10 @@ from .vision.localizer import localize_on_table
 from .vision.transforms import (
     T_base_cam_wrist, invert, mat_mul, T_base_ee,
 )
+from .constants import (
+    FLOOR_Z, WORKSPACE_REACH_MAX_MM, WORKSPACE_Z_MAX_MM,
+)
+from . import poses as _poses
 
 log = logging.getLogger("mycobot.vision_hub")
 
@@ -45,6 +49,49 @@ def _recommended_speed(confidence: float) -> int:
     if confidence >= CONFIDENCE_LOW:
         return 10
     return 5
+
+
+def _observe_move_patch(pose_angles, speed=20):
+    """Build a retry_hints `patch` payload that drives /move to an OBSERVE pose."""
+    return {"suggested_move": {"angles": list(pose_angles), "speed": int(speed)}}
+
+
+def _observe_retry_hints(reason: str):
+    """Concrete observe-from-another-angle hints with actual OBSERVE angles.
+
+    `reason` is one of: 'not_found' | 'occluded' | 'low_confidence' | 'depth_uncertain'.
+    Returns a list of {action, patch, rationale} dicts ordered most-promising first.
+    """
+    hints = []
+    if reason == "depth_uncertain":
+        hints.append({
+            "action": "observe_from_overhead",
+            "patch": _observe_move_patch(_poses.OBSERVE_HIGH, speed=20),
+            "rationale": "光線がテーブル法線に近いほど uncertainty が下がる。OBSERVE_HIGH で真上に近い視点へ",
+        })
+        hints.append({
+            "action": "refine_with_known_object_height",
+            "patch": None,
+            "rationale": "Phase 2: 物体形状仮定で平面交点を補正（未実装）",
+        })
+        return hints
+    # default reach / observe-from-another-angle set
+    hints.append({
+        "action": "observe_from_another_angle",
+        "patch": _observe_move_patch(_poses.OBSERVE_LEFT, speed=20),
+        "rationale": "OBSERVE_LEFT (base +30°) で左側面から再撮影",
+    })
+    hints.append({
+        "action": "observe_from_another_angle",
+        "patch": _observe_move_patch(_poses.OBSERVE_RIGHT, speed=20),
+        "rationale": "OBSERVE_RIGHT (base -30°) で右側面から再撮影",
+    })
+    hints.append({
+        "action": "observe_from_overhead",
+        "patch": _observe_move_patch(_poses.OBSERVE_HIGH, speed=20),
+        "rationale": "OBSERVE_HIGH の俯瞰視点で全体を捉える",
+    })
+    return hints
 
 
 def _bbox_occluded(bbox, frame_w, frame_h) -> bool:
@@ -83,6 +130,14 @@ class VisionHub:
     def attach_motion_cap(self, cam_id: str, cap):
         self.registry.attach_capture(cam_id, cap)
 
+    def _api_key_present(self) -> bool:
+        """True if the underlying detector has credentials. Only meaningful for
+        ClaudeVLMDetector — Fixture detector returns True (no auth needed)."""
+        det = getattr(self, "detector", None)
+        if isinstance(det, ClaudeVLMDetector):
+            return bool(getattr(det, "_api_key", None))
+        return True
+
     def _camera_pose(self, cam: Camera, angles_deg: Sequence[float]):
         """Return T_base_cam (4x4)."""
         if cam.role == "wrist":
@@ -98,14 +153,26 @@ class VisionHub:
                  use_table_plane: bool = True,
                  confidence_threshold: float = CONFIDENCE_LOW,
                  angles_deg: Optional[Sequence[float]] = None,
-                 consensus: bool = False) -> Dict[str, Any]:
+                 consensus: bool = False,
+                 refine: bool = False,
+                 allow_uncalibrated: bool = False) -> Dict[str, Any]:
         """Run perception on the given cameras and return objects + meta.
 
         `angles_deg` is required for wrist cameras (caller supplies from motion_hub).
         Returns a dict that the HTTP layer can serialize directly. Includes both
         success and structured-error branches (caller still wraps with `ok` flag).
+
+        `allow_uncalibrated=True` lets placeholder calibrations contribute results
+        (flagged with `uncalibrated: true` on each object). Default False — never
+        emit motion-bound coords from un-calibrated cameras unless caller opts in.
         """
         t_start = time.time()
+        # Phase 1: warn but ignore consensus/refine (still received by API)
+        warnings: List[str] = []
+        if consensus:
+            warnings.append("consensus not implemented in Phase 1 (ignored)")
+        if refine:
+            warnings.append("refine not implemented in Phase 1 (ignored)")
         # camera selection
         if cameras is None:
             cameras = [cid for cid, cam in self.registry.cameras.items() if cam.calibrated or cam.placeholder]
@@ -119,6 +186,7 @@ class VisionHub:
                 "error": {
                     "code": "CALIBRATION_MISSING",
                     "message": "登録カメラが無い (calibration.json 確認)",
+                    "terminal": True,
                     "diagnostics": {"calibration_path": str(self.registry.calibration_path)},
                     "retry_hints": [
                         {"action": "configure_camera",
@@ -126,11 +194,44 @@ class VisionHub:
                          "rationale": "data/calibration.json に少なくとも 1 台のカメラを定義し、 scripts/calibrate_intrinsics.py を実行"},
                     ],
                 },
+                "warnings": warnings,
+            }
+
+        # Determine if any selected camera is fully calibrated (non-placeholder).
+        # If not, and caller did not allow_uncalibrated, return a dedicated terminal error.
+        has_fully_calibrated = any(
+            (self.registry.get(cid) is not None
+             and self.registry.get(cid).calibrated
+             and not self.registry.get(cid).placeholder)
+            for cid in cameras
+        )
+        if not has_fully_calibrated and not allow_uncalibrated:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "CALIBRATION_PLACEHOLDER_ONLY",
+                    "message": "選択カメラはすべて placeholder calibration。world 座標を motion に流すには校正が必要",
+                    "terminal": True,
+                    "diagnostics": {
+                        "cameras_tried": list(cameras),
+                        "calibration_path": str(self.registry.calibration_path),
+                    },
+                    "retry_hints": [
+                        {"action": "run_calibration",
+                         "patch": None,
+                         "rationale": "scripts/calibrate_intrinsics.py で K, dist を更新し、placeholder=false にする"},
+                        {"action": "allow_uncalibrated_explicit",
+                         "patch": {"allow_uncalibrated": True},
+                         "rationale": "校正前でも仮の world 座標を受け取りたい場合（各 object に uncalibrated:true 付与）"},
+                    ],
+                },
+                "warnings": warnings,
             }
 
         all_results: List[Dict[str, Any]] = []
         vlm_latency_ms = 0.0
         skipped_reasons: List[str] = []
+        out_of_workspace_count = 0
 
         for cam_id in cameras:
             cam = self.registry.get(cam_id)
@@ -147,6 +248,8 @@ class VisionHub:
                 continue
             fh, fw = frame.shape[:2]
             T_cam_base = invert(T_base_cam)
+            # Note: `scale_to_orig` is intentionally NOT supplied here. The detector
+            # computes it from the actual downscale it applies to the frame.
             image_meta = {
                 "cam_id": cam_id,
                 "frame_w": fw,
@@ -154,24 +257,35 @@ class VisionHub:
                 "T_cam_base": T_cam_base,
                 "T_base_cam": T_base_cam,
                 "K": cam.intrinsics["K"],
-                "scale_to_orig": 1.0,
             }
             try:
                 detections = self.detector.detect(frame, query, image_meta)
             except Exception as e:
+                # Log full traceback server-side; do NOT leak repr(e) into response.
+                log.exception("detector raised on cam_id=%s", cam_id)
+                exc_name = type(e).__name__
+                # Heuristic: authentication errors from the anthropic SDK are terminal.
+                terminal = False
+                lname = exc_name.lower()
+                if "auth" in lname or "permission" in lname or "apikey" in lname:
+                    terminal = True
+                if not self._api_key_present():
+                    terminal = True
                 return {
                     "ok": False,
                     "error": {
                         "code": "VLM_API_ERROR",
-                        "message": f"detector error: {e}",
-                        "diagnostics": {"cam_id": cam_id},
+                        "message": f"VLM API failure: {exc_name}",
+                        "terminal": terminal,
+                        "diagnostics": {"cam_id": cam_id, "exception_type": exc_name},
                         "retry_hints": [
                             {"action": "retry_after_delay", "patch": None,
-                             "rationale": "API 一時障害の可能性。数秒待って再試行"},
+                             "rationale": "rate limit / network 一時障害なら数秒待って再試行 (terminal=true なら不可)"},
                             {"action": "fallback_to_fixture", "patch": None,
-                             "rationale": "ANTHROPIC_API_KEY 未設定または SDK 障害 — offline モードに切替"},
+                             "rationale": "ANTHROPIC_API_KEY 未設定または認証失敗 — offline モードに切替"},
                         ],
                     },
+                    "warnings": warnings,
                 }
             # collect per-detection latency
             for d in detections:
@@ -205,19 +319,65 @@ class VisionHub:
                     cam, T_base_cam, table_z_mm=self.registry.table_z_mm,
                 )
                 if "error" in loc:
+                    err_code = loc["error"]
+                    # Map BBOX_OUT_OF_FRAME / BBOX_INVALID into occluded status so
+                    # callers see a consistent retry path.
+                    if err_code in ("BBOX_OUT_OF_FRAME", "BBOX_INVALID"):
+                        all_results.append({
+                            "label": det.label, "bbox_px": list(det.bbox_px),
+                            "confidence": det.confidence,
+                            "estimated_size_class": det.estimated_size_class,
+                            "source_cam": cam_id, "frame_id": frame_id_str,
+                            "_status": "occluded",
+                        })
+                        continue
                     all_results.append({
                         "label": det.label, "bbox_px": list(det.bbox_px),
                         "confidence": det.confidence,
                         "estimated_size_class": det.estimated_size_class,
                         "source_cam": cam_id, "frame_id": frame_id_str,
-                        "_status": f"localize_failed:{loc['error']}",
+                        "_status": f"localize_failed:{err_code}",
                     })
                     continue
                 # workspace uncertainty adds to depth uncertainty
                 depth_unc = loc["depth_uncertainty_mm"] + self.registry.table_z_uncertainty_mm
-                all_results.append({
+                world = loc["xyz_base"]
+                wx, wy, wz = float(world[0]), float(world[1]), float(world[2])
+                # Workspace sanity check: reject anything outside arm reach cylinder
+                # or below FLOOR_Z (table_z<FLOOR_Z config drift) or above WORKSPACE_Z_MAX.
+                reach = (wx * wx + wy * wy) ** 0.5
+                out_of_ws = (reach > WORKSPACE_REACH_MAX_MM
+                             or wz < FLOOR_Z
+                             or wz > WORKSPACE_Z_MAX_MM)
+                if out_of_ws:
+                    out_of_workspace_count += 1
+                    all_results.append({
+                        "label": det.label,
+                        "world_xyz_mm": [round(wx, 1), round(wy, 1), round(wz, 1)],
+                        "radius_mm": round(loc["radius_mm"], 1),
+                        "confidence": round(det.confidence, 3),
+                        "depth_uncertainty_mm": round(depth_unc, 1),
+                        "source_cam": cam_id,
+                        "frame_id": frame_id_str,
+                        "bbox_px": [round(v, 1) for v in det.bbox_px],
+                        "estimated_size_class": det.estimated_size_class,
+                        "out_of_workspace": True,
+                        "uncalibrated": (cam.placeholder),
+                        "_status": "out_of_workspace",
+                        "_workspace_diag": {
+                            "reach_mm": round(reach, 1),
+                            "z_mm": round(wz, 1),
+                            "limits": {
+                                "reach_max_mm": WORKSPACE_REACH_MAX_MM,
+                                "z_min_mm": FLOOR_Z,
+                                "z_max_mm": WORKSPACE_Z_MAX_MM,
+                            },
+                        },
+                    })
+                    continue
+                entry = {
                     "label": det.label,
-                    "world_xyz_mm": [round(c, 1) for c in loc["xyz_base"]],
+                    "world_xyz_mm": [round(wx, 1), round(wy, 1), round(wz, 1)],
                     "radius_mm": round(loc["radius_mm"], 1),
                     "confidence": round(det.confidence, 3),
                     "depth_uncertainty_mm": round(depth_unc, 1),
@@ -226,10 +386,14 @@ class VisionHub:
                     "bbox_px": [round(v, 1) for v in det.bbox_px],
                     "estimated_size_class": det.estimated_size_class,
                     "_status": "ok",
-                })
+                }
+                if cam.placeholder:
+                    entry["uncalibrated"] = True
+                all_results.append(entry)
 
         ok_results = [r for r in all_results if r.get("_status") == "ok"]
         occluded = [r for r in all_results if r.get("_status") == "occluded"]
+        oow_results = [r for r in all_results if r.get("_status") == "out_of_workspace"]
 
         elapsed_ms = (time.time() - t_start) * 1000.0
 
@@ -240,18 +404,19 @@ class VisionHub:
                     "code": "OBJECT_NOT_FOUND",
                     "message": f"クエリ「{query}」に一致する物体が見つからない",
                     "diagnostics": {"cameras_tried": cameras, "skipped": skipped_reasons},
-                    "retry_hints": [
-                        {"action": "observe_from_another_angle", "patch": None,
-                         "rationale": "アームを別位置に動かして再撮影"},
-                        {"action": "narrow_query", "patch": None,
-                         "rationale": "クエリをより具体的に（色・形・大きさを追加）"},
-                        {"action": "use_different_camera",
-                         "patch": {"cameras": list(self.registry.cameras.keys())},
-                         "rationale": "別のカメラから観察"},
-                    ],
+                    "retry_hints": (
+                        _observe_retry_hints("not_found") + [
+                            {"action": "narrow_query", "patch": None,
+                             "rationale": "クエリをより具体的に（色・形・大きさを追加）"},
+                            {"action": "use_different_camera",
+                             "patch": {"cameras": list(self.registry.cameras.keys())},
+                             "rationale": "別のカメラから観察"},
+                        ]
+                    ),
                 },
                 "vlm_latency_ms": round(vlm_latency_ms, 1),
                 "elapsed_ms": round(elapsed_ms, 1),
+                "warnings": warnings,
             }
 
         if not ok_results and occluded:
@@ -261,15 +426,44 @@ class VisionHub:
                     "code": "OCCLUDED",
                     "message": "検出物体が画像端／極小サイズで信用できない",
                     "diagnostics": {"occluded_count": len(occluded), "sample": occluded[:3]},
-                    "retry_hints": [
-                        {"action": "observe_from_another_angle", "patch": None,
-                         "rationale": "物体が画面中央に来る位置へ移動"},
-                        {"action": "zoom_in", "patch": None,
-                         "rationale": "アームを近づけて再撮影 (Phase 2 で refine API 予定)"},
+                    "retry_hints": (
+                        _observe_retry_hints("occluded") + [
+                            {"action": "zoom_in", "patch": None,
+                             "rationale": "アームを近づけて再撮影 (Phase 2 で refine API 予定)"},
+                        ]
+                    ),
+                },
+                "vlm_latency_ms": round(vlm_latency_ms, 1),
+                "elapsed_ms": round(elapsed_ms, 1),
+                "warnings": warnings,
+            }
+
+        if not ok_results and oow_results:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "OUT_OF_WORKSPACE",
+                    "message": (
+                        f"検出物体 {len(oow_results)} 件すべて workspace 外 "
+                        f"(reach > {WORKSPACE_REACH_MAX_MM}mm or z 範囲外 [{FLOOR_Z}, {WORKSPACE_Z_MAX_MM}])"
+                    ),
+                    "diagnostics": {
+                        "out_of_workspace_count": len(oow_results),
+                        "sample": oow_results[:3],
+                        "limits": {
+                            "reach_max_mm": WORKSPACE_REACH_MAX_MM,
+                            "z_min_mm": FLOOR_Z,
+                            "z_max_mm": WORKSPACE_Z_MAX_MM,
+                        },
+                    },
+                    "retry_hints": _observe_retry_hints("not_found") + [
+                        {"action": "verify_calibration", "patch": None,
+                         "rationale": "world 座標が workspace 外 — hand-eye / intrinsics が誤っている可能性。calibration を再確認"},
                     ],
                 },
                 "vlm_latency_ms": round(vlm_latency_ms, 1),
                 "elapsed_ms": round(elapsed_ms, 1),
+                "warnings": warnings,
             }
 
         # rank by confidence
@@ -297,6 +491,7 @@ class VisionHub:
                         },
                         "vlm_latency_ms": round(vlm_latency_ms, 1),
                         "elapsed_ms": round(elapsed_ms, 1),
+                        "warnings": warnings,
                     }
 
         # confidence threshold check
@@ -307,16 +502,18 @@ class VisionHub:
                     "code": "LOW_CONFIDENCE",
                     "message": f"最良候補 confidence={top['confidence']:.2f} < threshold={confidence_threshold:.2f}",
                     "diagnostics": {"top": top, "all": ok_results[:3]},
-                    "retry_hints": [
-                        {"action": "observe_from_another_angle", "patch": None,
-                         "rationale": "より見える位置から再撮影"},
+                    # observe_from_another_angle first (best signal-improving action);
+                    # lower_confidence_threshold is a fallback that does NOT improve
+                    # detection quality — only relaxes the gate.
+                    "retry_hints": _observe_retry_hints("low_confidence") + [
                         {"action": "lower_confidence_threshold",
                          "patch": {"confidence_threshold": max(0.2, top["confidence"] - 0.05)},
-                         "rationale": "閾値を緩めて採用 (リスクは呼出側)"},
+                         "rationale": "fallback — 検出品質は改善しない、閾値を緩めるだけ。リスクは呼出側"},
                     ],
                 },
                 "vlm_latency_ms": round(vlm_latency_ms, 1),
                 "elapsed_ms": round(elapsed_ms, 1),
+                "warnings": warnings,
             }
 
         # depth check
@@ -327,22 +524,22 @@ class VisionHub:
                     "code": "DEPTH_UNCERTAIN",
                     "message": f"depth_uncertainty {top['depth_uncertainty_mm']:.1f}mm > {DEPTH_UNCERTAINTY_LIMIT_MM}mm",
                     "diagnostics": {"top": top},
-                    "retry_hints": [
-                        {"action": "observe_from_overhead", "patch": None,
-                         "rationale": "光線がテーブル法線に近いほど uncertainty が下がる。真上に近づける"},
-                        {"action": "refine_with_known_object_height", "patch": None,
-                         "rationale": "Phase 2: 物体形状仮定で平面交点を補正"},
-                    ],
+                    "retry_hints": _observe_retry_hints("depth_uncertain"),
                 },
                 "vlm_latency_ms": round(vlm_latency_ms, 1),
                 "elapsed_ms": round(elapsed_ms, 1),
+                "warnings": warnings,
             }
 
-        # success — strip _status, populate recommended_speed
+        # success — strip _status / private diags, populate recommended_speed
         clean = []
         for r in ok_results:
             r2 = {k: v for k, v in r.items() if not k.startswith("_")}
             clean.append(r2)
+
+        diagnostics = {}
+        if out_of_workspace_count > 0:
+            diagnostics["out_of_workspace_excluded"] = out_of_workspace_count
 
         return {
             "ok": True,
@@ -351,6 +548,8 @@ class VisionHub:
             "elapsed_ms": round(elapsed_ms, 1),
             "recommended_speed": _recommended_speed(top["confidence"]),
             "consensus_used": False,  # Phase 1: single-shot only
+            "warnings": warnings,
+            "diagnostics": diagnostics,
         }
 
     def shutdown(self):

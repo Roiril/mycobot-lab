@@ -144,8 +144,23 @@ def localize_on_table(detection: Dict[str, Any],
     """
     bbox = detection["bbox_px"]
     bx, by, bw, bh = bbox
+    # Defensive: skip non-finite bboxes or bboxes whose center is outside the
+    # image. We don't know frame_w/frame_h here, so we infer them from the
+    # camera's declared resolution as a coarse bound (best-effort guard).
+    for _v in (bx, by, bw, bh):
+        if not math.isfinite(_v):
+            return {"error": "BBOX_INVALID", "reason": "bbox 値が非有限"}
+    if bw <= 0 or bh <= 0:
+        return {"error": "BBOX_INVALID", "reason": "bbox 幅または高さが非正"}
     cu = bx + bw * 0.5
     cv = by + bh * 0.5
+    try:
+        fw, fh = camera.resolution
+        if not (0 <= cu <= fw and 0 <= cv <= fh):
+            return {"error": "BBOX_OUT_OF_FRAME",
+                    "reason": f"bbox center ({cu:.0f},{cv:.0f}) が画像範囲 ({fw}x{fh}) 外"}
+    except Exception:
+        pass
     K = camera.intrinsics["K"]
     dist = camera.intrinsics.get("dist", [0, 0, 0, 0, 0])
 

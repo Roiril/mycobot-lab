@@ -70,3 +70,11 @@ TARGET_RADIUS_MIN_MM = 5.0
 TARGET_RADIUS_MAX_MM = 60.0
 TARGET_RADIUS_DEFAULT_MM = 20.0
 GRIPPER_TIP_CLEARANCE_MM = 5.0    # extra margin above object surface when no gripper present
+
+# --- vision workspace sanity (base frame, mm) ---
+# Used by VisionHub.perceive() to reject localized objects that fall outside
+# the arm's plausible reach cylinder/box. Acts as a final safety net even if
+# the calibration is wrong.
+WORKSPACE_REACH_MAX_MM = 380.0    # sqrt(x²+y²) upper bound (≈ arm physical reach)
+WORKSPACE_Z_MAX_MM = 500.0        # upper Z bound for any perceived object
+# WORKSPACE_Z_MIN_MM is provided implicitly by FLOOR_Z above.

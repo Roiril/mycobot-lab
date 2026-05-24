@@ -142,12 +142,12 @@ class TestPerceive(unittest.TestCase):
                     "T_base_cam": T_base_cam
                 }
             },
-            "workspace": {"table_z_mm": 0.0, "table_z_uncertainty_mm": 1.0}
+            "workspace": {"table_z_mm": 50.0, "table_z_uncertainty_mm": 1.0}
         }
         with open(calib_path, "w", encoding="utf-8") as f:
             json.dump(calib, f)
         fixtures = {"objects": [
-            {"label": "コップ", "world_xyz_mm": [50, 30, 0],
+            {"label": "コップ", "world_xyz_mm": [50, 30, 50],
              "radius_mm": 25, "size_class": "medium", "confidence": 0.9}
         ]}
         with open(fixtures_path, "w", encoding="utf-8") as f:
@@ -156,7 +156,7 @@ class TestPerceive(unittest.TestCase):
         vh = VirtualVisionHub(calib_path, fixtures_path)
         # use a smaller fixture so depth_uncertainty (~ 2*radius / cos) stays below 50mm
         fixtures = {"objects": [
-            {"label": "コップ", "world_xyz_mm": [50, 30, 0],
+            {"label": "コップ", "world_xyz_mm": [50, 30, 50],
              "radius_mm": 10, "size_class": "small", "confidence": 0.9}
         ]}
         with open(fixtures_path, "w", encoding="utf-8") as f:
@@ -169,7 +169,7 @@ class TestPerceive(unittest.TestCase):
         # Round-trip should be within ~5mm
         self.assertAlmostEqual(obj["world_xyz_mm"][0], 50, delta=5)
         self.assertAlmostEqual(abs(obj["world_xyz_mm"][1]), 30, delta=5)
-        self.assertAlmostEqual(obj["world_xyz_mm"][2], 0, delta=2)
+        self.assertAlmostEqual(obj["world_xyz_mm"][2], 50, delta=2)
 
 
 if __name__ == "__main__":

@@ -345,7 +345,7 @@ motion 全体の elapsed 目安：
 |---|---|---|
 | `/cameras` | GET | `{cameras:[{id,role,resolution,calibrated,placeholder}], workspace:{table_z_mm,table_z_uncertainty_mm}}` |
 | `/frame.jpg?cam=<id>` | GET | JPEG。`cam` 省略時は wrist（後方互換）。不明 id は 404 + JSON |
-| `/perceive` | POST | `{ok, objects?, error?, vlm_latency_ms, recommended_speed?}` |
+| `/perceive` | POST | `{ok, objects?, error?, warnings, vlm_latency_ms, recommended_speed?}` |
 
 ### 8.2 `/perceive` request / response
 
@@ -356,8 +356,9 @@ motion 全体の elapsed 目安：
   "cameras": ["wrist"],               // optional, default = 全 calibrated
   "use_table_plane": true,            // optional, default true
   "confidence_threshold": 0.5,        // optional, default 0.5
-  "consensus": false,                 // Phase 2 で実装、Phase 1 は受信のみ
-  "refine": false                     // Phase 2、Phase 1 は ignore
+  "consensus": false,                 // Phase 2、Phase 1 は受信して warnings に通知して ignore
+  "refine": false,                    // Phase 2、Phase 1 は受信して warnings に通知して ignore
+  "allow_uncalibrated": false         // placeholder calibration からの world 座標を許容するか
 }
 ```
 
@@ -368,72 +369,153 @@ motion 全体の elapsed 目安：
   "objects": [
     {
       "label": "コップ",
-      "world_xyz_mm": [200.0, 0.0, 30.0],
-      "radius_mm": 25.0,
+      "world_xyz_mm": [200.0, 0.0, 50.0],   // base frame、/move_cartesian の x,y,z と同じ座標系
+      "radius_mm": 25.0,                    // /grasp_sequence の radius にそのまま渡せる
       "confidence": 0.83,
       "depth_uncertainty_mm": 18.5,
       "source_cam": "wrist",
       "frame_id": "wrist_20260524_103045_123",
       "bbox_px": [320, 240, 80, 80],
       "estimated_size_class": "medium"
+      // ("uncalibrated": true がつく場合は placeholder cam 由来 — motion に流すなら覚悟の上)
     }
   ],
   "vlm_latency_ms": 1840.0,
   "elapsed_ms": 1920.5,
-  "recommended_speed": 20,             // confidence>=0.8→20, 0.5-0.8→10, <0.5→5
-  "consensus_used": false
+  "recommended_speed": 20,                  // /move や /grasp_sequence の speed フィールドへそのまま渡す
+  "consensus_used": false,
+  "warnings": [],                            // Phase 1 で受け付けたが無視した flag を通知
+  "diagnostics": {"out_of_workspace_excluded": 0}
 }
 ```
+
+**重要な合意事項:**
+- `objects` は **confidence 降順** にソート済。`objects[0]` が推奨候補。
+- `world_xyz_mm` は **base frame**（`/move_cartesian` の x,y,z と同一座標系）。
+- `radius_mm` は `/grasp_sequence` の `radius` にそのまま渡せる。
+- `recommended_speed` は `/move` `/move_cartesian` `/grasp_sequence` の `speed` にそのまま渡せる。
+- `warnings` は Phase 1 で `consensus`/`refine` を投げた場合に通知される（ignore された旨）。
 
 ### 8.3 エラーコード
 
-`/solve_ik` と同じ `{code, message, diagnostics, retry_hints[]}` 構造化エラー：
+`/solve_ik` と同じ `{code, message, terminal?, diagnostics, retry_hints[]}` 構造化エラー：
 
-| Code | 意味 | 主な retry_hints |
+| Code | 意味 | terminal | 主な retry_hints |
+|---|---|---|---|
+| `OBJECT_NOT_FOUND` | detection 0 件 | false | observe_from_another_angle (LEFT/RIGHT/HIGH) / narrow_query / use_different_camera |
+| `LOW_CONFIDENCE` | top 候補 confidence < threshold | false | **observe_from_another_angle (1st)** / lower_confidence_threshold (fallback) |
+| `MULTIPLE_AMBIGUOUS` | top-2 差 < 0.15 かつ両者 > threshold | false | narrow_query / lower_confidence_threshold |
+| `OCCLUDED` | bbox 端 5% 内 or 面積 < 100px | false | observe_from_another_angle / zoom_in |
+| `DEPTH_UNCERTAIN` | depth_uncertainty > 50mm | false | observe_from_overhead (OBSERVE_HIGH) |
+| `OUT_OF_WORKSPACE` | localize 結果が reach > 380mm or z 範囲外 | false | observe_from_another_angle / verify_calibration |
+| `VLM_API_ERROR` | Anthropic API 例外（認証以外） | false | retry_after_delay / fallback_to_fixture |
+| `VLM_API_ERROR` (auth) | API key 不在 / 認証失敗 | **true** | （人間介入必要） |
+| `CALIBRATION_MISSING` | calibration.json 無し or 対象カメラ無し | **true** | configure_camera |
+| `CALIBRATION_PLACEHOLDER_ONLY` | 全カメラ placeholder のみ | **true** | run_calibration / allow_uncalibrated_explicit |
+| `BAD_REQUEST` | 入力検証エラー (型違反, 範囲外, 未知 camera id) | false | use_known_camera 等 |
+| `ANGLES_UNAVAILABLE` | サーボ readback 失敗 | false | retry_after_delay |
+
+**terminal フラグ**: `true` は再試行不能（人間介入必要）。`CALIBRATION_*` および認証失敗の `VLM_API_ERROR` がこれに該当。
+
+各 hint は `{action, patch, rationale}` 構造で、`/solve_ik` の retry_hints と同じ運用：元 request に `patch` をマージして再 POST する。**`patch` には具体的 angles まで含まれる** ので、AI はそれをそのまま `/move` に渡せる。
+
+### 8.4 信頼度バンドと採否
+
+| confidence | 推奨アクション |
+|---|---|
+| ≥ 0.8 | そのまま採用してよい (use directly) |
+| 0.5 - 0.8 | observe_from_another_angle で再確認、または人間に確認 |
+| < 0.5 | 採用しない (reject) — perceive 側で LOW_CONFIDENCE になるはず |
+
+### 8.5 OBSERVE 姿勢
+
+`src/arm/poses.py` で定義され、`/move` の `angles` にそのまま渡せる：
+
+| 名前 | angles | 用途 |
 |---|---|---|
-| `OBJECT_NOT_FOUND` | detection 0 件 | observe_from_another_angle / narrow_query / use_different_camera |
-| `LOW_CONFIDENCE` | top 候補 confidence < threshold | observe_from_another_angle / lower_confidence_threshold |
-| `MULTIPLE_AMBIGUOUS` | top-2 差 < 0.15 かつ両者 > threshold | narrow_query / lower_confidence_threshold |
-| `OCCLUDED` | bbox 端 5% 内 or 面積 < 100px | observe_from_another_angle / zoom_in |
-| `DEPTH_UNCERTAIN` | depth_uncertainty > 50mm | observe_from_overhead / refine_with_known_object_height |
-| `VLM_API_ERROR` | Anthropic API 例外 | retry_after_delay / fallback_to_fixture |
-| `CALIBRATION_MISSING` | calibration.json 無し or 対象カメラ無し | configure_camera |
+| `OBSERVE` | `[0, -30, -60, -30, 0, 0]` | 正面下方の標準観察姿勢 |
+| `OBSERVE_LEFT` | `[30, -30, -60, -30, 0, 0]` | base +30° 左側面から |
+| `OBSERVE_RIGHT` | `[-30, -30, -60, -30, 0, 0]` | base -30° 右側面から |
+| `OBSERVE_HIGH` | `[0, -10, -40, -40, 0, 0]` | より高い俯瞰視点（DEPTH_UNCERTAIN リカバリ） |
 
-各 hint は `{action, patch, rationale}` 構造で、`/solve_ik` の retry_hints と同じ運用：元 request に `patch` をマージして再 POST する。
+retry_hints の `patch.suggested_move.angles` は上記のいずれかが入る。
 
-### 8.4 AI 呼出しシーケンス（grasp の前段）
+### 8.6 AI 呼出しシーケンス（完全例）
 
 ```jsonc
-// 1. 観察位置に移動（人間が事前に置いた observe_pose、または HOME）
-POST /move {angles: OBSERVE_ANGLES, speed: 25, expected_current: [...]}
+// Step 0: 環境確認
+GET /cameras
+→ {cameras: [{id:"wrist", role:"wrist", calibrated:false, placeholder:true}],
+   workspace: {table_z_mm: 0, table_z_uncertainty_mm: 5}}
+// placeholder:true なら motion に流せない → 校正してから戻る、または allow_uncalibrated
 
-// 2. 視覚で物体を探す
-POST /perceive {query: "コップ", confidence_threshold: 0.6}
-→ {ok: true, objects: [{world_xyz_mm: [200,0,30], radius_mm: 25, ...}],
-   recommended_speed: 20}
+// Step 1: 観察姿勢へ
+POST /move {angles: [0,-30,-60,-30,0,0], speed: 20}   // poses.OBSERVE
 
-// 3. IK preview（把持姿勢で到達可確認）
-POST /solve_ik {
-  x: 200, y: 0, z: 30,
-  pose: {kind: "align_tool", approach: "+z"}
-}
-→ {ok: true, ikMode: "firmware", angles: [...]}
+// Step 2: 検出
+POST /perceive {query: "赤いコップ", confidence_threshold: 0.6}
+→ {ok: true,
+   objects: [
+     {label:"赤いコップ", world_xyz_mm:[200,0,50], radius_mm:25,
+      confidence:0.85, source_cam:"wrist", ...}
+   ],
+   recommended_speed: 20,
+   warnings: []}
 
-// 4. 把持シーケンス（perceive の recommended_speed を採用）
-POST /grasp_sequence {
-  x: 200, y: 0, z: 30, radius: 25,
-  speed: 20,
-  expected_current: [...]
-}
+// Step 3: 選択 (objects[0] is best — confidence 降順ソート済)
+const obj = result.objects[0];
+const [x, y, z] = obj.world_xyz_mm;
+const r = obj.radius_mm;
+const speed = result.recommended_speed;
+
+// Step 4a: reach (指差し)
+POST /solve_ik {x, y, z, pose: {kind: "extend_toward", target: [x, y, z]}}
+→ if ok: POST /move {angles: response.angles, speed}
+
+// Step 4b: grasp (把持)
+POST /grasp_sequence {x, y, z, radius: r, speed}
+→ {stages:["pre-grasp","approach","lift"], graspZ: z + r + 5, ...}
 ```
 
-### 8.5 注意 (Phase 1 制限)
+### 8.7 エラーからのリカバリ例
 
-- **placeholder calibration**: `data/calibration.json` の初期値は仮値。intrinsics と hand_eye_T_ee_cam を `scripts/calibrate_intrinsics.py` で校正するまで、world_xyz_mm は信用できない（実機で +20-50mm ズレうる）。
+```jsonc
+// 試行 1
+POST /perceive {query: "コップ"}
+→ {ok: false, error: {
+     code: "LOW_CONFIDENCE",
+     terminal: false,
+     retry_hints: [
+       {action: "observe_from_another_angle",
+        patch: {suggested_move: {angles: [30,-30,-60,-30,0,0], speed: 20}},
+        rationale: "OBSERVE_LEFT (base +30°) で左側面から再撮影"},
+       {action: "observe_from_another_angle",
+        patch: {suggested_move: {angles: [-30,-30,-60,-30,0,0], speed: 20}},
+        rationale: "OBSERVE_RIGHT ..."},
+       {action: "observe_from_overhead",
+        patch: {suggested_move: {angles: [0,-10,-40,-40,0,0], speed: 20}},
+        rationale: "OBSERVE_HIGH ..."},
+       {action: "lower_confidence_threshold",
+        patch: {confidence_threshold: 0.35},
+        rationale: "fallback — 検出品質は改善しない、閾値を緩めるだけ。リスクは呼出側"},
+     ]}}
+
+// 試行 2: retry_hints[0] を実行
+POST /move {angles: [30,-30,-60,-30,0,0], speed: 20}    // suggested_move そのまま
+POST /perceive {query: "コップ"}
+→ {ok: true, objects: [...]}
+```
+
+`terminal: true` のエラー (`CALIBRATION_*`, `VLM_API_ERROR` (auth)) は再試行せず人間にエスカレートする。
+
+### 8.8 注意 (Phase 1 制限)
+
+- **placeholder calibration**: `data/calibration.json` の初期値は仮値。intrinsics と hand_eye_T_ee_cam を `scripts/calibrate_intrinsics.py` で校正するまで、`/perceive` は `CALIBRATION_PLACEHOLDER_ONLY` で失敗する。校正前に試したい場合は `allow_uncalibrated: true` を明示（応答 object に `uncalibrated: true` フラグ付与、motion に流すかは呼出側の判断）。
 - **手首カメラ 1 台のみ**: overhead カメラ等は calibration.json に追加可能だが Phase 1 は wrist 推奨。
 - **VLM レイテンシ**: 1-3 秒。連続 perceive は避ける。
-- **consensus は未実装**: 2 回連続検出 + 一致確認は Phase 2。
-- **refine は未実装**: 検出後の zoom-in 再撮影は Phase 2。
+- **consensus は未実装**: 2 回連続検出 + 一致確認は Phase 2。Phase 1 では受信して `warnings` に通知、ignore。
+- **refine は未実装**: 検出後の zoom-in 再撮影は Phase 2。Phase 1 では受信して `warnings` に通知、ignore。
+- **workspace cube**: localize 結果が `reach > 380mm` または `z ∉ [FLOOR_Z, 500]` の object は除外。全部該当なら `OUT_OF_WORKSPACE`、一部のみなら除外して `diagnostics.out_of_workspace_excluded` で件数通知。
 
 ## 12. 参考
 

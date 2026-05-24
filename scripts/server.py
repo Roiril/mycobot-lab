@@ -48,6 +48,7 @@ from arm.constants import (  # noqa: E402
     GRASP_OFFSET_MIN_MM, GRASP_OFFSET_MAX_MM,
     TARGET_RADIUS_MIN_MM, TARGET_RADIUS_MAX_MM, TARGET_RADIUS_DEFAULT_MM,
     GRIPPER_TIP_CLEARANCE_MM,
+    WORKSPACE_REACH_MAX_MM, WORKSPACE_Z_MAX_MM,
 )
 
 log = logging.getLogger("mycobot.server")
@@ -173,6 +174,23 @@ def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles) -> dict:
             {"action": "retry_with_perturbed_seed", "patch": None,
              "rationale": "現在角度を少し動かしてから再試行"},
         ],
+    }
+
+
+def _bad_request(message: str, diagnostics: Optional[dict] = None, retry_hints: Optional[list] = None) -> dict:
+    """Structured BAD_REQUEST envelope used by /perceive input validation.
+
+    Matches the {ok:false, error:{code, message, diagnostics, retry_hints}} shape
+    that /solve_ik and vision_hub.perceive() return for non-input errors.
+    """
+    return {
+        "ok": False,
+        "error": {
+            "code": "BAD_REQUEST",
+            "message": message,
+            "diagnostics": diagnostics or {},
+            "retry_hints": retry_hints or [],
+        },
     }
 
 
@@ -623,6 +641,7 @@ class Handler(BaseHTTPRequestHandler):
                         "error": {
                             "code": "CALIBRATION_MISSING",
                             "message": "vision サブシステムが初期化されていない",
+                            "terminal": True,
                             "diagnostics": {},
                             "retry_hints": [
                                 {"action": "configure_camera", "patch": None,
@@ -632,28 +651,56 @@ class Handler(BaseHTTPRequestHandler):
                     }); return
                 query = str(body.get("query", "")).strip()
                 if not query:
-                    self._json(400, {"error": "query (string) required"}); return
+                    self._json(400, _bad_request("query (string) required",
+                                                 {"missing": "query"})); return
                 cameras = body.get("cameras")
                 if cameras is not None and not isinstance(cameras, list):
-                    self._json(400, {"error": "cameras must be a list of camera ids"}); return
+                    self._json(400, _bad_request("cameras must be a list of camera ids",
+                                                 {"got_type": type(cameras).__name__})); return
+                # Validate camera ids (if provided) are known
+                if isinstance(cameras, list) and VISION is not None:
+                    known = set(VISION.registry.cameras.keys())
+                    unknown = [c for c in cameras if c not in known]
+                    if unknown:
+                        self._json(400, _bad_request(
+                            f"unknown camera id(s): {unknown}",
+                            {"unknown": unknown, "available": sorted(known)},
+                            [{"action": "use_known_camera",
+                              "patch": {"cameras": sorted(known)},
+                              "rationale": "登録済みカメラのみ指定可"}])); return
                 use_plane = bool(body.get("use_table_plane", True))
                 try:
                     conf_thresh = float(body.get("confidence_threshold", 0.5))
                 except (TypeError, ValueError):
-                    self._json(400, {"error": "confidence_threshold not numeric"}); return
+                    self._json(400, _bad_request("confidence_threshold not numeric")); return
                 if not 0.0 <= conf_thresh <= 1.0:
-                    self._json(400, {"error": "confidence_threshold must be 0..1"}); return
+                    self._json(400, _bad_request("confidence_threshold must be 0..1",
+                                                 {"got": conf_thresh})); return
                 consensus = bool(body.get("consensus", False))
-                # refine is ignored in Phase 1 (Phase 2)
+                refine = bool(body.get("refine", False))
+                allow_uncalibrated = bool(body.get("allow_uncalibrated", False))
                 angles = HUB.angles()
                 if angles is None:
-                    self._json(503, {"error": "current angles unavailable (servo readback)"}); return
+                    self._json(503, {
+                        "ok": False,
+                        "error": {
+                            "code": "ANGLES_UNAVAILABLE",
+                            "message": "current angles unavailable (servo readback)",
+                            "diagnostics": {},
+                            "retry_hints": [
+                                {"action": "retry_after_delay", "patch": None,
+                                 "rationale": "サーボ readback 一時失敗。数秒待って再試行"},
+                            ],
+                        },
+                    }); return
                 result = VISION.perceive(
                     query=query, cameras=cameras,
                     use_table_plane=use_plane,
                     confidence_threshold=conf_thresh,
                     angles_deg=angles,
                     consensus=consensus,
+                    refine=refine,
+                    allow_uncalibrated=allow_uncalibrated,
                 )
                 self._json(200, result); return
 
@@ -686,6 +733,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
         except Exception as e:
             log.exception("POST %s failed", self.path)
+            # /perceive returns structured envelopes; others stay legacy {error: ...}.
+            try:
+                _path = urlparse(self.path).path
+            except Exception:
+                _path = ""
+            if _path == "/perceive":
+                self._json(400, _bad_request(
+                    f"request error: {type(e).__name__}",
+                    {"exception_type": type(e).__name__})); return
             self._json(400, {"error": str(e)})
 
 
@@ -746,6 +802,18 @@ def main():
             if wrist_cam_id is not None and getattr(HUB, "cap", None) is not None:
                 VISION.attach_motion_cap(wrist_cam_id, HUB.cap)
         log.info("vision initialized: cameras=%s", [c["id"] for c in VISION.registry.list()])
+        # Sanity warning: table_z below FLOOR_Z by > 50mm strongly suggests an
+        # un-updated placeholder workspace block in calibration.json.
+        try:
+            _tz = VISION.registry.table_z_mm
+            if _tz < FLOOR_Z - 50:
+                print(
+                    f"WARNING: data/calibration.json workspace.table_z_mm={_tz}mm は FLOOR_Z={FLOOR_Z}mm を大きく下回ります。"
+                    f" 実測値で更新してください（このままだとテーブル上の物体が床下と判定されます）",
+                    file=sys.stderr,
+                )
+        except Exception:
+            pass
     except Exception as e:
         log.warning("vision init failed (continuing without): %s", e)
         VISION = None

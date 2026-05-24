@@ -381,6 +381,10 @@ perceive()
 - `recommended_speed` を response に同梱（confidence 別 5/10/20）
 - `depth_uncertainty_mm > 50` で構造化エラー（採用不可信号）
 - 把持系 endpoint は別途 `/solve_ik` で姿勢可否を確認する preview-then-commit を引き続き要求
+- **placeholder calibration guard**: `Camera.placeholder=true` のカメラから出た world 座標は標準では motion 系に渡さない。`/perceive` は `CALIBRATION_PLACEHOLDER_ONLY` で拒否、`allow_uncalibrated: true` 明示時のみ通過させて各 object に `uncalibrated: true` フラグ付与
+- **workspace cube sanity**: `constants.WORKSPACE_REACH_MAX_MM` / `FLOOR_Z` / `WORKSPACE_Z_MAX_MM` の cube/cylinder 外の world 座標を除外。calibration が誤っていても motion を起こさない最後の安全網
+- **bbox サニタイズ**: detector は NaN/Inf bbox、負サイズ bbox、中心が画像外の bbox を skip。一部はみ出した bbox はフレーム内に clamp。`scale_to_orig` は detector 内部で downscale 比から算出（呼出側に責任を持たせない）
+- **VLM 例外 sanitize**: 例外 `repr()` を response に流さず、`type(e).__name__` のみ。スタックトレースは `logging.exception` でサーバログにのみ残す。`AuthenticationError` 等は `terminal: true` で 人間介入を要求
 
 ### 9.5 ロードマップ
 
