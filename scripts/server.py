@@ -412,15 +412,17 @@ class Handler(BaseHTTPRequestHandler):
                     "sustained_polls": SUSTAINED_OVER_COUNT,
                 }); return
             if path == "/workspace_data":
-                # Reach point cloud from the latest workspace probe (if any).
-                # Empty array if no probe has been run.
-                wp = ROOT / "data" / "workspace.json"
-                if not wp.exists():
-                    self._json(200, {"samples": [], "summary": None}); return
-                try:
-                    self._json(200, json.loads(wp.read_text(encoding="utf-8"))); return
-                except Exception as e:
-                    self._json(500, {"error": str(e)}); return
+                # Reach point cloud from probe runs. Returns both the dense
+                # IK-only envelope (workspace.json) and the motion-confirmed
+                # subset (workspace_motion.json) if present.
+                out = {"envelope": None, "motion": None}
+                for key, fname in [("envelope", "workspace.json"),
+                                   ("motion", "workspace_motion.json")]:
+                    f = ROOT / "data" / fname
+                    if f.exists():
+                        try: out[key] = json.loads(f.read_text(encoding="utf-8"))
+                        except Exception: pass
+                self._json(200, out); return
 
             if path == "/servo_diagnostics":
                 # Batched per-servo state for UI live monitoring.
