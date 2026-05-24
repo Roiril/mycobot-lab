@@ -103,3 +103,5 @@ LAN 公開する場合は `--bind 0.0.0.0 --token <secret>` 必須。
 - 起動直後に COM ポート番号が変わることがある（USB ハブ位置やケーブル抜き差しで）。スクリプトは `list_ports` で再検出するため固定書きしないこと。
 - Transponder に入ってもサーボ電源が入るとは限らない。`mc.power_on()` を明示的に呼ぶ。`is_power_on()` で確認。
 - `power_on()` の戻り値が -1 でも `is_power_on()` が 1 を返すケースあり（ACK 取りこぼし）— `is_power_on()` を真実とする。
+- **押下イベント後の servo latch**: ユーザーが手で押した直後、firmware overload protection で特定 servo が「enable=1 で電流 0 でも動かない」ラッチ状態になることがある。`clear_error_information()`, `focus_servo(n)`, `power_on()` どれも効かない。**復旧は M5 本体の電源ボタン再起動のみ**。詳細は [memory/mycobot_firmware_quirks.md](.claude/memory/mycobot_firmware_quirks.md)
+- `get_servo_currents()` は torque 反映の電流値ではない（押されても 24mA 止まり）。Python 側 CurrentMonitor は collision 検出器として実質機能しない — firmware 内蔵保護のほうが先に走る。

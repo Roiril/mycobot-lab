@@ -476,6 +476,35 @@ class Handler(BaseHTTPRequestHandler):
 
             body = self._read_body()
 
+            if path == "/focus_servo":
+                # Re-focus a single servo (1..6). Use when a specific joint is
+                # stuck after firmware protection (push event).
+                arm = getattr(HUB, "arm", None)
+                if arm is None:
+                    self._json(409, {"error": "offline hub"}); return
+                j = int(body.get("joint", 0))
+                if not 1 <= j <= 6:
+                    self._json(400, {"error": "joint must be 1..6"}); return
+                with HUB.io_lock:
+                    try: r = arm.mc.focus_servo(j); self._json(200, {"ok": True, "result": r}); return
+                    except Exception as e: self._json(500, {"error": str(e)}); return
+
+            if path == "/clear_servo_errors":
+                # Safe recovery: clear latched servo error flags + re-focus all servos.
+                # Does NOT release power (arm holds position). Use when send_angles
+                # is silently being ignored (typical symptom after firmware overload
+                # or a user push event that triggered servo protection).
+                arm = getattr(HUB, "arm", None)
+                if arm is None:
+                    self._json(409, {"error": "offline hub has no arm"}); return
+                results = {}
+                with HUB.io_lock:
+                    try: arm.mc.clear_error_information(); results["clear_error_information"] = "ok"
+                    except Exception as e: results["clear_error_information"] = f"err: {e}"
+                    try: arm.mc.focus_all_servos(); results["focus_all_servos"] = "ok"
+                    except Exception as e: results["focus_all_servos"] = f"err: {e}"
+                self._json(200, {"ok": True, "results": results}); return
+
             if path == "/check":
                 try:
                     angles = _coerce_angles(body.get("angles"))
