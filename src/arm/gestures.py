@@ -88,6 +88,12 @@ def point_at_extending(target_xyz, *, label: Optional[str] = None) -> list:
             e = align_error(j1, j5)
             if e < best[0]: best = (e, j1, j5)
     err, j1, j5 = best
+    # If best achievable alignment is too poor, refuse rather than silently
+    # point off-target. 30° is the practical cutoff — beyond that, the arm
+    # is visibly "not pointing at" the thing.
+    if err > 30.0:
+        raise ValueError(f"point_at: ターゲット({tx:.0f},{ty:.0f},{tz:.0f}) に対し "
+                         f"最良 alignment {err:.0f}° (>30°) — 指差し不可能な位置")
     pretty = (f"{label}に手を伸ばして指差し (誤差{err:.0f}°)"
               if label else f"指差し ({tx:.0f},{ty:.0f},{tz:.0f}) 誤差{err:.0f}°")
     return [{
@@ -97,7 +103,7 @@ def point_at_extending(target_xyz, *, label: Optional[str] = None) -> list:
     }]
 
 
-def point_at(target_xyz, *, j5_extend_deg: float = 0.0, label: Optional[str] = None) -> list:
+def _point_at_compact(target_xyz, *, j5_extend_deg: float = 0.0, label: Optional[str] = None) -> list:
     """Point the wrist toward a target XYZ in base coords.
 
     Doesn't extend (target may be out of reach). Computes J1 from target X,Y and
@@ -182,8 +188,10 @@ def build(spec: dict) -> list:
     if kind == "wave":
         return wave(spec.get("direction", "front"), times=spec.get("times", 3))
     if kind == "point_at":
-        return point_at(spec["target_xyz"], j5_extend_deg=spec.get("j5_extend_deg", 0.0),
-                        label=spec.get("label"))
+        # Always use the IK-quality extending pose; compact fallback removed.
+        # Caller (server) routes point_at to point_at_extending directly; build()
+        # is only reached if caller bypassed that — re-route here for safety.
+        return point_at_extending(spec["target_xyz"], label=spec.get("label"))
     if kind == "home":
         return go_home()
     raise ValueError(f"unknown gesture kind: {kind}")

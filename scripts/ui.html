@@ -711,19 +711,30 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   // === Rescue banner polling ===
+  // On network error: keep prior banner visible + indicate connection loss.
+  // (Hiding the banner on transient network blip would silently remove safety
+  // info while the arm is in an unsafe pose.)
+  let _safetyConnLost = false;
   setInterval(async () => {
+    const banner = document.getElementById('safetyAlert');
+    const msgEl = document.getElementById('safetyAlertMsg');
+    if (!banner) return;
     try {
-      const j = await fetch('/safety_status').then(r => r.json());
-      const banner = document.getElementById('safetyAlert');
-      const msgEl = document.getElementById('safetyAlertMsg');
-      if (!banner) return;
+      const j = await fetch('/safety_status', {cache:'no-store'}).then(r => r.json());
+      _safetyConnLost = false;
       if (j.ok === false && j.reason !== 'angles_unavailable') {
         banner.style.display = 'block';
         msgEl.textContent = j.msg || '現在姿勢が安全範囲外です';
       } else {
         banner.style.display = 'none';
       }
-    } catch(e){}
+    } catch(e) {
+      // Network/server error: don't hide a previously-shown banner.
+      _safetyConnLost = true;
+      if (banner.style.display === 'block') {
+        msgEl.textContent = (msgEl.textContent || '') + ' ⚠ サーバ接続断';
+      }
+    }
   }, 2000);
   const btnRescue = document.getElementById('btnRescueHome');
   if (btnRescue) btnRescue.addEventListener('click', async () => {
@@ -1225,9 +1236,34 @@ document.querySelectorAll('.dirBtn').forEach(btn => {
       let txt = `[${dir}] J1=${obs.j1_deg}° camera_dir=${obs.camera_dir_hint}\n`;
       txt += `flange=(${obs.flange_mm?.join(', ')}) mm @ z=${obs.camera_height_mm}mm\n`;
       if (j.frame_path) {
-        txt += `\n📷 frame: ${j.frame_path}\n`;
-        txt += `\n👉 シュビーに依頼:\n` +
-               `「${j.frame_path} を見て、アーム根元基準で何があるか教えて」\n`;
+        // Inline image preview + copy-path button (UI is local-only; reading
+        // local data/ paths via fetch is fine since server serves them too)
+        const safePath = j.frame_path.replace(/\\/g, '/');
+        txt += `\n📷 観測フレーム (PIP の live cam とは別):\n  ${j.frame_path}\n`;
+        const img = document.createElement('img');
+        img.src = '/' + safePath + '?t=' + Date.now();
+        img.style.cssText = 'display:block;max-width:100%;border:1px solid #444;margin:4px 0';
+        img.alt = 'observe frame';
+        img.onerror = () => { img.style.display = 'none'; };
+        const copyBtn = document.createElement('button');
+        copyBtn.textContent = '📋 path をコピー';
+        copyBtn.style.cssText = 'font-size:10px;padding:2px 6px;margin:2px 0';
+        copyBtn.onclick = () => navigator.clipboard?.writeText(j.frame_path);
+        const askBtn = document.createElement('button');
+        askBtn.textContent = '📋 シュビー依頼文をコピー';
+        askBtn.style.cssText = 'font-size:10px;padding:2px 6px;margin:2px 0 2px 4px';
+        askBtn.onclick = () => navigator.clipboard?.writeText(
+          `${j.frame_path} を見て、アーム根元基準で何があるか教えて`);
+        // append after the textarea node
+        const outEl = document.getElementById('observeResult');
+        outEl.textContent = txt;
+        outEl.appendChild(document.createElement('br'));
+        outEl.appendChild(img);
+        outEl.appendChild(copyBtn);
+        outEl.appendChild(askBtn);
+        if (typeof refreshMemory === 'function') refreshMemory();
+        setBusy(false);
+        return;
       } else {
         txt += `⚠ frame 保存失敗 (camera 取得不可)\n`;
       }

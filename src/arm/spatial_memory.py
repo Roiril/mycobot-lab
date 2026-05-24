@@ -70,10 +70,14 @@ class SpatialMemory:
             self._sectors = {}; self._events = []
 
     def _save(self) -> None:
+        """Atomic write: write to tmp file then os.replace. Power-loss safe."""
+        import os
         self.path.parent.mkdir(parents=True, exist_ok=True)
         out = {"version": 2, "sectors": self._sectors, "events": self._events[-EVENTS_MAX:],
                "ttl_s": self.ttl_s, "half_life_s": self.half_life_s}
-        self.path.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.path)  # atomic on Windows + POSIX
 
     def events(self, limit: int = 20) -> list:
         with self._lock:

@@ -123,9 +123,13 @@ def _execute_joint_waypoints(joint_wps, speed: int, *, manage_monitor: bool = Tr
     send_angles) and poll until reached.
     """
     import arm.constants as _c
-    HUB.abort_flag.clear()
     HUB.last_stall_info = None
     if manage_monitor:
+        # Outermost caller — clear any prior abort and start monitor.
+        # Sequence callers (/move_sequence, /gesture) set manage_monitor=False
+        # and clear abort_flag ONCE at sequence start so a user /abort issued
+        # between steps is honored.
+        HUB.abort_flag.clear()
         HUB.start_monitor()
     t0 = time.time()
     try:
@@ -201,49 +205,6 @@ def _camera_dir_hint(j1_deg: float) -> str:
     if int(round(th)) in dirs:
         return dirs[int(round(th))]
     return f"base angle ≈ {th:.0f}° (atan2 by J1)"
-
-
-def _append_observation_log(direction, j1, angles, flange_xyz, query, perceive_result) -> pathlib.Path:
-    """Append a human-readable observation entry to data/observation_log.md.
-
-    Returns the log path.
-    """
-    log = ROOT / "data" / "observation_log.md"
-    log.parent.mkdir(exist_ok=True)
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    objects = perceive_result.get("objects") or []
-    placeholder = any((o.get("uncalibrated") for o in objects))
-    lines = []
-    lines.append(f"## {ts}  direction={direction!r} J1={j1:.1f}°")
-    lines.append(f"- flange (mm): ({flange_xyz[0]:.0f}, {flange_xyz[1]:.0f}, {flange_xyz[2]:.0f})")
-    lines.append(f"- angles (deg): [{', '.join(f'{a:.1f}' for a in angles)}]")
-    lines.append(f"- query: {query}")
-    if placeholder:
-        lines.append(f"- ⚠ hand-eye calibration が placeholder のため世界座標は概算値")
-    if not perceive_result.get("ok", True):
-        err = perceive_result.get("error") or {}
-        lines.append(f"- ❌ perceive 失敗: [{err.get('code','?')}] {err.get('message','')}")
-    elif not objects:
-        lines.append(f"- (検出物なし)")
-    else:
-        lines.append(f"- 検出 {len(objects)} 件:")
-        for obj in objects:
-            xyz = obj.get("world_xyz_mm") or [None]*3
-            label = obj.get("label", "?")
-            conf = obj.get("confidence")
-            radius = obj.get("radius_mm")
-            cam = obj.get("source_cam", "?")
-            sxyz = "(" + ", ".join(f"{v:.0f}" if v is not None else "?" for v in xyz) + ")"
-            extra = []
-            if conf is not None: extra.append(f"conf={conf:.2f}")
-            if radius is not None: extra.append(f"r={radius:.0f}mm")
-            extra.append(f"cam={cam}")
-            if obj.get("out_of_workspace"): extra.append("⚠out_of_workspace")
-            lines.append(f"  - {label} @ {sxyz} mm  [{' / '.join(extra)}]")
-    lines.append("")
-    with log.open("a", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    return log
 
 
 def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles, *, skip_repeat_solve=False) -> dict:
@@ -536,6 +497,23 @@ class Handler(BaseHTTPRequestHandler):
                         "table_z_uncertainty_mm": VISION.registry.table_z_uncertainty_mm,
                     },
                 }); return
+            if path.startswith("/data/observe_frames/"):
+                # Serve saved observe frames for inline display in the UI.
+                # Restricted to the observe_frames subdir (no traversal allowed).
+                rel = path[len("/data/observe_frames/"):]
+                if "/" in rel or "\\" in rel or ".." in rel or not rel.endswith(".jpg"):
+                    self.send_response(400); self.end_headers(); return
+                fp = ROOT / "data" / "observe_frames" / rel
+                if not fp.exists():
+                    self.send_response(404); self.end_headers(); return
+                buf = fp.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(buf)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(buf); return
+
             if path == "/frame.jpg":
                 q = parse_qs(urlparse(self.path).query)
                 cam_id_arg = q.get("cam", [None])[0]
@@ -707,17 +685,24 @@ class Handler(BaseHTTPRequestHandler):
                         ok_t, msg_t, bad_t = check_angles(target)
                         if not ok_t:
                             self._json(422, {"error": f"rescue mode: 目標自体が NG: {msg_t}", "badJoints": bad_t}); return
-                        # Verify "monotonic safety improvement" by FK: every joint's z must
-                        # not decrease from current to target.
+                        # Check EVERY interior waypoint (not just endpoint) — a path
+                        # that monotonically rises at the endpoint can still dip a joint
+                        # lower partway through interpolation, hitting the table.
                         from arm.kinematics import joint_positions
-                        cur_pts = joint_positions(cur); tgt_pts = joint_positions(target)
-                        for ji in range(1, 7):
-                            if tgt_pts[ji][2] < cur_pts[ji][2] - 5.0:  # 5mm tolerance
-                                self._json(422, {"error": f"rescue mode: J{ji} が下がる ({cur_pts[ji][2]:.0f}→{tgt_pts[ji][2]:.0f}mm) - 上向きの脱出のみ許可"}); return
-                        log.warning("RESCUE MODE move: cur=%s target=%s", cur, target)
-                        # Build path; do NOT run per-waypoint safety check
                         from arm.planner import plan_joint_path
+                        cur_pts = joint_positions(cur)
                         waypoints = plan_joint_path(cur, target)
+                        TOL_MM = 5.0
+                        for wi, wp in enumerate(waypoints):
+                            wp_pts = joint_positions(wp)
+                            for ji in range(1, 7):
+                                if wp_pts[ji][2] < cur_pts[ji][2] - TOL_MM:
+                                    self._json(422, {
+                                        "error": f"rescue mode: 経路 wp {wi+1}/{len(waypoints)} で J{ji} が下がる "
+                                                 f"({cur_pts[ji][2]:.0f}→{wp_pts[ji][2]:.0f}mm) - 単調上昇経路のみ許可"
+                                    }); return
+                        log.warning("RESCUE MODE move: cur=%s target=%s (%d waypoints all monotonic-up)",
+                                    cur, target, len(waypoints))
                         ok, msg, bad = True, "rescue", []
                     else:
                         waypoints, ok, msg, bad = plan_and_validate(cur, target)
@@ -746,25 +731,25 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(400, {"error": "body must be a gesture dict or list of dicts"}); return
 
                 def resolve_label(spec):
+                    """Returns a new dict; never mutates the caller's spec."""
                     if spec.get("kind") == "point_at" and "target_xyz" not in spec and "label" in spec:
                         if MEMORY is None: raise RuntimeError("memory unavailable")
                         label = spec["label"]
                         for sect in MEMORY.all().values():
                             for obj in sect.get("objects", []) or []:
                                 if obj.get("label") == label and obj.get("position_mm"):
-                                    spec["target_xyz"] = obj["position_mm"]; return
+                                    out = dict(spec); out["target_xyz"] = obj["position_mm"]
+                                    return out
                         raise KeyError(f"label '{label}' not found in spatial memory")
+                    return spec
 
                 steps = []
                 try:
-                    for s in specs:
-                        resolve_label(s)
+                    for s_in in specs:
+                        s = resolve_label(s_in)  # may return a new dict
                         # For point_at: use the extending-arm geometry (shoulder
                         # lifted, elbow extended, J5 tilted to target elevation,
                         # J6 set for upright camera). Hand-tuned, safety-clean.
-                        # Falls back to compact heuristic only if extending pose
-                        # somehow fails safety (shouldn't happen for typical
-                        # targets but kept as backstop).
                         if s.get("kind") == "point_at" and "target_xyz" in s:
                             ext_step = gestures_mod.point_at_extending(
                                 s["target_xyz"], label=s.get("label"),
@@ -788,6 +773,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not HUB.motion_lock.acquire(blocking=False):
                     self._json(409, {"error": "motion in progress"}); return
                 completed = []
+                HUB.abort_flag.clear()  # clear ONCE at sequence start (not per-step)
                 HUB.start_monitor()
                 try:
                     for idx, step in enumerate(steps):
@@ -799,6 +785,10 @@ class Handler(BaseHTTPRequestHandler):
                         cur = HUB.angles()
                         if cur is None:
                             self._json(503, {"error": "angles unavailable", "failed_at": idx, "completed": completed}); return
+                        # Pre-step abort check: if user /abort'd between steps, stop here
+                        if HUB.abort_flag.is_set():
+                            self._json(499, {"error": "aborted (user) between steps",
+                                             "failed_at": idx, "completed": completed}); return
                         waypoints, ok, msg, bad = plan_and_validate(cur, target)
                         if not ok:
                             self._json(422, {"error": f"gesture step {idx} ({step.get('label','?')}): {msg}",
@@ -833,6 +823,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not HUB.motion_lock.acquire(blocking=False):
                     self._json(409, {"error": "motion in progress"}); return
                 completed = []
+                HUB.abort_flag.clear()  # clear ONCE at sequence start
                 HUB.start_monitor()
                 try:
                     for idx, step in enumerate(steps):
@@ -847,6 +838,9 @@ class Handler(BaseHTTPRequestHandler):
                         cur = HUB.angles()
                         if cur is None:
                             self._json(503, {"error": "angles unavailable", "failed_at": idx, "completed": completed}); return
+                        if HUB.abort_flag.is_set():
+                            self._json(499, {"error": "aborted (user) between steps",
+                                             "failed_at": idx, "completed": completed}); return
                         waypoints, ok, msg, bad = plan_and_validate(cur, target)
                         if not ok:
                             self._json(422, {"error": f"step {idx} ({step.get('label','?')}): {msg}",
