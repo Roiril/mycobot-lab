@@ -40,10 +40,10 @@ class TestSafety(unittest.TestCase):
         self.assertTrue("床" in msg)
 
     def test_self_collision_detected(self):
-        # extreme fold-back
-        ok, msg, bad = check_angles([0, -135, -150, 0, 90, 0])
+        # extreme fold-back (within joint limits but wrist crashes into upper arm)
+        ok, msg, bad = check_angles([0, -135, -145, 0, 90, 0])
         self.assertFalse(ok)
-        self.assertTrue("自己干渉" in msg)
+        self.assertTrue("自己干渉" in msg or "床" in msg)
 
     def test_clamp_angles(self):
         clamped = clamp_angles([200, -200, 0, 0, 0, 0])

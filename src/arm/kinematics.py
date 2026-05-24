@@ -31,11 +31,13 @@ URDF_LINKS = [
     ((  0.0,  65.5,  0.0),   (-PI/2,  0.0,    0.0)),    # j5     → flange (j6 output)
 ]
 
-# Hardware joint limits (myCobot 320 spec, degrees).
+# Hardware joint limits (myCobot 320, degrees).
+# J3 firmware enforces ±145 (not the ±150 advertised in some spec sheets) —
+# verified empirically: send_angles rejects -150 with "should be -145 ~ 145".
 JOINT_LIMITS = [
     (-168.0, 168.0),
     (-135.0, 135.0),
-    (-150.0, 150.0),
+    (-145.0, 145.0),
     (-145.0, 145.0),
     (-165.0, 165.0),
     (-180.0, 180.0),
