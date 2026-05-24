@@ -20,8 +20,7 @@ def _dir_to_j1(direction) -> float:
     """Map direction → J1 degrees, with safety margin (±165° not ±168°)."""
     if isinstance(direction, (int, float)):
         return max(-165.0, min(165.0, float(direction)))
-    dirmap = {"back": 0.0, "right": 90.0, "front": 165.0, "left": -90.0,
-              "back_alt": -165.0}
+    dirmap = {"back": 0.0, "right": 90.0, "front": 165.0, "left": -90.0}
     return dirmap.get(str(direction).lower(), 0.0)
 
 

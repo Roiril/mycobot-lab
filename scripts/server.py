@@ -111,19 +111,22 @@ def _path_is_monotonic(wps) -> bool:
     return True
 
 
-def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
+def _execute_joint_waypoints(joint_wps, speed: int, *, manage_monitor: bool = True) -> tuple[int, dict]:
     """Drive waypoints with monitor + abort handling. Returns (http_code, body).
+
+    manage_monitor: if False, caller is responsible for start_monitor/stop_monitor
+                    (used by /move_sequence and /gesture to avoid per-step monitor
+                    thread join overhead of ~0.5-1.5s).
 
     SMOOTH_SINGLE_SHOT mode: if all waypoints are safety-validated AND the path
     is joint-space monotonic, send only the final target to firmware (single
-    send_angles) and poll until reached. The firmware interpolates smoothly
-    without the deceleration/pause between PATH_STEP_DEG chunks. Falls back to
-    chunked execution if path changes direction in joint space.
+    send_angles) and poll until reached.
     """
     import arm.constants as _c
     HUB.abort_flag.clear()
     HUB.last_stall_info = None
-    HUB.start_monitor()
+    if manage_monitor:
+        HUB.start_monitor()
     t0 = time.time()
     try:
         # Single-shot path if eligible
@@ -179,7 +182,8 @@ def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
                      "peakCurrents": peak, "monitorEnabled": HUB.monitor_enabled,
                      "smoothMode": "chunked", "nWaypoints": len(joint_wps)}
     finally:
-        HUB.stop_monitor()
+        if manage_monitor:
+            HUB.stop_monitor()
 
 
 _APPROX_MAX_REACH = 380.0  # arm physical reach (mm) — matches ik_numeric._MAX_REACH_MM
@@ -726,44 +730,47 @@ class Handler(BaseHTTPRequestHandler):
                     HUB.motion_lock.release()
 
             if path == "/gesture":
-                """High-level gesture primitive. Internally builds a sequence
-                and runs it via the same atomic motion_lock path as /move_sequence.
+                """High-level gesture primitive(s). Atomic under single motion_lock.
 
-                Body: {
-                  kind: 'face'|'bow'|'point_at'|'home',
-                  direction?, target_xyz? (mm), label? (lookup in spatial memory),
-                  depth_deg?, hold_s?, j5_extend_deg?, upright?,
-                  return_home?: bool (append home step at end, default false)
-                }
-                If label is given and target_xyz is not, look up the position
-                from spatial memory.
+                Body (one of):
+                  • dict: {kind, ...params, return_home?: bool}
+                  • list of dicts: chained gestures, single motion_lock acquire
+
+                Each spec:
+                  kind: 'face'|'bow'|'point_at'|'home'
+                  direction?, target_xyz? (mm), label? (memory lookup),
+                  depth_deg?, hold_s?, j5_extend_deg?, upright?
                 """
-                spec = dict(body or {})
-                # Resolve memory-label lookup for point_at
-                if spec.get("kind") == "point_at" and "target_xyz" not in spec and "label" in spec:
-                    if MEMORY is None:
-                        self._json(503, {"error": "spatial memory unavailable"}); return
-                    label = spec["label"]
-                    all_mem = MEMORY.all()
-                    found = None
-                    for sect_name, sect in all_mem.items():
-                        for obj in sect.get("objects", []) or []:
-                            if obj.get("label") == label and obj.get("position_mm"):
-                                found = obj["position_mm"]; break
-                        if found: break
-                    if not found:
-                        self._json(404, {"error": f"label '{label}' not found in spatial memory"}); return
-                    spec["target_xyz"] = found
+                specs = body if isinstance(body, list) else [body]
+                if not specs or any(not isinstance(s, dict) for s in specs):
+                    self._json(400, {"error": "body must be a gesture dict or list of dicts"}); return
+
+                def resolve_label(spec):
+                    if spec.get("kind") == "point_at" and "target_xyz" not in spec and "label" in spec:
+                        if MEMORY is None: raise RuntimeError("memory unavailable")
+                        label = spec["label"]
+                        for sect in MEMORY.all().values():
+                            for obj in sect.get("objects", []) or []:
+                                if obj.get("label") == label and obj.get("position_mm"):
+                                    spec["target_xyz"] = obj["position_mm"]; return
+                        raise KeyError(f"label '{label}' not found in spatial memory")
+
+                steps = []
                 try:
-                    steps = gestures_mod.build(spec)
-                except (ValueError, KeyError) as e:
+                    for s in specs:
+                        resolve_label(s)
+                        steps.extend(gestures_mod.build(s))
+                        if s.get("return_home", False):
+                            steps.extend(gestures_mod.go_home())
+                except KeyError as e:
+                    self._json(404, {"error": str(e).strip("'\"")}); return
+                except (ValueError, RuntimeError) as e:
                     self._json(400, {"error": f"gesture build: {e}"}); return
-                if spec.get("return_home", False):
-                    steps.extend(gestures_mod.go_home())
-                # Execute via internal sequence runner (same code as /move_sequence)
+                # Execute under single motion_lock + single monitor start/stop
                 if not HUB.motion_lock.acquire(blocking=False):
                     self._json(409, {"error": "motion in progress"}); return
                 completed = []
+                HUB.start_monitor()
                 try:
                     for idx, step in enumerate(steps):
                         try:
@@ -778,7 +785,7 @@ class Handler(BaseHTTPRequestHandler):
                         if not ok:
                             self._json(422, {"error": f"gesture step {idx} ({step.get('label','?')}): {msg}",
                                              "badJoints": bad, "failed_at": idx, "completed": completed}); return
-                        code, resp = _execute_joint_waypoints(waypoints, speed)
+                        code, resp = _execute_joint_waypoints(waypoints, speed, manage_monitor=False)
                         resp["label"] = step.get("label", f"step_{idx}")
                         resp["index"] = idx
                         if code != 200:
@@ -787,8 +794,9 @@ class Handler(BaseHTTPRequestHandler):
                         completed.append(resp)
                         pause = float(step.get("pause_s", 0.0))
                         if pause > 0: time.sleep(min(pause, 5.0))
-                    self._json(200, {"ok": True, "gesture": spec.get("kind"), "completed": completed}); return
+                    self._json(200, {"ok": True, "gestures": [s.get("kind") for s in specs], "completed": completed}); return
                 finally:
+                    HUB.stop_monitor()
                     HUB.motion_lock.release()
 
             if path == "/move_sequence":
@@ -807,6 +815,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not HUB.motion_lock.acquire(blocking=False):
                     self._json(409, {"error": "motion in progress"}); return
                 completed = []
+                HUB.start_monitor()
                 try:
                     for idx, step in enumerate(steps):
                         try:
@@ -824,7 +833,7 @@ class Handler(BaseHTTPRequestHandler):
                         if not ok:
                             self._json(422, {"error": f"step {idx} ({step.get('label','?')}): {msg}",
                                              "badJoints": bad, "failed_at": idx, "completed": completed}); return
-                        code, resp = _execute_joint_waypoints(waypoints, speed)
+                        code, resp = _execute_joint_waypoints(waypoints, speed, manage_monitor=False)
                         resp["label"] = step.get("label", f"step_{idx}")
                         resp["index"] = idx
                         if code != 200:
@@ -836,6 +845,7 @@ class Handler(BaseHTTPRequestHandler):
                         if pause > 0: time.sleep(min(pause, 5.0))
                     self._json(200, {"ok": True, "completed": completed, "n_steps": len(steps)}); return
                 finally:
+                    HUB.stop_monitor()
                     HUB.motion_lock.release()
 
             if path == "/move_cartesian":
@@ -1062,8 +1072,7 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(direction, (int, float)):
                     j1 = float(direction)
                 else:
-                    dirmap = {"back": 0.0, "right": 90.0, "front": 165.0, "left": -90.0,
-                              "back_alt": -165.0}
+                    dirmap = {"back": 0.0, "right": 90.0, "front": 165.0, "left": -90.0}
                     j1 = dirmap.get(str(direction).lower())
                     if j1 is None:
                         self._json(400, {"error": f"unknown direction '{direction}'; expected front|left|right|back or numeric J1 deg"}); return

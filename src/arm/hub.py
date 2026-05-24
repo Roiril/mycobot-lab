@@ -69,7 +69,7 @@ class HubBase(abc.ABC):
         """Firmware solve_inv_kinematics, no numeric fallback. Returns angles or None."""
         return None  # default: subclass overrides
     @abc.abstractmethod
-    def frame_jpeg(self) -> Optional[bytes]: ...
+    def frame_jpeg(self, fresh: bool = False) -> Optional[bytes]: ...
     @abc.abstractmethod
     def shutdown(self) -> None: ...
     @abc.abstractmethod
@@ -445,7 +445,7 @@ class VirtualHub(HubBase):
         tip = end_effector(self._angles)
         return [tip[0], tip[1], tip[2], 0.0, 0.0, 0.0]
 
-    def frame_jpeg(self):
+    def frame_jpeg(self, fresh: bool = False):
         import numpy as np, cv2
         img = np.full((360, 480, 3), 30, dtype=np.uint8)
         cv2.putText(img, "OFFLINE", (140, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (180, 180, 200), 3)
