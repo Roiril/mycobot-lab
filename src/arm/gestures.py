@@ -43,7 +43,7 @@ def bow(direction, *, depth_deg: float = 25.0, hold_s: float = 0.5) -> list:
     ]
 
 
-def point_at(target_xyz, *, j5_extend_deg: float = 0.0) -> list:
+def point_at(target_xyz, *, j5_extend_deg: float = 0.0, label: Optional[str] = None) -> list:
     """Point the wrist toward a target XYZ in base coords.
 
     Doesn't extend (target may be out of reach). Computes J1 from target X,Y and
@@ -72,8 +72,9 @@ def point_at(target_xyz, *, j5_extend_deg: float = 0.0) -> list:
     j5 = max(-90.0, min(90.0, j5))
 
     # Use a pointing pose: arm at HOME-style fold with J5 tilted, J6 upright
+    pretty = f"{label}を指差し" if label else f"指差し ({tx:.0f},{ty:.0f},{tz:.0f})"
     return [{
-        "label": f"point_at_({tx:.0f},{ty:.0f},{tz:.0f})",
+        "label": pretty,
         "angles": [j1, -20.0, -80.0, 0.0, j5, CAMERA_UPRIGHT_J6_DEG],
         "speed": 25, "pause_s": 0.8,
     }]
@@ -83,10 +84,36 @@ def go_home() -> list:
     return [{"label": "home", "angles": [0, 0, -90, 0, 0, 0], "speed": 30}]
 
 
+def nod(direction, *, times: int = 2) -> list:
+    """Yes-nod: small repeated bow. Faster + smaller than bow()."""
+    j1 = _dir_to_j1(direction)
+    j6 = CAMERA_UPRIGHT_J6_DEG
+    out = [{"label": "nod_face", "angles": [j1, 0, -90, 0, 0, j6], "speed": 35, "pause_s": 0.1}]
+    for k in range(max(1, min(5, times))):
+        out.append({"label": f"nod_down_{k}",   "angles": [j1, -12, -85, 0, 8, j6], "speed": 35, "pause_s": 0.15})
+        out.append({"label": f"nod_return_{k}", "angles": [j1, 0,   -90, 0, 0, j6], "speed": 35, "pause_s": 0.1})
+    return out
+
+
+def wave(direction, *, times: int = 3) -> list:
+    """Greeting wave: arm raised, J6 swings left-right. Quick + friendly."""
+    j1 = _dir_to_j1(direction)
+    j6_left  = CAMERA_UPRIGHT_J6_DEG - 30
+    j6_right = CAMERA_UPRIGHT_J6_DEG + 30
+    out = [
+        {"label": "wave_raise", "angles": [j1, -30, -45, 0, -45, CAMERA_UPRIGHT_J6_DEG], "speed": 35, "pause_s": 0.15},
+    ]
+    for k in range(max(1, min(5, times))):
+        out.append({"label": f"wave_R_{k}", "angles": [j1, -30, -45, 0, -45, j6_right], "speed": 40, "pause_s": 0.1})
+        out.append({"label": f"wave_L_{k}", "angles": [j1, -30, -45, 0, -45, j6_left ], "speed": 40, "pause_s": 0.1})
+    out.append({"label": "wave_center", "angles": [j1, -30, -45, 0, -45, CAMERA_UPRIGHT_J6_DEG], "speed": 35, "pause_s": 0.1})
+    return out
+
+
 def build(spec: dict) -> list:
     """Build a step sequence from a high-level spec.
 
-    spec = {"kind": "face"|"bow"|"point_at"|"home", ...params}
+    spec = {"kind": "face"|"bow"|"nod"|"wave"|"point_at"|"home", ...params}
     Returns list of move steps (for /move_sequence).
     """
     kind = spec.get("kind")
@@ -96,8 +123,13 @@ def build(spec: dict) -> list:
         return bow(spec.get("direction", "front"),
                    depth_deg=spec.get("depth_deg", 25.0),
                    hold_s=spec.get("hold_s", 0.5))
+    if kind == "nod":
+        return nod(spec.get("direction", "front"), times=spec.get("times", 2))
+    if kind == "wave":
+        return wave(spec.get("direction", "front"), times=spec.get("times", 3))
     if kind == "point_at":
-        return point_at(spec["target_xyz"], j5_extend_deg=spec.get("j5_extend_deg", 0.0))
+        return point_at(spec["target_xyz"], j5_extend_deg=spec.get("j5_extend_deg", 0.0),
+                        label=spec.get("label"))
     if kind == "home":
         return go_home()
     raise ValueError(f"unknown gesture kind: {kind}")

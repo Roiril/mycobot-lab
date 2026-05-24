@@ -91,28 +91,32 @@ class SpatialMemory:
                description: str = "", objects: Optional[list] = None,
                frames_dir: Optional[pathlib.Path] = None,
                keep_per_sector: int = 3) -> dict:
-        """Record an observation. Overwrites any prior entry in the same sector.
-
-        objects: list of {label, position_mm?: [x,y,z], radius_mm?, note?}
-        frames_dir: if provided, delete old frames of the same sector keeping
-                    only the last `keep_per_sector` jpegs (rotation).
+        """Record an observation. Updates per-sector entry, but PRESERVES the
+        prior description/objects when the new call doesn't provide them
+        (re-observing the same direction shouldn't erase what was annotated;
+        only the latest frame_path / pose / timestamp should update).
         """
         sector = j1_to_sector(j1_deg)
-        entry = {
-            "sector": sector,
-            "j1_deg": j1_deg,
-            "timestamp": time.time(),
-            "iso_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "frame_path": frame_path,
-            "camera_pose": camera_pose,  # flange_mm + camera_dir_hint
-            "observer": observer,
-            "description": description,
-            "objects": objects or [],
-        }
         with self._lock:
+            prior = self._sectors.get(sector) or {}
+            entry = {
+                "sector": sector,
+                "j1_deg": j1_deg,
+                "timestamp": time.time(),
+                "iso_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "frame_path": frame_path,
+                "camera_pose": camera_pose,
+                "observer": observer if description else (prior.get("observer") or observer),
+                # preserve prior annotation when current call doesn't supply one
+                "description": description if description else (prior.get("description") or ""),
+                "objects": objects if objects else (prior.get("objects") or []),
+                # carry forward annotation timestamp if we kept the prior content
+                "annotated_at": prior.get("annotated_at") if not description else time.time(),
+            }
             self._sectors[sector] = entry
             self._push_event("observe", {"sector": sector, "j1_deg": j1_deg,
-                                          "frame_path": frame_path, "observer": observer})
+                                          "frame_path": frame_path, "observer": observer,
+                                          "carried_prior_annotation": bool(prior.get("description"))})
             self._save()
         if frames_dir is not None:
             self._rotate_frames(frames_dir, sector, keep_per_sector)
