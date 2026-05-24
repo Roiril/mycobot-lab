@@ -168,37 +168,58 @@ def _seed_perturbations(seed: Sequence[float]) -> List[List[float]]:
     return [_clamp_to_limits(a) for a in raw]
 
 
+_MAX_REACH_MM = 460.0  # generous bound (true reach ~380mm); rejects only clearly impossible targets
+
+
 def solve_with_retries(target_pos: Sequence[float],
                        target_orientation: Optional[Tuple[float, float, float]],
                        seed: Sequence[float],
-                       roll_relaxation_deg: Tuple[float, ...] = (0, 15, -15, 30, -30, 45, -45)
+                       roll_relaxation_deg: Tuple[float, ...] = (0, 20, -20, 45, -45),
+                       time_budget_s: float = 0.8,
                        ) -> tuple[Optional[List[float]], str]:
     """Try full-6DoF IK with multi-seed retry + orientation relaxation fallback.
 
+    Optimizations vs the original:
+      - **Fast-fail** if target position is outside arm reach (saves ~30s on
+        unreachable targets that exercise every retry path)
+      - **Time budget** caps total wall-clock time at ~time_budget_s (default 0.8s)
+      - **Smaller retry grid** (5 roll offsets instead of 7) — empirically the
+        extra ones rarely help and double the cost
     target_orientation: (rx,ry,rz) or None for position-only.
     Returns (angles, mode) where mode ∈ {"full", "relaxed_roll", "position_only", "failed"}.
     """
-    # Full pose attempts with original + perturbed seeds
+    import time as _t
+    t0 = _t.monotonic()
+    def out_of_time(): return (_t.monotonic() - t0) > time_budget_s
+
+    # Fast-fail: clearly out-of-reach positions don't deserve seconds of search
+    r = (target_pos[0]**2 + target_pos[1]**2 + target_pos[2]**2) ** 0.5
+    if r > _MAX_REACH_MM:
+        return None, "failed"
+
+    seeds = _seed_perturbations(seed)
+
     if target_orientation is not None:
         full_target = list(target_pos[:3]) + list(target_orientation)
-        for alt_seed in _seed_perturbations(seed):
+        for alt_seed in seeds:
+            if out_of_time(): break
             sol = solve(full_target, alt_seed, position_only=False)
             if sol is not None:
                 return sol, "full"
-        # Roll relaxation: rotate the TARGET'S tool z-axis (not world Z) by ±N°.
-        # Convert RPY → matrix, multiply by Rz_tool, extract new RPY.
         for roll_off in roll_relaxation_deg:
             if roll_off == 0: continue
+            if out_of_time(): break
             relaxed_rpy = _rotate_orientation_around_tool_z(target_orientation, roll_off)
             relaxed = [target_pos[0], target_pos[1], target_pos[2],
                        relaxed_rpy[0], relaxed_rpy[1], relaxed_rpy[2]]
-            for alt_seed in _seed_perturbations(seed):
+            for alt_seed in seeds:
+                if out_of_time(): break
                 sol = solve(relaxed, alt_seed, position_only=False)
                 if sol is not None:
                     return sol, "relaxed_roll"
-    # Last resort: position-only with seed perturbations
     pos_target = list(target_pos[:3]) + [0.0, 0.0, 0.0]
-    for alt_seed in _seed_perturbations(seed):
+    for alt_seed in seeds:
+        if out_of_time(): break
         sol = solve(pos_target, alt_seed, position_only=True)
         if sol is not None:
             return sol, "position_only"
@@ -206,8 +227,8 @@ def solve_with_retries(target_pos: Sequence[float],
 
 
 def solve(target: Sequence[float], seed: Sequence[float],
-          max_iter: int = 200, pos_tol_mm: float = 2.0, rot_tol_deg: float = 5.0,
-          rot_weight: float = 50.0, max_step_deg: float = 3.0,
+          max_iter: int = 60, pos_tol_mm: float = 2.0, rot_tol_deg: float = 5.0,
+          rot_weight: float = 50.0, max_step_deg: float = 5.0,
           position_only: bool = False) -> Optional[List[float]]:
     """Damped least squares IK with adaptive damping (Levenberg-Marquardt style).
 

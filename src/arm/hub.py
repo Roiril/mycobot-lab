@@ -46,6 +46,7 @@ class HubBase(abc.ABC):
 
         coords_or_pos: length 3 → position-only; length 6 → full pose (x,y,z,rx,ry,rz).
         mode ∈ {"full","relaxed_roll","position_only","failed","firmware"}.
+        Calls firmware IK once (full pose only) and numeric retries once — no duplication.
         """
         from .ik_numeric import solve_with_retries
         if seed is None:
@@ -54,14 +55,18 @@ class HubBase(abc.ABC):
             seed = list(angles)
         if len(coords_or_pos) >= 6:
             # try firmware first (full pose); on success return mode="firmware"
-            res = self.solve_ik(list(coords_or_pos), seed=list(seed))
-            if res is not None:
-                return res, "firmware"
-            # Numeric retries with orientation
+            fw = self._firmware_ik_only(list(coords_or_pos), list(seed))
+            if fw is not None:
+                return fw, "firmware"
+            # Numeric retries with orientation (single time-budgeted pass)
             return solve_with_retries(coords_or_pos[:3], (coords_or_pos[3], coords_or_pos[4], coords_or_pos[5]), seed)
         else:
-            # position-only
+            # position-only: numeric only (firmware doesn't help without orientation)
             return solve_with_retries(coords_or_pos[:3], None, seed)
+
+    def _firmware_ik_only(self, coords6, seed):
+        """Firmware solve_inv_kinematics, no numeric fallback. Returns angles or None."""
+        return None  # default: subclass overrides
     @abc.abstractmethod
     def frame_jpeg(self) -> Optional[bytes]: ...
     @abc.abstractmethod
@@ -91,7 +96,13 @@ class HubBase(abc.ABC):
         self._monitor = None
 
     def home_blocking(self, speed: int = 25) -> None:
-        """Validated home: plan from current → HOME, safety-check every step."""
+        """Validated home: plan from current → HOME, safety-check every step.
+
+        After safety validation, if the path is joint-space monotonic, the
+        actual motion is sent as a single firmware command (smooth, no per-
+        waypoint deceleration). Falls back to chunked if non-monotonic.
+        """
+        from .constants import SMOOTH_SINGLE_SHOT as _smooth
         cur = self.angles()
         if cur is None:
             raise RuntimeError("cannot read current angles before home")
@@ -101,6 +112,27 @@ class HubBase(abc.ABC):
         self.abort_flag.clear()
         self.start_monitor()
         try:
+            # Smooth single-shot if the validated path is monotonic
+            if _smooth and len(waypoints) > 1:
+                dirs = [0]*6
+                mono = True
+                prev = cur
+                for w in waypoints:
+                    for j in range(6):
+                        d = w[j] - prev[j]
+                        if abs(d) < 1e-6: continue
+                        sign = 1 if d > 0 else -1
+                        if dirs[j] == 0: dirs[j] = sign
+                        elif dirs[j] != sign: mono = False; break
+                    if not mono: break
+                    prev = w
+                if mono:
+                    if self.abort_flag.is_set():
+                        raise RuntimeError("home aborted")
+                    reached, _ = self.send_angles_and_wait(HOME_ANGLES, speed)
+                    if not reached:
+                        raise RuntimeError("home single-shot readback timeout")
+                    return
             for wp in waypoints:
                 if self.abort_flag.is_set():
                     raise RuntimeError("home aborted")
@@ -194,6 +226,17 @@ class Hub(HubBase):
         with self.io_lock:
             self.arm.release()
 
+    def _firmware_ik_only(self, coords6, seed):
+        """Firmware IK only (no numeric fallback). Used by solve_ik_with_mode."""
+        with self.io_lock:
+            try:
+                res = self.arm.mc.solve_inv_kinematics(list(coords6), list(seed))
+                if res and res != -1:
+                    return list(res)
+            except Exception as e:
+                log.warning("solve_inv_kinematics raised: %s", e)
+        return None
+
     def solve_ik(self, coords6, seed=None):
         """Resolve IK for a 6-DoF target (x,y,z,rx,ry,rz).
 
@@ -202,18 +245,12 @@ class Hub(HubBase):
           2. numeric IK with multi-seed retry + roll relaxation (natural orientation)
           3. numeric position-only as last resort
         """
-        with self.io_lock:
-            if seed is None:
-                cur = self.arm.angles()
-                if not cur or cur == -1:
-                    return None
-                seed = list(cur)
-            try:
-                res = self.arm.mc.solve_inv_kinematics(list(coords6), list(seed))
-                if res and res != -1:
-                    return list(res)
-            except Exception as e:
-                log.warning("solve_inv_kinematics raised: %s", e)
+        if seed is None:
+            cur = self.angles()
+            if not cur: return None
+            seed = list(cur)
+        fw = self._firmware_ik_only(list(coords6), list(seed))
+        if fw is not None: return fw
         from .ik_numeric import solve_with_retries
         orientation = (coords6[3], coords6[4], coords6[5]) if len(coords6) >= 6 else None
         sol, mode = solve_with_retries(coords6[:3], orientation, seed)

@@ -415,10 +415,16 @@ function setGoalColor(state_){
 async function onGoalDragEnd(){
   if(state.busy){ setStatus('動作中はゴール変更不可','err'); return; }
   const p = goalSphere.position;
+  const mySeq = ikSeq + 1;  // matches the seq runIK will assign
   setStatus(`IK 計算中 (${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)})`);
   setGoalColor('calc');
   goalSphere.scale.set(1.2, 1.2, 1.2);
   const ok = await runIK(p.x, p.y, p.z);
+  // If a newer drag started while we were running, don't clobber its state
+  if (mySeq !== ikSeq) {
+    goalSphere.scale.set(1, 1, 1);
+    return;
+  }
   goalSphere.scale.set(1, 1, 1);
   if(!ok){
     setGoalColor('fail');
@@ -454,8 +460,14 @@ async function checkGraspReachability(){
   try{
     const results = [];
     for(const [name, x, y, z] of stages){
-      const j = await fetch('/solve_ik',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({x, y, z})}).then(r=>r.json());
+      let j;
+      try {
+        j = await fetchIK({x, y, z}, 1500);
+      } catch(err) {
+        if(seq !== reachSeq) return;
+        results.push({name, ok: false, msg: err.name === 'AbortError' ? 'timeout' : err.message});
+        break;
+      }
       if(seq !== reachSeq) return;  // newer check started; abandon stale result
       results.push({name, ok: j.ok, msg: j.msg});
       if(!j.ok) break;
@@ -796,11 +808,42 @@ function setPoseModeBadge(mode){
 
 function clearPoseBadge(){ const ind = document.getElementById('poseModeIndicator'); if(ind) ind.innerHTML = ''; }
 
+// IK call serialization: only the latest request matters. Older in-flight
+// requests are abandoned (their resolution becomes a no-op). Prevents the UI
+// from jumping around when the user drags fast.
+let ikSeq = 0;
+
+async function fetchIK(body, timeoutMs = 2500){
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch('/solve_ik', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body), signal: ctrl.signal,
+    });
+    return await r.json();
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
 async function runIK(x, y, z, fallbackChain = ['extend_toward', 'align_+z']){
+  const mySeq = ++ikSeq;
   try{
     const poseSpec = buildPoseSpec({x, y, z});
-    const j = await fetch('/solve_ik',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({x, y, z, pose: poseSpec})}).then(r=>r.json());
+    let j;
+    try {
+      j = await fetchIK({x, y, z, pose: poseSpec});
+    } catch(err) {
+      if (mySeq !== ikSeq) return false;  // newer request superseded us
+      if (err.name === 'AbortError') {
+        setStatus('IK 計算がタイムアウト (>2.5s) — もう一度試してください', 'err');
+      } else {
+        setStatus('IK 通信失敗: ' + err.message, 'err');
+      }
+      return false;
+    }
+    if (mySeq !== ikSeq) return false;  // stale result — newer drag in progress
     if(!j.ok || !j.angles){
       const err = j.error || {};
       const code = err.code || 'UNKNOWN';
@@ -831,17 +874,23 @@ async function runIK(x, y, z, fallbackChain = ['extend_toward', 'align_+z']){
       }
       return false;
     }
+    if (mySeq !== ikSeq) return false;
     state.target = j.angles;
     setSlidersFrom(state.target);
     state.userTouched = true;
     await onTargetChange();
+    if (mySeq !== ikSeq) return false;
     setPoseModeBadge(j.ikMode || 'full');
     const label = POLICY_LABEL[posePolicy] || posePolicy;
     const mode = j.ikMode || 'full';
     const modeText = MODE_BADGE[mode]?.text || mode;
     setStatus(`IK OK [${label}] 達成度=${modeText}`, mode === 'position_only' ? 'warn' : 'ok');
     return true;
-  }catch(e){ setStatus('IK エラー: '+e,'err'); return false; }
+  }catch(e){
+    if (mySeq !== ikSeq) return false;
+    setStatus('IK エラー: '+e,'err');
+    return false;
+  }
 }
 
 // Pose policy buttons

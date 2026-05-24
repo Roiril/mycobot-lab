@@ -10,11 +10,19 @@ MAX_SPEED = 40              # firmware accepts 1-100; we cap at 40 for safety
 DEFAULT_SPEED = 25
 
 # --- path planner ---
-PATH_STEP_DEG = 8.0         # max joint delta per waypoint (degrees)
-WAYPOINT_WAIT = 0.35        # initial sleep before readback poll (s)
-WAYPOINT_TOLERANCE = 2.0    # angle match tolerance for "reached" (deg)
-WAYPOINT_TIMEOUT = 4.0      # per-waypoint readback timeout (s)
+PATH_STEP_DEG = 8.0         # max joint delta per waypoint (degrees) — for SAFETY check granularity
+WAYPOINT_WAIT = 0.15        # initial sleep before readback poll (s)
+WAYPOINT_TOLERANCE = 3.0    # angle match tolerance for "reached" (deg)
+WAYPOINT_TIMEOUT = 8.0      # per-waypoint readback timeout (s) — bumped from 4 to cover large single-shot motions
 ANGLE_DRIFT_TOL = 3.0       # client expected_current drift tolerance (deg)
+
+# Smooth-motion mode: if the joint-space path is monotonic and all intermediate
+# waypoints pass safety, send only the final target to firmware (single command)
+# and let the firmware interpolate smoothly. Avoids the deceleration/pause
+# between every PATH_STEP_DEG chunk. Disabled paths still chunk (paths that
+# change direction in joint space — rare for typical IK results).
+SMOOTH_SINGLE_SHOT = True
+SMOOTH_PROGRESS_NEXT = 0.6  # for chunked paths: send next waypoint when this fraction of progress reached
 
 # --- safety geometry (mm) ---
 TABLE_MARGIN = 10.0         # genuine clearance above table top

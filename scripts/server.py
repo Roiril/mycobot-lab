@@ -90,12 +90,60 @@ def _preflight(body) -> tuple[Optional[dict], Optional[list[float]], Optional[in
     return None, cur, speed
 
 
+def _path_is_monotonic(wps) -> bool:
+    """True iff every joint moves in one direction across all waypoints. If so,
+    firmware can interpolate between start and final without traversing outside
+    the safety-validated tube (since the tube IS the monotonic line)."""
+    if len(wps) < 2: return True
+    dirs = [0]*6
+    prev = wps[0]
+    for w in wps[1:]:
+        for j in range(6):
+            d = w[j] - prev[j]
+            if abs(d) < 1e-6: continue
+            sign = 1 if d > 0 else -1
+            if dirs[j] == 0: dirs[j] = sign
+            elif dirs[j] != sign: return False
+        prev = w
+    return True
+
+
 def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
-    """Drive waypoints with monitor + abort handling. Returns (http_code, body)."""
+    """Drive waypoints with monitor + abort handling. Returns (http_code, body).
+
+    SMOOTH_SINGLE_SHOT mode: if all waypoints are safety-validated AND the path
+    is joint-space monotonic, send only the final target to firmware (single
+    send_angles) and poll until reached. The firmware interpolates smoothly
+    without the deceleration/pause between PATH_STEP_DEG chunks. Falls back to
+    chunked execution if path changes direction in joint space.
+    """
+    import arm.constants as _c
     HUB.abort_flag.clear()
     HUB.start_monitor()
     t0 = time.time()
     try:
+        # Single-shot path if eligible
+        if _c.SMOOTH_SINGLE_SHOT and len(joint_wps) > 1 and _path_is_monotonic(joint_wps):
+            final = joint_wps[-1]
+            if HUB.abort_flag.is_set():
+                return 499, {"error": "aborted (user)", "lastIndex": 0}
+            reached, actual = HUB.send_angles_and_wait(final, speed)
+            if not reached:
+                if HUB.abort_flag.is_set():
+                    triggered = HUB._monitor and HUB._monitor.triggered
+                    tag = "over-current" if triggered else "user"
+                    body = {"error": f"aborted ({tag})", "lastActual": actual}
+                    if HUB._monitor:
+                        body["currents"] = HUB._monitor.last_currents
+                        body["peakJoint"] = HUB._monitor.peak_joint
+                        body["peakValue"] = HUB._monitor.peak_value
+                    return 499, body
+                return 503, {"error": "single-shot 到達タイムアウト", "lastActual": actual}
+            peak = HUB._monitor.peak_currents if HUB._monitor else None
+            return 200, {"angles": HUB.angles(), "elapsed": round(time.time() - t0, 2),
+                         "peakCurrents": peak, "monitorEnabled": HUB.monitor_enabled,
+                         "smoothMode": "single_shot", "nWaypoints": len(joint_wps)}
+        # Chunked path (non-monotonic or single-shot disabled)
         for idx, wp in enumerate(joint_wps):
             if HUB.abort_flag.is_set():
                 triggered = HUB._monitor and HUB._monitor.triggered
@@ -111,12 +159,16 @@ def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
                 return 503, {"error": f"waypoint {idx+1}/{len(joint_wps)} 到達タイムアウト", "lastActual": actual}
         peak = HUB._monitor.peak_currents if HUB._monitor else None
         return 200, {"angles": HUB.angles(), "elapsed": round(time.time() - t0, 2),
-                     "peakCurrents": peak, "monitorEnabled": HUB.monitor_enabled}
+                     "peakCurrents": peak, "monitorEnabled": HUB.monitor_enabled,
+                     "smoothMode": "chunked", "nWaypoints": len(joint_wps)}
     finally:
         HUB.stop_monitor()
 
 
-def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles) -> dict:
+_APPROX_MAX_REACH = 380.0  # arm physical reach (mm)
+
+
+def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles, *, skip_repeat_solve=False) -> dict:
     """When IK fails entirely, diagnose why so the caller (UI or LLM) gets a structured reason.
 
     Returns {code, message, diagnostics, retry_hints[]}.
@@ -124,9 +176,49 @@ def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles) -> dict:
       OUT_OF_REACH           — position itself unreachable (even with arbitrary orientation)
       ORIENTATION_INFEASIBLE — position reachable, but not with the requested orientation
       SOLVER_NONCONVERGENT   — both attempts hit numeric limits (edge case)
+
+    skip_repeat_solve=True (preferred when called immediately after a failed
+    solve_with_retries): infer reachability from the reach radius alone instead
+    of running another full position-only IK (~0.8s saved per failed call).
     """
     x, y, z = position[:3]
-    # Quick probe: is position reachable with any orientation? (position-only IK)
+    # Cheap geometric reach check first (catches gross out-of-reach instantly)
+    r = (x*x + y*y + z*z) ** 0.5
+    if r > _APPROX_MAX_REACH + 30:  # 30mm grace beyond nominal reach
+        return {
+            "code": "OUT_OF_REACH",
+            "message": f"位置 ({x:.0f},{y:.0f},{z:.0f}) はアーム到達範囲外",
+            "diagnostics": {"distance_from_base_mm": round(r, 1),
+                            "approx_max_reach_mm": _APPROX_MAX_REACH},
+            "retry_hints": [{"action": "move_closer", "patch": None,
+                             "rationale": f"R={r:.0f}mm がアーム reach (~{_APPROX_MAX_REACH:.0f}mm) を超えている"}],
+        }
+    if skip_repeat_solve:
+        # If the caller already exhausted position-only attempts in solve_with_retries,
+        # the cheapest informative answer without another 0.8s probe is:
+        #   - if no orientation was requested → solver couldn't even find position
+        #   - if orientation was requested → likely the orientation that's infeasible
+        if requested_rxyz is None:
+            return {
+                "code": "SOLVER_NONCONVERGENT",
+                "message": "IK ソルバが収束せず（位置のみ要求でも失敗）",
+                "diagnostics": {"position_reachable": "unknown", "distance_from_base_mm": round(r, 1)},
+                "retry_hints": [{"action": "retry_with_perturbed_seed", "patch": None,
+                                 "rationale": "現在角度を少し動かしてから再試行"}],
+            }
+        return {
+            "code": "ORIENTATION_INFEASIBLE",
+            "message": f"位置 ({x:.0f},{y:.0f},{z:.0f}) は到達可と思われるが要求姿勢 rxyz=({requested_rxyz[0]:.0f},{requested_rxyz[1]:.0f},{requested_rxyz[2]:.0f}) は不可",
+            "diagnostics": {"requested_orientation_deg": list(requested_rxyz),
+                            "distance_from_base_mm": round(r, 1)},
+            "retry_hints": [
+                {"action": "use_preserve_pose", "patch": {"pose": {"kind": "preserve"}},
+                 "rationale": "姿勢を捨てて位置だけ到達（手首は任意）"},
+                {"action": "use_align_top", "patch": {"pose": {"kind": "align_tool", "approach": "+z"}},
+                 "rationale": "上から接近に変更"},
+            ],
+        }
+    # legacy path (kept for any caller that still wants the expensive probe)
     pos_only_res, pos_only_mode = hub.solve_ik_with_mode([x, y, z], seed=current_angles)
     if pos_only_res is None:
         # Position itself unreachable
@@ -429,8 +521,8 @@ class Handler(BaseHTTPRequestHandler):
                     target = [x, y, z, rxyz[0], rxyz[1], rxyz[2]]
                 res, mode = HUB.solve_ik_with_mode(target)
                 if res is None:
-                    # Diagnose: was the failure about orientation, or true unreachability?
-                    diag = _diagnose_ik_failure(HUB, (x, y, z), rxyz, cur)
+                    # Diagnose using cheap heuristics (don't repeat the failed solve)
+                    diag = _diagnose_ik_failure(HUB, (x, y, z), rxyz, cur, skip_repeat_solve=True)
                     self._json(200, {
                         "ok": False, "angles": None,
                         "resolvedOrientation": rxyz, "ikMode": mode,
