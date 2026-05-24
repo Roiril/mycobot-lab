@@ -3,7 +3,7 @@
   "_comment": "Phase 1 placeholder calibration. Replace with real values from scripts/calibrate_intrinsics.py (intrinsics) and a future Phase 2 hand-eye calibration script.",
   "cameras": {
     "wrist": {
-      "index": 0,
+      "index": 3,
       "role": "wrist",
       "resolution": [640, 480],
       "intrinsics": {

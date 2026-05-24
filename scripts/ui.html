@@ -77,7 +77,15 @@
       <kbd>S</kbd> 目標=現在&nbsp;<kbd>H</kbd> HOME&nbsp;<kbd>Enter</kbd> APPLY&nbsp;<kbd>Esc</kbd> ABORT
     </div>
     <div id="camPip">
-      <div class="bar"><span>camera (PIP)</span><span id="camToggle">[ - ]</span></div>
+      <div class="bar">
+        <span>camera (PIP)</span>
+        <span style="display:flex;gap:6px;align-items:center">
+          <button id="btnCaptureCalib" title="現在のフレームを data/calib_images/ に保存（校正用）"
+                  style="font-size:10px;padding:1px 6px;margin:0">Capture Frame</button>
+          <span id="captureCount" style="color:#9d9d9d;font-size:10px">—</span>
+          <span id="camToggle" style="cursor:pointer;user-select:none">[ - ]</span>
+        </span>
+      </div>
       <img id="cam" src="/frame.jpg" alt="camera">
     </div>
   </div>
@@ -1002,6 +1010,29 @@ document.getElementById('camToggle').onclick = (e)=>{
   const pip = document.getElementById('camPip');
   pip.classList.toggle('min');
   e.target.textContent = pip.classList.contains('min') ? '[ + ]' : '[ - ]';
+};
+// Capture Frame -> POST /capture_calib_frame, persists JPEG into data/calib_images/<cam>/
+document.getElementById('btnCaptureCalib').onclick = async (e)=>{
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/capture_calib_frame', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cam: 'wrist'})
+    });
+    const j = await r.json();
+    if(j.ok){
+      document.getElementById('captureCount').textContent = j.count + ' 枚 (' + j.path + ')';
+      setStatus('Capture: '+j.path+' ('+j.count+' total)', 'ok');
+    } else {
+      setStatus('Capture 失敗: '+(j.error||'unknown'), 'err');
+    }
+  } catch(err){
+    setStatus('Capture エラー: '+err.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
 };
 let camTimer, coordTimer, powerTimer;
 let currentsTimer;

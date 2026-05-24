@@ -578,6 +578,48 @@ annotated キャッシュが無い場合は素の frame を返す + `X-Annotatio
 3. 検出はあるが workspace 外 → `error.diagnostics.rejected[].localize.ray_dir_base` / `cos_normal` を確認、hand_eye の符号誤り or `table_z_mm` ドリフトを疑う
 4. `/frame.jpg?annotate=last` で前回検出の bbox を確認 — VLM の見え方と人間の認識を突き合わせる
 
+### 8.10 人間向け hand-eye 座標規約
+
+`scripts/calibrate_intrinsics.py --hand-eye X,Y,Z,RX,RY,RZ` で渡す値の解釈規約。
+**EE frame (J6 origin) → camera lens center** への剛体変換を表現する。
+
+**EE frame 軸の定義**:
+- 原点 = J6 (手首先端) 原点
+- `+z` = ツール方向（J6 z 軸、`TOOL_LENGTH` だけ伸びてツール先端へ到達する向き）
+- `+x` = エフェクタの「前方」（kinematics 定義に従う — `src/arm/kinematics.py` の link_frames 出力と一致）
+- `+y` = 右手系（z × x の向き）
+
+**回転規約**: intrinsic XYZ Euler。行列合成は `R = Rz · Ry · Rx` の順で適用する（`scripts/calibrate_intrinsics.py::_euler_xyz_to_R` と一致）。
+
+**単位**: `X,Y,Z` は **mm**、`RX,RY,RZ` は **deg**。
+
+**実例 3 つ**:
+
+| シナリオ | コマンド |
+|---|---|
+| ツール先端から +x に 30mm、光軸はツール z 方向と同じ | `--hand-eye 30,0,0,0,0,0` |
+| ツール先端から +y に 25mm、光軸を tool z から +y 方向に 30° 倒す | `--hand-eye 0,25,0,0,30,0` |
+| ツール先端の手前 10mm、下方 40mm、光軸はツール z 方向と同じ | `--hand-eye -10,0,-40,0,0,0` |
+
+**分からないとき**: placeholder のまま `allow_uncalibrated: true` を `/perceive` に渡せば粗試行は可能。ただし world 座標は数 cm ずれるため、grasp は失敗するか掴み損ねる。試運転デバッグ用と割り切る。
+
+### 8.11 OBSERVE 姿勢使用時の物理クリアランス警告
+
+HOME `[0, 0, -90, 0, 0, 0]` → OBSERVE `[0, -30, -60, -30, 0, 0]` 遷移中、**ツール先端が base 前方 約 250mm 付近を通過する**。机上に被写体（コップ・スマホ等）が置かれていると、進入経路上で衝突しうる。
+
+**推奨運用**:
+
+1. **初回は被写体を退けて** OBSERVE 移動を確認（経路上にものが無い状態で「届く / 当たらない」を体感）
+2. その後、`/perceive` 用に被写体を所定位置へ配置
+3. 再度 OBSERVE 進入（このときは机面上の被写体だけが配置されている）
+4. 完了後 HOME に戻す
+
+**運用パラメータ**:
+
+- 速度 `speed=20` 以下を推奨（OBSERVE 移動中の異変を体で確認できる速度）
+- 緊急停止ボタンに**手が届く位置**で実行する（base の物理 STOP ボタン）
+- `src/arm/poses.py::OBSERVE` の docstring 警告も併せて読むこと
+
 ## 12. 参考
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — 設計思想と内部構造

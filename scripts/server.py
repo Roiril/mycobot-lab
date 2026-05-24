@@ -20,9 +20,10 @@ Endpoints:
   POST /abort             interrupt the currently executing /move or /home
   POST /release           release all servos (arm goes limp)
   GET  /frame.jpg         live camera frame
+  POST /capture_calib_frame {cam?} → save current frame into data/calib_images/<cam_id>/
 """
 from __future__ import annotations
-import sys, json, math, time, socket, pathlib, argparse, logging
+import sys, os, json, math, time, socket, pathlib, argparse, logging, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
@@ -724,6 +725,89 @@ class Handler(BaseHTTPRequestHandler):
                 HUB.abort_flag.set()
                 self._json(200, {"ok": True}); return
 
+            if path == "/capture_calib_frame":
+                """Body: {cam?: str}. Saves current JPEG frame into
+                data/calib_images/<cam_id>/<YYYYMMDD_HHMMSS>.jpg.
+                Returns {ok, path, count} on success.
+                Error envelope: {ok:false, error:{code, message, retry_hints}}.
+                """
+                cam_id = body.get("cam") or (VISION.registry.default_cam_id() if VISION is not None else None)
+                if VISION is None:
+                    self._json(503, {
+                        "ok": False,
+                        "error": {
+                            "code": "VISION_UNAVAILABLE",
+                            "message": "vision サブシステム未初期化",
+                            "retry_hints": [
+                                {"action": "configure_calibration", "patch": None,
+                                 "rationale": "data/calibration.json を作成してサーバ再起動"},
+                            ],
+                        },
+                    }); return
+                if cam_id is None:
+                    self._json(400, {
+                        "ok": False,
+                        "error": {
+                            "code": "CAM_REQUIRED",
+                            "message": "cam id 未指定 (default cam も解決できず)",
+                            "retry_hints": [
+                                {"action": "specify_cam", "patch": {"cam": "wrist"},
+                                 "rationale": "body に cam id を指定"},
+                            ],
+                        },
+                    }); return
+                if cam_id not in VISION.registry.cameras:
+                    self._json(404, {
+                        "ok": False,
+                        "error": {
+                            "code": "UNKNOWN_CAM",
+                            "message": f"unknown camera id: {cam_id}",
+                            "retry_hints": [
+                                {"action": "use_known_cam",
+                                 "patch": {"cam": sorted(VISION.registry.cameras.keys())[0]
+                                           if VISION.registry.cameras else "wrist"},
+                                 "rationale": "登録済みカメラのみ指定可"},
+                            ],
+                        },
+                    }); return
+                buf = VISION.registry.get_jpeg(cam_id)
+                if not buf:
+                    self._json(503, {
+                        "ok": False,
+                        "error": {
+                            "code": "FRAME_UNAVAILABLE",
+                            "message": f"camera {cam_id} からフレーム取得失敗",
+                            "retry_hints": [
+                                {"action": "retry_after_delay", "patch": None,
+                                 "rationale": "USB camera 一時失敗。数秒待って再試行"},
+                            ],
+                        },
+                    }); return
+                out_dir = ROOT / "data" / "calib_images" / cam_id
+                out_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                fpath = out_dir / f"{ts}.jpg"
+                # avoid collision within same second
+                i = 0
+                while fpath.exists():
+                    i += 1
+                    fpath = out_dir / f"{ts}_{i:02d}.jpg"
+                try:
+                    with open(fpath, "wb") as f:
+                        f.write(buf)
+                except OSError as e:
+                    self._json(500, {
+                        "ok": False,
+                        "error": {
+                            "code": "WRITE_FAILED",
+                            "message": f"file write failed: {e}",
+                            "retry_hints": [],
+                        },
+                    }); return
+                count = sum(1 for p in out_dir.glob("*.jpg"))
+                rel = fpath.relative_to(ROOT).as_posix()
+                self._json(200, {"ok": True, "path": rel, "count": count}); return
+
             if path == "/monitor":
                 enabled = bool(body.get("enabled", True))
                 HUB.monitor_enabled = enabled
@@ -761,6 +845,109 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": str(e)})
 
 
+def _emit_preflight(args, hub, vision) -> None:
+    """Print bootstrap diagnostics to stderr just before serve_forever().
+
+    Categories:
+      arm hub                — real/virtual + port + power
+      ANTHROPIC_API_KEY      — set/not set (value never printed)
+      vision calibration     — placeholder check per camera
+      workspace.table_z_mm   — implausible value detector (< FLOOR_Z)
+      cam index mismatch     — CLI --cam vs calibration entry index
+    Output goes to stderr so it doesn't interleave with HTTP access log on stdout.
+    """
+    lines: list[str] = []
+    all_ok = True
+
+    # arm hub
+    if args.offline:
+        lines.append("[OK]    arm hub: virtual hub (--offline)")
+    else:
+        port = getattr(getattr(hub, "arm", None), "port", "unknown")
+        power_ok = False
+        try:
+            power_ok = bool(hub.power_ok())
+        except Exception:
+            power_ok = False
+        tag = "[OK]" if power_ok else "[!] "
+        if not power_ok: all_ok = False
+        lines.append(f"{tag}    arm hub: real (port={port}, power={'on' if power_ok else 'OFF (E-stop?)'})")
+        if not power_ok:
+            lines.append("        fix: 緊急停止ボタンを解除して再起動 (時計回りで解除)")
+
+    # ANTHROPIC_API_KEY
+    if args.offline:
+        lines.append("[OK]    ANTHROPIC_API_KEY: offline mode (skip)")
+    else:
+        key_set = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        tag = "[OK]" if key_set else "[!] "
+        if not key_set: all_ok = False
+        lines.append(f"{tag}    ANTHROPIC_API_KEY: {'set' if key_set else 'NOT SET'}")
+        if not key_set:
+            lines.append('        fix: $env:ANTHROPIC_API_KEY="sk-ant-..."')
+
+    # vision calibration
+    if vision is None:
+        tag = "[OK]" if args.offline else "[!] "
+        if not args.offline: all_ok = False
+        lines.append(f"{tag}    vision calibration: subsystem not initialized")
+        if not args.offline:
+            lines.append("        fix: data/calibration.json を確認しサーバ再起動")
+    else:
+        try:
+            cams = vision.registry.list()
+        except Exception:
+            cams = []
+        placeholder_cams = [c for c in cams if c.get("placeholder")]
+        if not cams:
+            lines.append("[!]     vision calibration: no cameras registered")
+            all_ok = False
+        elif placeholder_cams:
+            ids = ",".join(c["id"] for c in placeholder_cams)
+            lines.append(f"[!]     vision calibration: PLACEHOLDER (cam {ids})")
+            lines.append(f"        fix: python scripts/calibrate_intrinsics.py --cam {placeholder_cams[0]['id']} --hand-eye X,Y,Z,RX,RY,RZ")
+            all_ok = False
+        else:
+            lines.append(f"[OK]    vision calibration: ok ({len(cams)} cam(s))")
+
+        # workspace.table_z_mm
+        try:
+            tz = vision.registry.table_z_mm
+        except Exception:
+            tz = None
+        if tz is None:
+            lines.append("[!]     workspace.table_z_mm: missing")
+            all_ok = False
+        elif tz < FLOOR_Z:
+            lines.append(f"[!]     workspace.table_z_mm = {tz} | {tz} < FLOOR_Z ({FLOOR_Z})")
+            lines.append("        fix: python scripts/calibrate_intrinsics.py --table-z-mm <measured>")
+            all_ok = False
+        else:
+            lines.append(f"[OK]    workspace.table_z_mm = {tz}")
+
+        # cam index mismatch (CLI --cam vs calibration.wrist.index)
+        try:
+            wrist = vision.registry.cameras.get("wrist")
+            wrist_idx = getattr(wrist, "index", None) if wrist is not None else None
+        except Exception:
+            wrist_idx = None
+        if (not args.offline) and wrist_idx is not None and args.cam != wrist_idx:
+            lines.append(f"[!]     cam index mismatch: --cam {args.cam} vs calibration.wrist.index {wrist_idx}")
+            lines.append("        (CLI 優先で動作)")
+            # not fatal — don't flip all_ok
+
+    sep = "=" * 64
+    print(sep, file=sys.stderr)
+    print("           mycobot-lab preflight", file=sys.stderr)
+    print(sep, file=sys.stderr)
+    if all_ok:
+        print("[OK] all preflight checks passed", file=sys.stderr)
+    else:
+        for ln in lines:
+            print(ln, file=sys.stderr)
+    print(sep, file=sys.stderr)
+
+
 def lan_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -770,7 +957,7 @@ def lan_ip() -> str:
 
 
 def main():
-    global HUB, INDEX_HTML, AUTH_TOKEN, SHUTTING_DOWN, MAX_SPEED_RUNTIME
+    global HUB, VISION, INDEX_HTML, AUTH_TOKEN, SHUTTING_DOWN, MAX_SPEED_RUNTIME
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser()
@@ -840,6 +1027,11 @@ def main():
     print(f"\n  [{mode}] http://localhost:{args.port}/")
     if args.bind == "0.0.0.0":
         print(f"  [{mode}] http://{lan_ip()}:{args.port}/  (LAN, auth=token)\n")
+    try:
+        _emit_preflight(args, HUB, VISION)
+    except Exception as _e:
+        print(f"[preflight] failed to emit summary: {_e}", file=sys.stderr)
+
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

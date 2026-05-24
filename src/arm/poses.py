@@ -19,6 +19,11 @@ WAVE_B = [0, 0, -90, -30, -30, 0]
 # These are conservative defaults that lie within the arm's natural folded reach;
 # they may be tuned later once camera FoV is measured with the real robot.
 # TODO(phase2): 実機確認 — Pose angles tuned by inspection; verify FoV with actual wrist cam.
+#
+# ⚠️ HOME→OBSERVE 遷移中、ツール先端が base 前方 ~250mm 付近を通過します。机上に
+#    物体がある場合、進入経路に衝突する可能性があるため、初回は被写体を退かして
+#    OBSERVE 移動を確認 → 戻ってから perceive 用に被写体配置、と段階推奨。
+#    机上クリアランス 150mm (ツール直下) を確保してください。
 OBSERVE = [0, -30, -60, -30, 0, 0]         # straight forward look-down
 OBSERVE_LEFT = [30, -30, -60, -30, 0, 0]   # look-down, base rotated +30°
 OBSERVE_RIGHT = [-30, -30, -60, -30, 0, 0] # look-down, base rotated -30°
