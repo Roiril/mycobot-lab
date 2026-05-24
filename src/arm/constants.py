@@ -18,14 +18,17 @@ ANGLE_DRIFT_TOL = 3.0       # client expected_current drift tolerance (deg)
 
 # --- safety geometry (mm) ---
 TABLE_MARGIN = 10.0         # genuine clearance above table top
-FK_TOOL_SLOP = 30.0         # FK tool-direction approximation error budget
+FK_TOOL_SLOP = 5.0          # residual FK error budget (URDF FK is ~1mm accurate; was 30 with old broken DH)
 FLOOR_Z = TABLE_MARGIN + FK_TOOL_SLOP  # min Z for any joint/tool position
 LINK_RADIUS = 35.0          # effective half-width of arm links
 SELF_CLEARANCE = 60.0       # min distance between non-adjacent link segments
 DEGENERATE_LINK_MM = 5.0    # below this length, skip a link in collision pairs
 
 # --- arm geometry ---
-TOOL_LENGTH = 65.5          # J6 origin → tool tip along J6 z-axis (mm). Approximate.
+# The 65.5mm flange offset is now built into the URDF FK (kinematics.py).
+# TOOL_LENGTH means "extension beyond the J6 tool flange, along flange +z".
+# Set this when a gripper / tool is attached; 0 = bare flange.
+TOOL_LENGTH = 0.0
 
 # --- current / force monitoring ---
 # pymycobot.get_servo_currents() returns per-joint current in mA (range 0~3250 per official docs).

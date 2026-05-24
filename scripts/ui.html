@@ -213,12 +213,12 @@ THREE.Object3D.DEFAULT_UP.set(0,0,1);
 const D = Math.PI/180;
 
 // --- kinematics + server constants (fetched from server at boot) ---
-let DH = null, LIMITS = null, TOOL = 0, FLOOR_Z = 40;
+let DH = null, URDF_LINKS = null, LIMITS = null, TOOL = 0, FLOOR_Z = 40;
 let GRASP_APPROACH_MM = 80, GRASP_LIFT_MM = 100, GRASP_SPEED_DEFAULT = 15, GRASP_SPEED_MAX = 25;
 let GRIPPER_TIP_CLEARANCE = 5, GRIPPER_PRESENT = false;
 async function loadKinematics(){
   const r = await fetch('/kinematics').then(r=>r.json());
-  DH = r.dh; LIMITS = r.joint_limits; TOOL = r.tool_length; FLOOR_Z = r.floor_z;
+  DH = r.dh; URDF_LINKS = r.urdf_links; LIMITS = r.joint_limits; TOOL = r.tool_length; FLOOR_Z = r.floor_z;
   if(r.grasp_approach_offset_mm) GRASP_APPROACH_MM = r.grasp_approach_offset_mm;
   if(r.grasp_lift_offset_mm) GRASP_LIFT_MM = r.grasp_lift_offset_mm;
   if(r.grasp_approach_speed_default) GRASP_SPEED_DEFAULT = r.grasp_approach_speed_default;
@@ -246,11 +246,37 @@ function linkTf(alphaDeg, a, d, thetaDeg){
     [0,            0,        0,     1],
   ];
 }
+function originTf(xyz, rpy){
+  const [rx,ry,rz] = rpy;
+  const cx=Math.cos(rx), sx=Math.sin(rx);
+  const cy=Math.cos(ry), sy=Math.sin(ry);
+  const cz=Math.cos(rz), sz=Math.sin(rz);
+  // Rz*Ry*Rx (URDF convention)
+  return [
+    [cy*cz, sx*sy*cz-cx*sz, cx*sy*cz+sx*sz, xyz[0]],
+    [cy*sz, sx*sy*sz+cx*cz, cx*sy*sz-sx*cz, xyz[1]],
+    [  -sy,          sx*cy,          cx*cy, xyz[2]],
+    [    0,              0,              0,      1],
+  ];
+}
+function rotzTf(th){
+  const c=Math.cos(th), s=Math.sin(th);
+  return [[c,-s,0,0],[s,c,0,0],[0,0,1,0],[0,0,0,1]];
+}
 function linkFrames(angles){
   const T = [mat4Identity()];
-  for(let i=0;i<6;i++){
-    const [alpha,a,d,off] = DH[i];
-    T.push(matMul(T[T.length-1], linkTf(alpha, a, d, angles[i]+off)));
+  // Prefer URDF-derived FK (matches firmware to ~1mm); falls back to DH for old clients.
+  if (URDF_LINKS) {
+    for(let i=0;i<6;i++){
+      const [xyz, rpy] = URDF_LINKS[i];
+      const step = matMul(originTf(xyz, rpy), rotzTf(angles[i] * Math.PI/180));
+      T.push(matMul(T[T.length-1], step));
+    }
+  } else {
+    for(let i=0;i<6;i++){
+      const [alpha,a,d,off] = DH[i];
+      T.push(matMul(T[T.length-1], linkTf(alpha, a, d, angles[i]+off)));
+    }
   }
   return T;
 }

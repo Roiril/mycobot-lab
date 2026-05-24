@@ -31,7 +31,7 @@ from urllib.parse import urlparse, parse_qs
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from arm.kinematics import joint_positions, end_effector, JOINT_LIMITS, DH  # noqa: E402
+from arm.kinematics import joint_positions, end_effector, JOINT_LIMITS, DH, URDF_LINKS  # noqa: E402
 from arm.safety import check_angles  # noqa: E402
 from arm.planner import plan_and_validate  # noqa: E402
 from arm.path_cartesian import linear as cart_linear, lift_translate_lower  # noqa: E402
@@ -250,7 +250,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/kinematics":
                 # Single source of truth for FK/safety; UI fetches this at boot.
                 self._json(200, {
-                    "dh": DH,
+                    "dh": DH,  # deprecated; FK now URDF-based. Kept for any old clients.
+                    "urdf_links": URDF_LINKS,
                     "joint_limits": JOINT_LIMITS,
                     "tool_length": TOOL_LENGTH,
                     "floor_z": FLOOR_Z, "link_radius": LINK_RADIUS,
@@ -275,6 +276,23 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/coords":
                 a = HUB.angles()
                 self._json(200, {"coords": list(end_effector(a)) if a else None, "angles": a}); return
+            if path == "/debug/fk_compare":
+                # Diagnostic: compare our FK against firmware get_coords() at the current pose.
+                # Useful when calibrating kinematics or attaching a new tool.
+                a = HUB.angles()
+                fk_tip = list(end_effector(a)) if a else None
+                fk_joints = joint_positions(a) if a else None
+                live = HUB.live_coords()
+                delta = None
+                if fk_tip and live and len(live) >= 3:
+                    delta = [fk_tip[i] - live[i] for i in range(3)]
+                self._json(200, {
+                    "angles": a,
+                    "fk_tip": fk_tip,
+                    "fk_joints": fk_joints,
+                    "firmware_coords": live,
+                    "delta_fk_minus_fw_xyz_mm": delta,
+                }); return
             if path == "/power":
                 self._json(200, {"ok": HUB.power_ok()}); return
             if path == "/currents":

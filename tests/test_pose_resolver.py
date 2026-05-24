@@ -58,15 +58,14 @@ class TestPoseResolver(unittest.TestCase):
         self.assertAlmostEqual(tool_z[2],  0.0,    places=2)
 
     def test_extend_toward_far(self):
-        r = resolve_pose({"kind": "extend_toward", "target": [300, 0, 200]}, (300, 0, 200), HOME_ANGLES)
+        # At HOME [0,0,-90,0,0,0] the URDF flange is at ≈(213.7, -155.3, 312.0).
+        # Pick a target whose direction from flange is unambiguously +X-dominant.
+        r = resolve_pose({"kind": "extend_toward", "target": [500, -155, 312]}, (500, -155, 312), HOME_ANGLES)
         self.assertIsNotNone(r)
-        # tool z should roughly point from J6 origin (~0,0,309) toward (300,0,200)
-        # Δ = (300, 0, -109) normalized
         from arm.pose_resolver import _euler_xyz_to_matrix
         R = _euler_xyz_to_matrix(*r)
         tool_z = (R[0][2], R[1][2], R[2][2])
-        # Should have +X component dominant (target is in front)
-        self.assertGreater(tool_z[0], 0.5)
+        self.assertGreater(tool_z[0], 0.9)
 
     def test_extend_toward_too_close(self):
         from arm.kinematics import link_frames
