@@ -68,6 +68,8 @@ class HubBase(abc.ABC):
     def shutdown(self) -> None: ...
     @abc.abstractmethod
     def get_currents(self) -> Optional[List[int]]: ...
+    @abc.abstractmethod
+    def get_servo_diagnostics(self) -> dict: ...
 
     def start_monitor(self):
         """Start current monitor (no-op if disabled or already running)."""
@@ -242,6 +244,46 @@ class Hub(HubBase):
             except Exception:
                 return None
 
+    def get_servo_diagnostics(self, full: bool = False):
+        """Batched per-servo diagnostics for UI live monitoring.
+
+        fast mode (default): currents + is_all_servo_enable (~100-150ms total)
+        full mode: + per-servo enable flags + temps + voltages (~1-2s, serial bound)
+
+        UI polls fast at 500ms and full every few seconds.
+        """
+        with self.io_lock:
+            out = {"currents": None, "enabled": None, "temps": None, "voltages": None, "all_enabled": None}
+            try:
+                cs = self.arm.mc.get_servo_currents()
+                if cs and cs != -1 and isinstance(cs, list):
+                    out["currents"] = list(cs)
+            except Exception: pass
+            try:
+                r = self.arm.mc.is_all_servo_enable()
+                out["all_enabled"] = 1 if r == 1 else 0 if r == 0 else None
+            except Exception: pass
+            if not full:
+                return out
+            try:
+                ts = self.arm.mc.get_servo_temps()
+                if ts and ts != -1 and isinstance(ts, list):
+                    out["temps"] = list(ts)
+            except Exception: pass
+            try:
+                vs = self.arm.mc.get_servo_voltages()
+                if vs and vs != -1 and isinstance(vs, list):
+                    out["voltages"] = list(vs)
+            except Exception: pass
+            try:
+                en = []
+                for j in range(1, 7):
+                    r = self.arm.mc.is_servo_enable(j)
+                    en.append(1 if r == 1 else 0 if r == 0 else None)
+                out["enabled"] = en
+            except Exception: pass
+            return out
+
     def live_coords(self) -> Optional[List[float]]:
         """End-effector pose from firmware (preferred over FK; gives correct tool orientation)."""
         with self.io_lock:
@@ -328,6 +370,16 @@ class VirtualHub(HubBase):
         if self._fault == "overcurrent":
             return [2000, 100, 100, 100, 100, 100]
         return [80, 80, 80, 80, 80, 80]
+
+    def get_servo_diagnostics(self, full: bool = False):
+        out = {
+            "currents": self.get_currents(),
+            "all_enabled": 1,
+            "enabled": None, "temps": None, "voltages": None,
+        }
+        if full:
+            out.update(enabled=[1,1,1,1,1,1], temps=[35,35,35,35,35,35], voltages=[24.0]*6)
+        return out
 
     def shutdown(self):
         try: self.stop_monitor()

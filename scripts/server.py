@@ -305,6 +305,23 @@ class Handler(BaseHTTPRequestHandler):
                     "poll_hz": CURRENT_POLL_HZ,
                     "sustained_polls": SUSTAINED_OVER_COUNT,
                 }); return
+            if path == "/servo_diagnostics":
+                # Batched per-servo state for UI live monitoring.
+                # ?full=1 to include temps + voltages + per-servo enable (slow,
+                # ~1-2s due to is_servo_enable being one round-trip each).
+                # Default is fast: currents + all_servo_enable (~100-200ms).
+                # power_ok is derived from all_enabled (avoids extra serial trips
+                # and avoids contention with the background CurrentMonitor).
+                import arm.constants as _c
+                q = parse_qs(urlparse(self.path).query)
+                full = q.get("full", ["0"])[0] in ("1", "true")
+                diag = HUB.get_servo_diagnostics(full=full)
+                diag["monitor_enabled"] = HUB.monitor_enabled
+                diag["threshold_mA"] = _c.CURRENT_THRESHOLD_MA
+                # Treat any-servo-released as "power not ok" for the UI badge;
+                # explicit is_power_on() is too expensive to call at 2Hz.
+                diag["power_ok"] = (diag.get("all_enabled") == 1)
+                self._json(200, diag); return
             if path == "/fk":
                 q = parse_qs(urlparse(self.path).query)
                 a = [float(x) for x in q.get("angles", [""])[0].split(",") if x]

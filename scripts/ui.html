@@ -183,12 +183,14 @@
     </div>
 
     <div class="panel" id="monPanel">
-      <h2>サーボ電流監視 <span class="badge ok" id="monBadge">ON</span></h2>
-      <div id="currentDisplay" style="font-family:Consolas,monospace;font-size:11px;line-height:1.4">—</div>
+      <h2>サーボ実時間監視 <span class="badge ok" id="monBadge">ON</span> <span id="monPowerBadge" class="badge ok" style="margin-left:4px">PWR</span></h2>
+      <div id="servoDiag" style="font-family:Consolas,monospace;font-size:11px;line-height:1.4">—</div>
+      <div id="diagFooter" style="color:#888;font-size:10px;margin-top:4px">—</div>
       <div style="margin-top:6px">
-        <label><input type="checkbox" id="cbMonitor" checked> 監視ON（過電流で自動abort）</label>
+        <label><input type="checkbox" id="cbMonitor" checked> 自動 abort 監視（しきい値超で停止）</label>
       </div>
       <div id="monWarn" style="display:none;margin-top:6px;padding:6px;background:#5a1d10;color:#fff;border-radius:3px;font-size:11px">⚠ 過電流監視 OFF — 衝突しても自動停止しません</div>
+      <div id="releaseWarn" style="display:none;margin-top:6px;padding:6px;background:#7a1a10;color:#fff;border-radius:3px;font-weight:bold">⚠⚠ サーボが release されました — 手で支えて下さい</div>
     </div>
 
     <div class="panel danger">
@@ -976,23 +978,96 @@ document.getElementById('cbMonitor').addEventListener('change', async e=>{
   document.getElementById('monWarn').style.display = enabled ? 'none' : 'block';
   document.getElementById('monPanel').classList.toggle('danger', !enabled);
 });
+// Per-joint sparkline history (last ~15s at 500ms poll = 30 samples)
+const SPARK_LEN = 30, SPARK_MAX_MA = 500;  // visual full-scale (auto-bumped if exceeded)
+const sparkHist = [[],[],[],[],[],[]];
+let sparkScale = SPARK_MAX_MA;
+function renderSpark(vals, w=80, h=18, color='#9cdcfe'){
+  if(vals.length < 2) return '';
+  const peak = Math.max(...vals.map(Math.abs));
+  if(peak > sparkScale) sparkScale = Math.min(3000, Math.ceil(peak/100)*100);
+  const stepX = w / (SPARK_LEN-1);
+  const pts = vals.map((v,i)=>{
+    const x = (SPARK_LEN-vals.length+i) * stepX;
+    const y = h - (Math.abs(v)/sparkScale)*h;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<svg width="${w}" height="${h}" style="vertical-align:middle"><polyline fill="none" stroke="${color}" stroke-width="1.2" points="${pts}"/></svg>`;
+}
+
+// Slow data (temps / voltages / per-servo enable) cached and refreshed every ~5s.
+let slowDiag = {temps:null, voltages:null, enabled:null, _t:0};
+async function refreshSlowDiag(){
+  try{
+    const j = await fetch('/servo_diagnostics?full=1').then(r=>r.json());
+    slowDiag = {temps:j.temps, voltages:j.voltages, enabled:j.enabled, _t:Date.now()};
+  }catch(e){}
+}
+
 async function pollCurrents(){
   try{
-    const j = await fetch('/currents').then(r=>r.json());
-    const d = document.getElementById('currentDisplay');
-    if(j.currents){
-      const thr = j.threshold_mA;
-      // bar visualization
-      const rows = j.currents.map((c,i)=>{
-        const ratio = Math.min(1, Math.abs(c) / thr);
-        const blocks = Math.round(ratio * 10);
-        const bar = '▮'.repeat(blocks) + '░'.repeat(10 - blocks);
-        const color = ratio > 1 ? '#f48771' : (ratio > 0.7 ? '#dcdc6a' : '#9cdcfe');
-        return `<div style="color:${color}">J${i+1} <span style="font-family:monospace">${bar}</span> ${String(Math.abs(c)).padStart(4)}mA</div>`;
-      }).join('');
-      d.innerHTML = rows + `<div style="color:#666;margin-top:2px">閾値 ${thr}mA / ${j.poll_hz}Hz / ${j.sustained_polls}連続</div>`;
-    } else { d.textContent = '— (取得不可)'; }
-  }catch(e){}
+    const j = await fetch('/servo_diagnostics').then(r=>r.json());
+    // merge slow cache for display
+    if(slowDiag.temps)    j.temps    = j.temps    || slowDiag.temps;
+    if(slowDiag.voltages) j.voltages = j.voltages || slowDiag.voltages;
+    if(slowDiag.enabled)  j.enabled  = j.enabled  || slowDiag.enabled;
+    const d = document.getElementById('servoDiag');
+    const fo = document.getElementById('diagFooter');
+    const thr = j.threshold_mA || 1500;
+    const cs = j.currents || [null,null,null,null,null,null];
+    // per-servo enable only available in full mode; fast mode gives all_enabled (bool)
+    const en = j.enabled  || (j.all_enabled != null ? [j.all_enabled,j.all_enabled,j.all_enabled,j.all_enabled,j.all_enabled,j.all_enabled] : [null,null,null,null,null,null]);
+    const ts = j.temps    || [null,null,null,null,null,null];
+
+    // update history (push raw, not abs — keeps sign visible if needed)
+    cs.forEach((c,i)=>{
+      if(c == null) return;
+      sparkHist[i].push(c);
+      if(sparkHist[i].length > SPARK_LEN) sparkHist[i].shift();
+    });
+
+    const rows = cs.map((c,i)=>{
+      const abs = c==null ? 0 : Math.abs(c);
+      const ratio = Math.min(1, abs / thr);
+      const blocks = Math.round(ratio * 8);
+      const bar = '█'.repeat(blocks) + '░'.repeat(8 - blocks);
+      const color = c==null ? '#666' : ratio > 1 ? '#f48771' : ratio > 0.7 ? '#dcdc6a' : ratio > 0.3 ? '#cdcdcd' : '#9cdcfe';
+      const enFlag = en[i] === 0 ? '<span style="color:#f48771;font-weight:bold">×</span>' :
+                     en[i] === 1 ? '<span style="color:#4ec9b0">●</span>' :
+                                   '<span style="color:#666">?</span>';
+      const temp = ts[i] != null
+        ? `<span style="color:${ts[i] >= 65 ? '#f48771' : ts[i] >= 55 ? '#dcdc6a' : '#888'}">${String(ts[i]).padStart(2)}°C</span>`
+        : '<span style="color:#666">--°C</span>';
+      const spark = renderSpark(sparkHist[i], 70, 16, color);
+      const mA = c==null ? ' ---' : String(abs).padStart(4);
+      return `<div style="display:flex;align-items:center;gap:6px;padding:1px 0">
+        <span style="width:18px;color:#888">J${i+1}</span>
+        ${enFlag}
+        <span style="color:${color};font-family:monospace">${bar}</span>
+        <span style="color:${color};font-weight:bold;width:55px;text-align:right">${mA} mA</span>
+        ${spark}
+        ${temp}
+      </div>`;
+    }).join('');
+    d.innerHTML = rows;
+
+    const vs = j.voltages;
+    const vMean = vs && vs.length ? (vs.reduce((a,b)=>a+b,0)/vs.length).toFixed(1) : '--';
+    fo.innerHTML = `閾値 ${thr}mA  /  spark範囲 0-${sparkScale}mA  /  電源 ${vMean}V  /  ${new Date().toLocaleTimeString()}`;
+
+    // release / power alarms
+    const releaseWarn = document.getElementById('releaseWarn');
+    const anyReleased = en.some(e => e === 0);
+    releaseWarn.style.display = anyReleased ? 'block' : 'none';
+    const pb = document.getElementById('monPowerBadge');
+    if(j.power_ok === false){
+      pb.textContent = 'NO PWR'; pb.className = 'badge err';
+    } else {
+      pb.textContent = 'PWR'; pb.className = 'badge ok';
+    }
+  }catch(e){
+    document.getElementById('servoDiag').innerHTML = `<span style="color:#f48771">取得失敗: ${e.message}</span>`;
+  }
 }
 
 // --- keyboard ---
@@ -1070,7 +1145,9 @@ function startTimers(){
   }, state.busy ? 150 : 250);
   coordTimer = setInterval(pollCurrent, state.busy ? 200 : 600);
   powerTimer = setInterval(pollPower, 1500);
-  currentsTimer = setInterval(pollCurrents, state.busy ? 150 : 500);
+  // 500ms 固定の fast poll (currents + power) + 5s ごとの full poll (temps/voltages)
+  currentsTimer = setInterval(pollCurrents, 500);
+  refreshSlowDiag(); setInterval(refreshSlowDiag, 5000);
 }
 window.addEventListener('beforeunload', ()=>{ clearInterval(camTimer); clearInterval(coordTimer); clearInterval(powerTimer); clearInterval(currentsTimer); });
 
