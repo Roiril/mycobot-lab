@@ -66,6 +66,13 @@ DEFAULT_PORT = 8000
 DEFAULT_CAM_INDEX = 3
 HOME_ANGLES = [0.0, 0.0, -90.0, 0.0, 0.0, 0.0]
 
+# --- camera observation ---
+# The wrist camera is physically mounted 90° rotated relative to flange "up"
+# (verified empirically: at observe pose with J6=0 the image came out sideways;
+# at J6=-90° it's upright). J6 rotates around flange +Z = camera optical axis,
+# so changing J6 only rolls the image, not the camera position.
+CAMERA_UPRIGHT_J6_DEG = 90.0
+
 # --- cartesian path generation ---
 CART_STEP_MM = 30.0                  # max cartesian step size between waypoints
 CART_LIFT_Z_MM = 320.0               # lift-translate-lower middle height

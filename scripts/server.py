@@ -41,7 +41,7 @@ from arm.hub import Hub, VirtualHub, HubBase  # noqa: E402
 from arm.vision_hub import VisionHub, VirtualVisionHub  # noqa: E402
 from arm.spatial_memory import SpatialMemory, j1_to_sector  # noqa: E402
 from arm.constants import (  # noqa: E402
-    MAX_SPEED, DEFAULT_PORT, DEFAULT_CAM_INDEX, HOME_ANGLES,
+    MAX_SPEED, DEFAULT_PORT, DEFAULT_CAM_INDEX, HOME_ANGLES, CAMERA_UPRIGHT_J6_DEG,
     ANGLE_DRIFT_TOL, TOOL_LENGTH, FLOOR_Z, LINK_RADIUS, TABLE_MARGIN, FK_TOOL_SLOP,
     CURRENT_THRESHOLD_MA, CURRENT_POLL_HZ, SUSTAINED_OVER_COUNT,
     SAFE_MODE_CURRENT_MA, CALIBRATION_MARKER,
@@ -946,7 +946,13 @@ class Handler(BaseHTTPRequestHandler):
                 # Clamp J1 to limits (with small margin for safety)
                 lo, hi = JOINT_LIMITS[0]
                 j1 = max(lo + 1, min(hi - 1, j1))
-                observe_angles = [j1, 0.0, -90.0, 0.0, 0.0, 0.0]
+                # J6 = CAMERA_UPRIGHT_J6_DEG rolls the camera so the image is
+                # upright (camera is physically mounted 90° rotated on the flange).
+                # Can be overridden via body for testing.
+                j6 = float(body.get("j6_deg", CAMERA_UPRIGHT_J6_DEG))
+                lo6, hi6 = JOINT_LIMITS[5]
+                j6 = max(lo6 + 1, min(hi6 - 1, j6))
+                observe_angles = [j1, 0.0, -90.0, 0.0, 0.0, j6]
                 # Move under motion_lock
                 if not HUB.motion_lock.acquire(blocking=False):
                     self._json(409, {"error": "motion in progress"}); return
