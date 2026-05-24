@@ -68,11 +68,18 @@ def check_angles(angles: Sequence[float]) -> Tuple[bool, str, List[int]]:
     # self-collision: include tool as link 6
     links = [(pts[i], pts[i+1]) for i in range(6)] + [(pts[6], tip)]
     def seglen(s): return ((s[1][0]-s[0][0])**2 + (s[1][1]-s[0][1])**2 + (s[1][2]-s[0][2])**2)**0.5
+    # Non-adjacent link pairs. (0,2) and (3,5) are excluded because their
+    # centerline distance is geometrically constant across all joint angles
+    # (74mm and 95mm respectively, from DH offsets d2 and d5) — they don't
+    # discriminate collision-vs-safe poses.
+    # Empirically observed: rubbing/stall poses had min variable-pair distance
+    # of 92-119mm (J1-J5, J2-J4, etc); HOME's min variable-pair = 135mm.
     pairs = [
         (0, 3), (0, 4), (0, 5), (0, 6),
         (1, 3), (1, 4), (1, 5), (1, 6),
         (2, 4), (2, 5), (2, 6),
-        (3, 5), (3, 6),
+        (3, 6),
+        (4, 6),
     ]
     for i, j in pairs:
         if seglen(links[i]) < DEGENERATE_LINK_MM or seglen(links[j]) < DEGENERATE_LINK_MM:

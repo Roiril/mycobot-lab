@@ -29,7 +29,11 @@ TABLE_MARGIN = 10.0         # genuine clearance above table top
 FK_TOOL_SLOP = 5.0          # residual FK error budget (URDF FK is ~1mm accurate; was 30 with old broken DH)
 FLOOR_Z = TABLE_MARGIN + FK_TOOL_SLOP  # min Z for any joint/tool position
 LINK_RADIUS = 35.0          # effective half-width of arm links
-SELF_CLEARANCE = 60.0       # min distance between non-adjacent link segments
+SELF_CLEARANCE = 105.0      # min centerline distance between non-adjacent (variable) links
+# ^ bumped from 60 → 105 after observing real-arm rubbing at the J5 latch poses.
+# Variable pairs (excluding geometric invariants 0-2 at 74mm and 3-5 at 95mm)
+# at HOME are ≥135mm. Stall poses had 92-119mm. 105 blocks A,B,C; D requires
+# the runtime stall detector (the model can't reach D from centerline alone).
 DEGENERATE_LINK_MM = 5.0    # below this length, skip a link in collision pairs
 
 # --- arm geometry ---
