@@ -867,7 +867,9 @@ orbit.target.set(100, 0, 200);
 // Distance limits so wheel-zoom doesn't fly into/out of the scene
 orbit.minDistance = 250;
 orbit.maxDistance = 2500;
-orbit.zoomSpeed = 0.6;
+orbit.zoomSpeed = 0.25;      // 1 wheel notch = small step
+orbit.enableDamping = true;  // smooth interpolation between frames
+orbit.dampingFactor = 0.1;
 orbit.update();
 const tcontrol = new TransformControls(camera, renderer.domElement);
 tcontrol.setSize(1.0);
@@ -1780,7 +1782,7 @@ window.addEventListener('resize', ()=>{
   camera.aspect = cont.clientWidth/cont.clientHeight; camera.updateProjectionMatrix();
   renderer.setSize(cont.clientWidth, cont.clientHeight);
 });
-(function loop(){ requestAnimationFrame(loop); renderer.render(scene, camera); })();
+(function loop(){ requestAnimationFrame(loop); orbit.update(); renderer.render(scene, camera); })();
 
 // --- localStorage persist (speed, mode, last XYZ. NOT joint target — stale = dangerous) ---
 const LSKEY = 'mycobot.ui.v1';
