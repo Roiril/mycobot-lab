@@ -179,7 +179,7 @@ def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
         HUB.stop_monitor()
 
 
-_APPROX_MAX_REACH = 380.0  # arm physical reach (mm)
+_APPROX_MAX_REACH = 380.0  # arm physical reach (mm) — matches ik_numeric._MAX_REACH_MM
 
 
 def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles, *, skip_repeat_solve=False) -> dict:
@@ -411,6 +411,17 @@ class Handler(BaseHTTPRequestHandler):
                     "poll_hz": CURRENT_POLL_HZ,
                     "sustained_polls": SUSTAINED_OVER_COUNT,
                 }); return
+            if path == "/workspace_data":
+                # Reach point cloud from the latest workspace probe (if any).
+                # Empty array if no probe has been run.
+                wp = ROOT / "data" / "workspace.json"
+                if not wp.exists():
+                    self._json(200, {"samples": [], "summary": None}); return
+                try:
+                    self._json(200, json.loads(wp.read_text(encoding="utf-8"))); return
+                except Exception as e:
+                    self._json(500, {"error": str(e)}); return
+
             if path == "/servo_diagnostics":
                 # Batched per-servo state for UI live monitoring.
                 # ?full=1 to include temps + voltages + per-servo enable (slow,

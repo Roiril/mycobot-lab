@@ -191,6 +191,10 @@
       </div>
       <div id="monWarn" style="display:none;margin-top:6px;padding:6px;background:#5a1d10;color:#fff;border-radius:3px;font-size:11px">⚠ 過電流監視 OFF — 衝突しても自動停止しません</div>
       <div id="releaseWarn" style="display:none;margin-top:6px;padding:6px;background:#7a1a10;color:#fff;border-radius:3px;font-weight:bold">⚠⚠ サーボが release されました — 手で支えて下さい</div>
+      <div style="margin-top:6px;border-top:1px solid #333;padding-top:6px">
+        <label><input type="checkbox" id="cbReachSphere" checked> reach 球（半径 380mm fast-fail 境界）</label>
+        <label style="margin-left:10px"><input type="checkbox" id="cbReachPoints" checked> probe 点群</label>
+      </div>
     </div>
 
     <div class="panel danger">
@@ -304,6 +308,52 @@ cont.appendChild(renderer.domElement);
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 const dl = new THREE.DirectionalLight(0xffffff, 0.8); dl.position.set(500,500,1000); scene.add(dl);
+
+// reach envelope visualization (wireframe sphere = max reach)
+// shows the geometric outer bound used for IK fast-fail
+const REACH_MM = 380;  // matches src/arm/ik_numeric._MAX_REACH_MM
+const reachSphere = new THREE.Mesh(
+  new THREE.SphereGeometry(REACH_MM, 24, 12),
+  new THREE.MeshBasicMaterial({color: 0x5a8acc, wireframe: true, transparent: true, opacity: 0.18})
+);
+reachSphere.visible = true;
+scene.add(reachSphere);
+
+// reach point cloud (loaded from data/workspace.json if available)
+const reachPointsGroup = new THREE.Group();
+scene.add(reachPointsGroup);
+async function loadReachPoints(){
+  try {
+    const r = await fetch('/workspace_data');
+    if (!r.ok) return;
+    const j = await r.json();
+    const samples = j.samples || [];
+    let nOk = 0, nFail = 0;
+    samples.forEach(s => {
+      const motion = s.motion;
+      if (!motion) return;
+      const color = motion.ok ? 0x4ec9b0 : 0xf48771;
+      const dot = new THREE.Mesh(
+        new THREE.SphereGeometry(8, 8, 6),
+        new THREE.MeshBasicMaterial({color, transparent: true, opacity: 0.8})
+      );
+      dot.position.set(s.x, s.y, s.z);
+      reachPointsGroup.add(dot);
+      motion.ok ? nOk++ : nFail++;
+    });
+    console.info(`reach cloud: ${nOk} ok, ${nFail} fail loaded`);
+  } catch(e){ /* no data yet */ }
+}
+loadReachPoints();
+
+// Toggles for reach visualization. Hidden by default-off would clutter the
+// scene; default-on aids placement.
+document.addEventListener('DOMContentLoaded', () => {
+  const cbSphere = document.getElementById('cbReachSphere');
+  const cbPoints = document.getElementById('cbReachPoints');
+  if (cbSphere) cbSphere.addEventListener('change', e => { reachSphere.visible = e.target.checked; });
+  if (cbPoints) cbPoints.addEventListener('change', e => { reachPointsGroup.visible = e.target.checked; });
+});
 
 // floor
 const floorMesh = new THREE.Mesh(

@@ -1,0 +1,1540 @@
+{
+  "summary": {
+    "timestamp": "2026-05-24 16:36:48",
+    "elapsed_s": 512.6,
+    "aborted": false,
+    "n_samples": 36,
+    "n_ik_free_ok": 19,
+    "n_ik_tool_down_ok": 14,
+    "n_ik_tool_horiz_ok": 9,
+    "n_motion_tried": 19,
+    "n_motion_ok": 10,
+    "n_ik_ok_but_motion_failed": 9,
+    "motion_failure_reasons": [
+      {
+        "r": 120,
+        "theta": 0,
+        "z": 380,
+        "http": null,
+        "error": null,
+        "skipped": "j5_extreme",
+        "stall_stuck": null
+      },
+      {
+        "r": 120,
+        "theta": 90,
+        "z": 380,
+        "http": null,
+        "error": null,
+        "skipped": "j5_extreme",
+        "stall_stuck": null
+      },
+      {
+        "r": 120,
+        "theta": 180,
+        "z": 380,
+        "http": null,
+        "error": null,
+        "skipped": "j5_extreme",
+        "stall_stuck": null
+      },
+      {
+        "r": 120,
+        "theta": 270,
+        "z": 380,
+        "http": null,
+        "error": null,
+        "skipped": "j5_extreme",
+        "stall_stuck": null
+      },
+      {
+        "r": 220,
+        "theta": 0,
+        "z": 120,
+        "http": null,
+        "error": null,
+        "skipped": "j5_extreme",
+        "stall_stuck": null
+      },
+      {
+        "r": 220,
+        "theta": 90,
+        "z": 120,
+        "http": null,
+        "error": null,
+        "skipped": "j5_extreme",
+        "stall_stuck": null
+      },
+      {
+        "r": 220,
+        "theta": 270,
+        "z": 240,
+        "http": 500,
+        "error": null,
+        "skipped": "home_reset_failed",
+        "stall_stuck": null
+      },
+      {
+        "r": 320,
+        "theta": 270,
+        "z": 120,
+        "http": 503,
+        "error": "single-shot 到達タイムアウト",
+        "skipped": null,
+        "stall_stuck": null
+      },
+      {
+        "r": 320,
+        "theta": 270,
+        "z": 240,
+        "http": 503,
+        "error": "single-shot 到達タイムアウト",
+        "skipped": null,
+        "stall_stuck": null
+      }
+    ],
+    "z_envelope_motion_confirmed": [
+      {
+        "z": 120,
+        "r_min": 220,
+        "r_max": 320,
+        "n": 3
+      },
+      {
+        "z": 240,
+        "r_min": 220,
+        "r_max": 320,
+        "n": 4
+      },
+      {
+        "z": 380,
+        "r_min": 220,
+        "r_max": 220,
+        "n": 3
+      }
+    ],
+    "peak_currents_per_joint_mA": [
+      19,
+      27,
+      33,
+      5,
+      10,
+      0
+    ],
+    "speed": 20,
+    "min_z_filter": 80.0,
+    "ik_only": false
+  },
+  "samples": [
+    {
+      "r": 120,
+      "theta": 0,
+      "z": 120,
+      "x": 120.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 120,
+      "theta": 0,
+      "z": 240,
+      "x": 120.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          46.9,
+          58.4,
+          -116.9,
+          -32.3,
+          89.7,
+          -43.2
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 120,
+      "theta": 0,
+      "z": 380,
+      "x": 120.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          81.3,
+          71.5,
+          -95.0,
+          -6.3,
+          63.1,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          46.8,
+          3.3,
+          3.7,
+          -87.5,
+          90.7,
+          -43.2
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          69.3,
+          5.5,
+          -106.4,
+          101.1,
+          -69.7,
+          -180.0
+        ]
+      },
+      "motion": {
+        "ok": false,
+        "skipped": "j5_extreme",
+        "j5_deg": 63.1
+      }
+    },
+    {
+      "r": 120,
+      "theta": 90,
+      "z": 120,
+      "x": 0.0,
+      "y": 120.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          118.5,
+          -30.0,
+          -98.8,
+          -50.8,
+          118.7,
+          -0.1
+        ]
+      },
+      "motion": null
+    },
+    {
+      "r": 120,
+      "theta": 90,
+      "z": 240,
+      "x": 0.0,
+      "y": 120.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          137.7,
+          59.1,
+          -117.9,
+          -31.2,
+          89.9,
+          47.5
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 120,
+      "theta": 90,
+      "z": 380,
+      "x": 0.0,
+      "y": 120.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          -113.3,
+          -40.1,
+          90.9,
+          -3.4,
+          -129.4,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": {
+        "ok": false,
+        "skipped": "j5_extreme",
+        "j5_deg": -129.4
+      }
+    },
+    {
+      "r": 120,
+      "theta": 180,
+      "z": 120,
+      "x": -120.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 120,
+      "theta": 180,
+      "z": 240,
+      "x": -120.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 120,
+      "theta": 180,
+      "z": 380,
+      "x": -120.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          -81.2,
+          -71.1,
+          94.4,
+          7.1,
+          -63.3,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": {
+        "ok": false,
+        "skipped": "j5_extreme",
+        "j5_deg": -63.3
+      }
+    },
+    {
+      "r": 120,
+      "theta": 270,
+      "z": 120,
+      "x": -0.0,
+      "y": -120.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 120,
+      "theta": 270,
+      "z": 240,
+      "x": -0.0,
+      "y": -120.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 120,
+      "theta": 270,
+      "z": 380,
+      "x": -0.0,
+      "y": -120.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          14.8,
+          83.6,
+          -93.1,
+          -8.4,
+          65.4,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          -42.8,
+          3.5,
+          3.4,
+          -87.7,
+          90.4,
+          -132.7
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": {
+        "ok": false,
+        "skipped": "j5_extreme",
+        "j5_deg": 65.4
+      }
+    },
+    {
+      "r": 220,
+      "theta": 0,
+      "z": 120,
+      "x": 220.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          22.7,
+          -26.6,
+          -98.6,
+          2.3,
+          93.9,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          39.1,
+          -47.2,
+          -66.6,
+          -64.5,
+          39.5,
+          -2.3
+        ]
+      },
+      "motion": {
+        "ok": false,
+        "skipped": "j5_extreme",
+        "j5_deg": 93.9
+      }
+    },
+    {
+      "r": 220,
+      "theta": 0,
+      "z": 240,
+      "x": 220.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          43.8,
+          19.6,
+          -116.8,
+          -13.4,
+          11.6,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          23.4,
+          5.9,
+          -97.2,
+          1.3,
+          90.0,
+          -64.7
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          40.0,
+          -50.8,
+          2.8,
+          -124.0,
+          37.3,
+          -6.1
+        ]
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 4.26,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 6,
+        "joint_err_deg": [
+          -2.41,
+          -0.53,
+          0.61,
+          0.66,
+          -0.27,
+          -0.03
+        ],
+        "max_abs_err_deg": 2.41,
+        "peak_currents": [
+          15,
+          17,
+          5,
+          0,
+          1,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 220,
+      "theta": 0,
+      "z": 380,
+      "x": 220.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          44.6,
+          18.6,
+          -87.7,
+          1.2,
+          1.3,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "relaxed_roll",
+        "angles": [
+          23.2,
+          -21.1,
+          1.1,
+          -51.6,
+          92.5,
+          -46.3
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 4.38,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 6,
+        "joint_err_deg": [
+          -2.42,
+          -0.59,
+          0.17,
+          -0.24,
+          -0.78,
+          -0.03
+        ],
+        "max_abs_err_deg": 2.42,
+        "peak_currents": [
+          13,
+          18,
+          29,
+          3,
+          10,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 220,
+      "theta": 90,
+      "z": 120,
+      "x": 0.0,
+      "y": 220.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          108.2,
+          -27.2,
+          -100.7,
+          8.1,
+          107.5,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "SAFETY_VIOLATION",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": {
+        "ok": false,
+        "skipped": "j5_extreme",
+        "j5_deg": 107.5
+      }
+    },
+    {
+      "r": 220,
+      "theta": 90,
+      "z": 240,
+      "x": 0.0,
+      "y": 220.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          133.0,
+          19.4,
+          -117.7,
+          -4.2,
+          21.6,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          113.8,
+          5.9,
+          -97.2,
+          1.3,
+          90.1,
+          23.8
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 7.83,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 17,
+        "joint_err_deg": [
+          -2.75,
+          1.16,
+          0.55,
+          0.25,
+          -1.13,
+          -0.03
+        ],
+        "max_abs_err_deg": 2.75,
+        "peak_currents": [
+          14,
+          23,
+          9,
+          0,
+          9,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 220,
+      "theta": 90,
+      "z": 380,
+      "x": 0.0,
+      "y": 220.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          134.1,
+          18.4,
+          -88.5,
+          10.0,
+          11.6,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 7.75,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 17,
+        "joint_err_deg": [
+          -2.62,
+          1.46,
+          0.79,
+          -0.25,
+          -0.71,
+          -0.03
+        ],
+        "max_abs_err_deg": 2.62,
+        "peak_currents": [
+          15,
+          27,
+          29,
+          4,
+          8,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 220,
+      "theta": 180,
+      "z": 120,
+      "x": -220.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SOLVER_NONCONVERGENT",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 220,
+      "theta": 180,
+      "z": 240,
+      "x": -220.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SOLVER_NONCONVERGENT",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 220,
+      "theta": 180,
+      "z": 380,
+      "x": -220.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 220,
+      "theta": 270,
+      "z": 120,
+      "x": -0.0,
+      "y": -220.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          45.4,
+          19.9,
+          121.0,
+          19.9,
+          4.1,
+          0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": true,
+        "mode": "relaxed_roll",
+        "angles": [
+          55.0,
+          19.3,
+          117.5,
+          42.8,
+          56.0,
+          20.7
+        ]
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 10.46,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 27,
+        "joint_err_deg": [
+          -2.95,
+          0.05,
+          -1.3,
+          0.05,
+          1.17,
+          0.23
+        ],
+        "max_abs_err_deg": 2.95,
+        "peak_currents": [
+          2,
+          27,
+          33,
+          4,
+          10,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 220,
+      "theta": 270,
+      "z": 240,
+      "x": -0.0,
+      "y": -220.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          45.3,
+          -19.3,
+          115.6,
+          24.9,
+          1.3,
+          0.4
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          66.0,
+          -7.2,
+          101.1,
+          -6.4,
+          -89.4,
+          154.3
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          54.8,
+          3.7,
+          74.0,
+          102.2,
+          54.6,
+          0.0
+        ]
+      },
+      "motion": {
+        "ok": false,
+        "skipped": "home_reset_failed",
+        "http": 500
+      }
+    },
+    {
+      "r": 220,
+      "theta": 270,
+      "z": 380,
+      "x": -0.0,
+      "y": -220.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          -45.5,
+          18.4,
+          -87.9,
+          0.5,
+          -1.0,
+          -0.3
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          -65.4,
+          -21.9,
+          2.9,
+          -53.1,
+          88.0,
+          -155.2
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          -53.8,
+          -2.6,
+          -98.6,
+          100.1,
+          52.8,
+          -179.3
+        ]
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 4.37,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 6,
+        "joint_err_deg": [
+          1.91,
+          -0.21,
+          -0.25,
+          -0.07,
+          0.04,
+          0.22
+        ],
+        "max_abs_err_deg": 1.91,
+        "peak_currents": [
+          16,
+          22,
+          30,
+          2,
+          2,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 320,
+      "theta": 0,
+      "z": 120,
+      "x": 320.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          28.6,
+          -55.9,
+          -78.0,
+          11.5,
+          -3.9,
+          -0.1
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          16.4,
+          -55.9,
+          -66.8,
+          32.8,
+          89.9,
+          -73.9
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 4.6,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 8,
+        "joint_err_deg": [
+          -2.94,
+          0.36,
+          -0.66,
+          -0.34,
+          0.83,
+          0.02
+        ],
+        "max_abs_err_deg": 2.94,
+        "peak_currents": [
+          12,
+          3,
+          24,
+          2,
+          7,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 320,
+      "theta": 0,
+      "z": 240,
+      "x": 320.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          28.8,
+          -32.9,
+          -78.5,
+          14.5,
+          -5.3,
+          -0.1
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          16.5,
+          -45.9,
+          -26.6,
+          -17.6,
+          88.1,
+          -74.4
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          28.3,
+          -57.5,
+          -0.5,
+          -70.7,
+          13.0,
+          -43.1
+        ]
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 4.13,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 5,
+        "joint_err_deg": [
+          -2.88,
+          -0.76,
+          -1.91,
+          -0.53,
+          1.61,
+          0.02
+        ],
+        "max_abs_err_deg": 2.88,
+        "peak_currents": [
+          18,
+          7,
+          25,
+          3,
+          9,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 320,
+      "theta": 0,
+      "z": 380,
+      "x": 320.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 320,
+      "theta": 90,
+      "z": 120,
+      "x": 0.0,
+      "y": 320.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          118.8,
+          -56.1,
+          -79.5,
+          15.7,
+          -3.8,
+          -0.1
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          106.0,
+          -55.1,
+          -68.0,
+          33.0,
+          90.0,
+          16.2
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 7.23,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 15,
+        "joint_err_deg": [
+          -2.7,
+          -0.76,
+          1.11,
+          -0.32,
+          0.2,
+          0.02
+        ],
+        "max_abs_err_deg": 2.7,
+        "peak_currents": [
+          19,
+          7,
+          22,
+          5,
+          7,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 320,
+      "theta": 90,
+      "z": 240,
+      "x": 0.0,
+      "y": 320.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          118.8,
+          -33.5,
+          -79.5,
+          19.5,
+          -5.8,
+          -0.1
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          105.9,
+          -65.2,
+          15.1,
+          -41.5,
+          91.0,
+          13.7
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": {
+        "ok": true,
+        "http": 200,
+        "elapsed_s": 7.25,
+        "smooth_mode": "single_shot",
+        "n_waypoints": 15,
+        "joint_err_deg": [
+          -2.7,
+          -0.77,
+          0.32,
+          -0.43,
+          0.27,
+          0.02
+        ],
+        "max_abs_err_deg": 2.7,
+        "peak_currents": [
+          17,
+          7,
+          29,
+          5,
+          10,
+          0
+        ],
+        "error": null
+      }
+    },
+    {
+      "r": 320,
+      "theta": 90,
+      "z": 380,
+      "x": 0.0,
+      "y": 320.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 320,
+      "theta": 180,
+      "z": 120,
+      "x": -320.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SOLVER_NONCONVERGENT",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 320,
+      "theta": 180,
+      "z": 240,
+      "x": -320.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "SOLVER_NONCONVERGENT",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 320,
+      "theta": 180,
+      "z": 380,
+      "x": -320.0,
+      "y": 0.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "motion": null
+    },
+    {
+      "r": 320,
+      "theta": 270,
+      "z": 120,
+      "x": -0.0,
+      "y": -320.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          61.2,
+          54.5,
+          74.5,
+          -2.8,
+          -0.5,
+          -0.1
+        ]
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "ORIENTATION_INFEASIBLE",
+        "angles": null
+      },
+      "motion": {
+        "ok": false,
+        "http": 503,
+        "elapsed_s": 11.05,
+        "smooth_mode": null,
+        "n_waypoints": 21,
+        "joint_err_deg": null,
+        "max_abs_err_deg": null,
+        "peak_currents": null,
+        "error": "single-shot 到達タイムアウト"
+      }
+    },
+    {
+      "r": 320,
+      "theta": 270,
+      "z": 240,
+      "x": -0.0,
+      "y": -320.0,
+      "ik_free": {
+        "ok": true,
+        "mode": "position_only",
+        "angles": [
+          61.2,
+          31.0,
+          74.2,
+          -3.7,
+          0.2,
+          -0.2
+        ]
+      },
+      "ik_tool_down": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          73.9,
+          45.4,
+          27.8,
+          16.1,
+          -90.4,
+          163.1
+        ]
+      },
+      "ik_tool_horiz": {
+        "ok": true,
+        "mode": "full",
+        "angles": [
+          69.2,
+          57.5,
+          -1.6,
+          107.2,
+          69.1,
+          5.5
+        ]
+      },
+      "motion": {
+        "ok": false,
+        "http": 503,
+        "elapsed_s": 11.04,
+        "smooth_mode": null,
+        "n_waypoints": 21,
+        "joint_err_deg": null,
+        "max_abs_err_deg": null,
+        "peak_currents": null,
+        "error": "single-shot 到達タイムアウト"
+      }
+    },
+    {
+      "r": 320,
+      "theta": 270,
+      "z": 380,
+      "x": -0.0,
+      "y": -320.0,
+      "ik_free": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_down": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "ik_tool_horiz": {
+        "ok": false,
+        "mode": "OUT_OF_REACH",
+        "angles": null
+      },
+      "motion": null
+    }
+  ]
+}

@@ -123,9 +123,21 @@ def main():
             }
         ik_free = rec["ik_free"]["ok"]
 
-        # ---- motion probe (only if free IK ok and motion enabled) ----
-        if not args.ik_only and ik_free:
-            angles = rec["ik_free"]["angles"]
+        # ---- motion probe ----
+        # Skip motion if IK chose extreme J5 angles (empirically those are the
+        # poses that trigger the J5 latch quirk on this firmware — see
+        # memory/mycobot_firmware_quirks.md). Detect by |J5| > 60 (close to the
+        # +75..+165 stuck range observed on this unit).
+        ik_angles = rec["ik_free"]["angles"]
+        j5_extreme = ik_angles and abs(ik_angles[4]) > 60
+        if not args.ik_only and ik_free and not j5_extreme:
+            angles = ik_angles
+            # Reset to HOME first — each probe starts from the same clean state,
+            # so failures don't cascade into worse poses for subsequent probes.
+            hc, _ = go_home(args.speed)
+            if hc != 200:
+                rec["motion"] = {"ok": False, "skipped": "home_reset_failed", "http": hc}
+                samples.append(rec); continue
             t_start = time.time()
             code, r = move(angles, args.speed)
             dt = time.time() - t_start
@@ -168,7 +180,11 @@ def main():
                 last_angles_seen = actual
             time.sleep(0.2)
         else:
-            rec["motion"] = None
+            if j5_extreme and not args.ik_only:
+                rec["motion"] = {"ok": False, "skipped": "j5_extreme",
+                                 "j5_deg": ik_angles[4] if ik_angles else None}
+            else:
+                rec["motion"] = None
 
         samples.append(rec)
         # progress
@@ -234,7 +250,9 @@ def main():
         "n_ik_ok_but_motion_failed": len(ik_ok_motion_fail),
         "motion_failure_reasons": [
             {"r": s["r"], "theta": s["theta"], "z": s["z"],
-             "http": s["motion"]["http"], "error": s["motion"]["error"]}
+             "http": s["motion"].get("http"), "error": s["motion"].get("error"),
+             "skipped": s["motion"].get("skipped"),
+             "stall_stuck": (s["motion"].get("stall") or {}).get("stuck_joints") if isinstance(s["motion"].get("error"), dict) else None}
             for s in motion_failures[:20]
         ],
         "z_envelope_motion_confirmed": z_envelope,

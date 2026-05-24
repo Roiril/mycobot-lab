@@ -168,7 +168,12 @@ def _seed_perturbations(seed: Sequence[float]) -> List[List[float]]:
     return [_clamp_to_limits(a) for a in raw]
 
 
-_MAX_REACH_MM = 460.0  # generous bound (true reach ~380mm); rejects only clearly impossible targets
+# Reach bound for fast-fail. myCobot 320 spec lists reach 350mm; geometric max
+# (all links extended) is ~456mm but unreachable as a tool tip due to self-
+# collision. Empirically observed reachable: ≤320mm radial (workspace probe).
+# Set 380mm — well above empirical 320mm to avoid false-rejecting borderline
+# IK solutions, well below 456mm to fast-fail truly impossible targets.
+_MAX_REACH_MM = 380.0
 
 
 def solve_with_retries(target_pos: Sequence[float],
