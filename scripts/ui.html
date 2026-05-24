@@ -199,14 +199,13 @@
 
     <div class="panel">
       <h2>カメラ観測 <span class="badge gray" id="observeBadge">idle</span></h2>
-      <div style="font-size:11px;color:#888;margin-bottom:6px">水平カメラ姿勢 (HOME + J1) → VLM 検出 → data/observation_log.md へ追記</div>
+      <div style="font-size:11px;color:#888;margin-bottom:6px">水平カメラ姿勢 (HOME + J1) → 撮影 → frame を data/observe_frames/ に保存（シュビーが Read して描写）</div>
       <div style="display:flex;gap:4px;margin-bottom:4px">
         <button class="dirBtn" data-dir="back" title="J1=0° (-Y)">後</button>
         <button class="dirBtn" data-dir="right" title="J1=90° (+X)">右</button>
         <button class="dirBtn" data-dir="front" title="J1=180° (+Y)">前</button>
         <button class="dirBtn" data-dir="left" title="J1=-90° (-X)">左</button>
       </div>
-      <input id="observeQuery" type="text" placeholder="VLM クエリ（空欄=デフォルト）" style="width:100%;padding:4px;background:#252526;color:#cdcdcd;border:1px solid #3c3c3c;font-size:11px">
       <div id="observeResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:200px;overflow:auto;white-space:pre-wrap">—</div>
     </div>
 
@@ -818,18 +817,15 @@ document.querySelectorAll('.dirBtn').forEach(btn => {
   btn.addEventListener('click', async () => {
     if (state.busy) return;
     const dir = btn.dataset.dir;
-    const query = document.getElementById('observeQuery').value.trim();
     const badge = document.getElementById('observeBadge');
     const out = document.getElementById('observeResult');
     badge.textContent = `観測中 (${dir})`; badge.className = 'badge warn';
-    out.textContent = `移動→撮影→VLM 中 ...`;
+    out.textContent = `移動→撮影中 ...`;
     setBusy(true);
     try {
-      const body = { direction: dir };
-      if (query) body.query = query;
       const r = await fetch('/observe', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(body),
+        body: JSON.stringify({direction: dir}),
       });
       const j = await r.json();
       if (!r.ok || j.ok === false) {
@@ -841,22 +837,24 @@ document.querySelectorAll('.dirBtn').forEach(btn => {
         return;
       }
       const obs = j.observe || {};
-      const objs = j.objects || [];
-      badge.textContent = `OK (${objs.length}件)`; badge.className = 'badge ok';
-      let txt = `[${dir}] J1=${obs.j1_deg}° flange=(${obs.flange_mm?.join(', ')}) mm\n`;
-      if (j.observe?.log_path) txt += `log: ${j.observe.log_path}\n`;
-      if (objs.length === 0) {
-        txt += `(検出物なし)\n`;
+      badge.textContent = `撮影 OK (${dir})`; badge.className = 'badge ok';
+      let txt = `[${dir}] J1=${obs.j1_deg}° camera_dir=${obs.camera_dir_hint}\n`;
+      txt += `flange=(${obs.flange_mm?.join(', ')}) mm @ z=${obs.camera_height_mm}mm\n`;
+      if (j.frame_path) {
+        txt += `\n📷 frame: ${j.frame_path}\n`;
+        txt += `\n👉 シュビーに依頼:\n` +
+               `「${j.frame_path} を見て、アーム根元基準で何があるか教えて」\n`;
       } else {
+        txt += `⚠ frame 保存失敗 (camera 取得不可)\n`;
+      }
+      if (j.vlm) {
+        const objs = j.vlm.objects || [];
+        txt += `\n--- VLM 検出 (${objs.length}件) ---\n`;
         objs.forEach(o => {
           const xyz = o.world_xyz_mm || [];
-          const tag = o.uncalibrated ? ' ⚠未校正' : '';
-          const oow = o.out_of_workspace ? ' ⚠out_of_ws' : '';
-          txt += `  ${o.label} @ (${xyz.map(v=>v.toFixed(0)).join(', ')}) mm`
-              + ` conf=${(o.confidence??0).toFixed(2)} cam=${o.source_cam}${tag}${oow}\n`;
+          txt += `  ${o.label} @ (${xyz.map(v=>v?.toFixed(0)).join(', ')}) mm conf=${(o.confidence??0).toFixed(2)}\n`;
         });
       }
-      (j.warnings || []).forEach(w => txt += `⚠ ${w}\n`);
       out.textContent = txt;
     } catch(e) {
       badge.textContent = 'エラー'; badge.className = 'badge err';

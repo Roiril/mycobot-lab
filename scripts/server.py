@@ -182,6 +182,20 @@ def _execute_joint_waypoints(joint_wps, speed: int) -> tuple[int, dict]:
 _APPROX_MAX_REACH = 380.0  # arm physical reach (mm) — matches ik_numeric._MAX_REACH_MM
 
 
+def _camera_dir_hint(j1_deg: float) -> str:
+    """Human-readable description of which way the camera looks at the observe pose."""
+    # At J1=0 camera looks -Y. Each +90° in J1 rotates camera +90° CCW.
+    # j1=0  → -Y (背面側)
+    # j1=90 → +X (右側)
+    # j1=180→ +Y (前面側)
+    # j1=-90→ -X (左側)
+    th = (j1_deg + 0) % 360
+    dirs = {0: "-Y (アーム背面)", 90: "+X (アーム右)", 180: "+Y (アーム前面)", 270: "-X (アーム左)"}
+    if int(round(th)) in dirs:
+        return dirs[int(round(th))]
+    return f"base angle ≈ {th:.0f}° (atan2 by J1)"
+
+
 def _append_observation_log(direction, j1, angles, flange_xyz, query, perceive_result) -> pathlib.Path:
     """Append a human-readable observation entry to data/observation_log.md.
 
@@ -889,29 +903,28 @@ class Handler(BaseHTTPRequestHandler):
                     HUB.motion_lock.release()
 
             if path == "/observe":
-                """Move to a horizontal-camera observation pose, run perceive,
-                append the result to data/observation_log.md as text.
+                """Move to a horizontal-camera observation pose and SAVE THE FRAME
+                to disk. No automated VLM detection — the captured JPEG is meant
+                to be viewed by Shubie (Claude Code) directly via the Read tool,
+                who then describes what's visible and appends to the log manually.
 
                 Body: {
                   direction: 'front'|'left'|'right'|'back' | float (J1 deg),
-                  query?: str (default: "周囲にある物体を全て検出"),
-                  append_log?: bool (default true)
+                  use_vlm?: bool (default false; if true and API key present, also runs Claude vision)
                 }
 
-                Observe pose is HOME [0,0,-90,0,0,0] with J1 rotated:
+                Observe pose = HOME [0,0,-90,0,0,0] with J1 rotated:
                   back  → J1=  0  (-Y)   ← HOME default; camera looks at -Y
                   right → J1= 90  (+X)
                   front → J1=180  (+Y)
                   left  → J1=-90  (-X)
-                At this pose, flange +Z (camera optical axis under placeholder
-                hand-eye calibration) is horizontal in the base XY plane.
+                Flange +Z (camera optical axis under placeholder hand-eye) is
+                horizontal in the base XY plane at this pose.
+
+                Returns {ok, observe:{...}, frame_path, vlm:?}.
                 """
-                if VISION is None:
-                    self._json(503, {"ok": False, "error": {"code": "VISION_UNAVAILABLE",
-                                     "message": "vision サブシステム未初期化"}}); return
                 direction = body.get("direction", "back")
-                query = str(body.get("query", "周囲にある物体を全て検出")).strip() or "周囲にある物体を全て検出"
-                append_log = bool(body.get("append_log", True))
+                use_vlm = bool(body.get("use_vlm", False))
                 # Resolve direction → J1
                 if isinstance(direction, (int, float)):
                     j1 = float(direction)
@@ -940,32 +953,49 @@ class Handler(BaseHTTPRequestHandler):
                         self._json(code, {**mov, "stage": "move_to_observe"}); return
                 finally:
                     HUB.motion_lock.release()
-                # Capture + perceive at the observation pose
+                # Capture frame
                 angles = HUB.angles()
                 if angles is None:
                     self._json(503, {"error": "angles lost after move"}); return
-                result = VISION.perceive(
-                    query=query, angles_deg=angles,
-                    use_table_plane=True, confidence_threshold=0.5,
-                    allow_uncalibrated=True,  # placeholder calibration is OK for journal use
-                    save_frame=False,
-                )
-                # Annotate result with observation context
+                time.sleep(0.4)  # let the camera autoexposure settle at new pose
+                jpg = HUB.frame_jpeg()
                 from arm.kinematics import joint_positions
                 pts = joint_positions(angles)
                 flange = pts[6]
-                result["observe"] = {
-                    "direction": direction, "j1_deg": j1,
-                    "angles_deg": [round(a, 2) for a in angles],
-                    "flange_mm": [round(x, 1) for x in flange],
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                frame_dir = ROOT / "data" / "observe_frames"
+                frame_dir.mkdir(parents=True, exist_ok=True)
+                dir_tag = str(direction).replace(".", "p")
+                frame_path = frame_dir / f"observe_{ts}_{dir_tag}.jpg"
+                if jpg:
+                    frame_path.write_bytes(jpg)
+                else:
+                    frame_path = None
+                result = {
+                    "ok": True,
+                    "observe": {
+                        "direction": direction, "j1_deg": j1,
+                        "angles_deg": [round(a, 2) for a in angles],
+                        "flange_mm": [round(x, 1) for x in flange],
+                        "camera_height_mm": round(flange[2], 1),
+                        # camera optical-axis direction in base XY plane (assuming
+                        # placeholder hand-eye = identity rotation, so +Z of flange
+                        # in base coords)
+                        "camera_dir_hint": _camera_dir_hint(j1),
+                    },
+                    "frame_path": str(frame_path.relative_to(ROOT)) if frame_path else None,
+                    "frame_full_path": str(frame_path) if frame_path else None,
                 }
-                # Append log
-                if append_log:
+                if use_vlm and VISION is not None:
                     try:
-                        log_path = _append_observation_log(direction, j1, angles, flange, query, result)
-                        result["observe"]["log_path"] = str(log_path.relative_to(ROOT))
+                        vlm_result = VISION.perceive(
+                            query=body.get("query", "周囲にある物体を全て検出"),
+                            angles_deg=angles,
+                            allow_uncalibrated=True, save_frame=False,
+                        )
+                        result["vlm"] = vlm_result
                     except Exception as e:
-                        result.setdefault("warnings", []).append(f"log append failed: {e}")
+                        result["vlm_error"] = str(e)
                 self._json(200, result); return
 
             if path == "/perceive":
