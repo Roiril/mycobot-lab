@@ -191,29 +191,61 @@
       </div>
       <div id="monWarn" style="display:none;margin-top:6px;padding:6px;background:#5a1d10;color:#fff;border-radius:3px;font-size:11px">⚠ 過電流監視 OFF — 衝突しても自動停止しません</div>
       <div id="releaseWarn" style="display:none;margin-top:6px;padding:6px;background:#7a1a10;color:#fff;border-radius:3px;font-weight:bold">⚠⚠ サーボが release されました — 手で支えて下さい</div>
-      <div style="margin-top:6px;border-top:1px solid #333;padding-top:6px">
-        <label><input type="checkbox" id="cbReachSphere" checked> reach 球</label>
-        <label style="margin-left:8px"><input type="checkbox" id="cbReachPoints" checked> probe 点群</label>
-        <label style="margin-left:8px"><input type="checkbox" id="cbMemory" checked> 空間記憶</label>
-      </div>
+    </div>
+
+    <div class="panel" id="safetyAlert" style="display:none;background:#7a1a10;border:1px solid #c0392b">
+      <h2 style="color:#fff">⚠ 安全違反状態</h2>
+      <div id="safetyAlertMsg" style="color:#fff;font-size:11px;margin-bottom:6px"></div>
+      <button id="btnRescueHome" style="width:100%;padding:8px;background:#fff;color:#000;font-weight:bold">rescue モードで HOME へ脱出</button>
+      <div style="color:#ffb;font-size:10px;margin-top:4px">経路の安全 check を bypass して上向きにのみ脱出します</div>
     </div>
 
     <div class="panel">
       <h2>カメラ観測 <span class="badge gray" id="observeBadge">idle</span></h2>
-      <div style="font-size:11px;color:#888;margin-bottom:6px">水平カメラ姿勢 (HOME + J1) → 撮影 → frame を data/observe_frames/ に保存（シュビーが Read して描写）</div>
+      <div style="font-size:11px;color:#888;margin-bottom:6px">水平カメラ姿勢で撮影 → シュビーが Read して描写・記憶</div>
       <div style="display:flex;gap:4px;margin-bottom:4px">
-        <button class="dirBtn" data-dir="back" title="J1=0° (-Y)">後</button>
-        <button class="dirBtn" data-dir="right" title="J1=90° (+X)">右</button>
-        <button class="dirBtn" data-dir="front" title="J1=180° (+Y)">前</button>
-        <button class="dirBtn" data-dir="left" title="J1=-90° (-X)">左</button>
+        <button class="dirBtn" data-dir="back"  title="後ろ向き (J1=0°)">後</button>
+        <button class="dirBtn" data-dir="right" title="右向き (J1=90°)">右</button>
+        <button class="dirBtn" data-dir="front" title="前向き (J1=165°)">前</button>
+        <button class="dirBtn" data-dir="left"  title="左向き (J1=-90°)">左</button>
       </div>
-      <div id="observeResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:160px;overflow:auto;white-space:pre-wrap">—</div>
-      <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <strong style="font-size:11px">空間短期記憶</strong>
-          <button id="btnMemoryClear" style="font-size:10px;padding:2px 6px">忘れる</button>
-        </div>
-        <div id="memoryPanel" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:4px;max-height:240px;overflow:auto"></div>
+      <div id="observeResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:120px;overflow:auto;white-space:pre-wrap">—</div>
+    </div>
+
+    <div class="panel">
+      <h2>ジェスチャ <span class="badge gray" id="gestureBadge">idle</span></h2>
+      <div style="font-size:11px;color:#888;margin-bottom:6px">記憶を使った高レベル動作</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px">
+        <button class="gestureBtn" data-spec='{"kind":"bow","direction":"front","return_home":true}'>前にお辞儀</button>
+        <button class="gestureBtn" data-spec='{"kind":"face","direction":"front","return_home":false}'>前を向く</button>
+        <button class="gestureBtn" data-spec='{"kind":"home"}'>HOME 戻る</button>
+        <button id="btnGesturePoint">記憶物を指差し ▾</button>
+      </div>
+      <select id="gesturePointTarget" style="display:none;width:100%;padding:4px;background:#252526;color:#cdcdcd;border:1px solid #3c3c3c;font-size:11px;margin-bottom:4px"></select>
+      <div id="gestureResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:4px;max-height:80px;overflow:auto;white-space:pre-wrap"></div>
+    </div>
+
+    <div class="panel" id="memPanel">
+      <h2>空間短期記憶 <button id="btnMemoryClear" style="font-size:10px;padding:2px 6px;float:right">忘れる</button></h2>
+      <div id="memoryPanel" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;max-height:200px;overflow:auto"></div>
+      <details style="margin-top:6px"><summary style="cursor:pointer;font-size:10px;color:#888">直近イベント履歴</summary>
+        <div id="memoryEvents" style="font-family:Consolas,monospace;font-size:9px;color:#888;max-height:120px;overflow:auto;margin-top:4px"></div>
+      </details>
+    </div>
+
+    <div class="panel" id="legendPanel">
+      <h2 style="cursor:pointer" id="legendToggle">3D 凡例 <span style="font-size:11px;color:#888">▾</span></h2>
+      <div id="legendBody" style="font-size:11px;display:none">
+        <div style="margin:2px 0"><span style="display:inline-block;width:18px;height:18px;background:#5a8acc;opacity:0.4;vertical-align:middle"></span> reach 球 (380mm fast-fail 境界)</div>
+        <div style="margin:2px 0"><span style="display:inline-block;width:12px;height:12px;background:#4ec9b0;border-radius:50%;vertical-align:middle"></span> probe 実機到達確認</div>
+        <div style="margin:2px 0"><span style="display:inline-block;width:12px;height:12px;background:#f48771;border-radius:50%;vertical-align:middle"></span> probe IK ok / motion 失敗</div>
+        <div style="margin:2px 0"><span style="display:inline-block;width:8px;height:8px;background:#569cd6;border-radius:50%;vertical-align:middle"></span> probe IK のみ確認</div>
+        <div style="margin:2px 0"><span style="display:inline-block;width:14px;height:14px;background:#ffd02f;border-radius:50%;vertical-align:middle"></span> 記憶物体</div>
+        <div style="margin:2px 0"><span style="display:inline-block;width:18px;height:10px;background:#4ec9b0;opacity:0.4;vertical-align:middle"></span> セクター扇形 (見た範囲・色=新しさ)</div>
+        <div style="margin:6px 0 4px;color:#888">表示切替:</div>
+        <label style="display:block"><input type="checkbox" id="cbReachSphere" checked> reach 球</label>
+        <label style="display:block"><input type="checkbox" id="cbReachPoints"> probe 点群 (default OFF)</label>
+        <label style="display:block"><input type="checkbox" id="cbMemory" checked> 空間記憶 (扇形+物体)</label>
       </div>
     </div>
 
@@ -339,12 +371,23 @@ const reachSphere = new THREE.Mesh(
 reachSphere.visible = true;
 scene.add(reachSphere);
 
+// Tag scene objects with userData.kind so the Raycaster can return a tooltip
+function makeProbeDot(color, radius, opacity, kind, label){
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 6, 4),
+    new THREE.MeshBasicMaterial({color, transparent: true, opacity})
+  );
+  dot.userData = {kind, label};
+  return dot;
+}
+
 // reach point cloud — combines dense IK envelope + motion-confirmed subset
 //   green  = motion confirmed reachable on the real arm
 //   red    = IK ok but motion failed (self-collision zone)
 //   cyan   = IK ok (envelope sample, no motion attempted)
 //   gray   = IK fail
 const reachPointsGroup = new THREE.Group();
+reachPointsGroup.visible = false;  // default OFF (toggleable via legend)
 scene.add(reachPointsGroup);
 async function loadReachPoints(){
   try {
@@ -360,35 +403,34 @@ async function loadReachPoints(){
     });
 
     const envSamples = (j.envelope && j.envelope.samples) || [];
-    let nOk=0, nFail=0, nIK=0, nDead=0;
+    let nOk=0, nFail=0, nIK=0;
     envSamples.forEach(s => {
       const key = `${s.x}_${s.y}_${s.z}`;
       const motion = motionByXYZ.get(key)?.motion;
-      let color, radius = 5, opacity = 0.5;
-      if (motion && motion.ok) { color = 0x4ec9b0; radius = 8; opacity = 0.9; nOk++; }
-      else if (motion && motion.ok === false) { color = 0xf48771; radius = 8; opacity = 0.9; nFail++; }
-      else if (s.ik_free && s.ik_free.ok) { color = 0x569cd6; radius = 4; opacity = 0.45; nIK++; }
-      else { return; /* skip IK-fail dots; they'd clutter */ nDead++; }
-      const dot = new THREE.Mesh(
-        new THREE.SphereGeometry(radius, 6, 4),
-        new THREE.MeshBasicMaterial({color, transparent: true, opacity})
-      );
+      let dot;
+      if (motion && motion.ok) {
+        dot = makeProbeDot(0x4ec9b0, 8, 0.9, 'probe_motion_ok', `実機到達確認 (${s.x},${s.y},${s.z})`);
+        nOk++;
+      } else if (motion && motion.ok === false) {
+        dot = makeProbeDot(0xf48771, 8, 0.9, 'probe_motion_fail',
+                           `IK ok / motion 失敗 (${s.x},${s.y},${s.z}) — self-collision 圏`);
+        nFail++;
+      } else if (s.ik_free && s.ik_free.ok) {
+        dot = makeProbeDot(0x569cd6, 4, 0.45, 'probe_ik_only', `IK 解あり (${s.x},${s.y},${s.z})`);
+        nIK++;
+      } else { return; }
       dot.position.set(s.x, s.y, s.z);
       reachPointsGroup.add(dot);
     });
-    // Also add motion samples whose grid keys aren't in envelope (sparse coverage)
     motSamples.forEach(s => {
       const key = `${s.x}_${s.y}_${s.z}`;
-      const inEnv = envSamples.some(es => `${es.x}_${es.y}_${es.z}` === key);
-      if (inEnv) return;
+      if (envSamples.some(es => `${es.x}_${es.y}_${es.z}` === key)) return;
       const motion = s.motion;
       if (!motion) return;
-      const color = motion.ok ? 0x4ec9b0 : 0xf48771;
+      const dot = motion.ok
+        ? makeProbeDot(0x4ec9b0, 8, 0.9, 'probe_motion_ok', `実機到達確認 (${s.x},${s.y},${s.z})`)
+        : makeProbeDot(0xf48771, 8, 0.9, 'probe_motion_fail', `motion 失敗 (${s.x},${s.y},${s.z})`);
       if (motion.ok) nOk++; else nFail++;
-      const dot = new THREE.Mesh(
-        new THREE.SphereGeometry(8, 6, 4),
-        new THREE.MeshBasicMaterial({color, transparent: true, opacity: 0.9})
-      );
       dot.position.set(s.x, s.y, s.z);
       reachPointsGroup.add(dot);
     });
@@ -414,6 +456,15 @@ const SECTOR_RANGES = {
   left:        [-112.5, -67.5],
   back_left:   [-67.5,  -22.5],
 };
+const SECTOR_LABEL_JA = {
+  back: '後ろ', back_right: '右後ろ', right: '右',  front_right: '右前',
+  front: '前',  front_left: '左前',   left: '左',   back_left: '左後ろ',
+};
+function ageLabel(age_s){
+  if (age_s < 60) return `${Math.round(age_s)}秒前に観察`;
+  if (age_s < 3600) return `${Math.round(age_s/60)}分前に観察`;
+  return `${Math.round(age_s/3600)}時間前`;
+}
 
 function memoryColor(freshness, stale){
   if (stale) return 0x666666;
@@ -495,23 +546,32 @@ function updateMemoryPanel(sectors){
   const rows = [];
   order.forEach(name => {
     const e = sectors[name];
+    const ja = SECTOR_LABEL_JA[name] || name;
     if (!e) {
-      rows.push(`<div style="opacity:0.4;padding:2px 0"><span style="color:#888">[${name}]</span> 未観測</div>`);
+      rows.push(`<div style="opacity:0.4;padding:2px 0"><span style="color:#888">${ja}</span> 未観測</div>`);
       return;
     }
     const c = freshnessColor(e.freshness, e.stale);
-    const age = e.age_s < 60 ? `${Math.round(e.age_s)}s` : `${Math.round(e.age_s/60)}m`;
-    const tag = e.stale ? ' ⚠stale' : '';
-    const desc = (e.description || '(未注釈)').slice(0, 80);
+    const tag = e.stale ? ' (古い)' : '';
+    const desc = (e.description || '(未注釈 — シュビーに見てもらう)').slice(0, 80);
     const objs = (e.objects || []).map(o => o.label).join(', ') || '-';
     rows.push(
       `<div style="padding:3px 0;border-bottom:1px solid #222">
-        <div><span style="color:${c};font-weight:bold">[${name}]</span> <span style="color:#888">${age}${tag}</span></div>
+        <div><span style="color:${c};font-weight:bold">${ja}</span> <span style="color:#888">${ageLabel(e.age_s)}${tag}</span></div>
         <div style="color:#cdcdcd;margin-left:4px">${desc}</div>
         <div style="color:#888;margin-left:4px;font-size:9px">物体: ${objs}</div>
       </div>`);
   });
   panel.innerHTML = rows.join('');
+  // also update event log (if present)
+  const evPanel = document.getElementById('memoryEvents');
+  if (evPanel && window._lastMemEvents) {
+    evPanel.innerHTML = window._lastMemEvents.slice().reverse().slice(0, 15).map(ev => {
+      const k = ev.kind === 'observe' ? '👁観察' : ev.kind === 'annotate' ? '✎注釈' : ev.kind;
+      const s = SECTOR_LABEL_JA[ev.sector] || ev.sector || '?';
+      return `<div>[${ev.iso?.slice(11) ?? '?'}] ${k} ${s} ${ev.description_preview ? '— '+ev.description_preview : ''}</div>`;
+    }).join('') || '<div style="color:#666">(履歴なし)</div>';
+  }
 }
 
 async function refreshMemory(){
@@ -520,6 +580,7 @@ async function refreshMemory(){
     if (!r.ok) return;
     const j = await r.json();
     const sectors = j.sectors || {};
+    window._lastMemEvents = j.events || [];
     updateMemoryPanel(sectors);
     // clear and rebuild 3D
     while (memoryGroup.children.length) memoryGroup.remove(memoryGroup.children[0]);
@@ -533,8 +594,9 @@ async function refreshMemory(){
       const worldAngle = (midJ1 + 270) * Math.PI / 180;
       const r = 280;
       const lx = r * Math.cos(worldAngle), ly = r * Math.sin(worldAngle);
-      const ageStr = e.stale ? `❌${Math.round(e.age_s)}s` : `${Math.round(e.age_s)}s`;
-      const labelTxt = `[${name}] ${ageStr} ${e.observer || ''}`;
+      const jaName = SECTOR_LABEL_JA[name] || name;
+      const ageStr = e.stale ? `${ageLabel(e.age_s)} (古い)` : ageLabel(e.age_s);
+      const labelTxt = `${jaName}  ${ageStr}`;
       const sp = makeTextSprite(labelTxt, color);
       sp.position.set(lx, ly, 360);
       memoryGroup.add(sp);
@@ -547,6 +609,8 @@ async function refreshMemory(){
           new THREE.MeshBasicMaterial({color: 0xffd02f, transparent: true, opacity: e.stale ? 0.3 : 0.85})
         );
         dot.position.set(p[0], p[1], p[2]);
+        dot.userData = {kind: 'memory_object', label: obj.label || '?',
+                        note: obj.note || '', sector: name};
         memoryGroup.add(dot);
         const lbl = makeTextSprite(obj.label || '?', 0xffd02f);
         lbl.position.set(p[0], p[1], p[2] + 25);
@@ -557,7 +621,36 @@ async function refreshMemory(){
   } catch(e){ console.warn('memory refresh:', e); }
 }
 refreshMemory();
-setInterval(refreshMemory, 5000);  // refresh every 5s
+setInterval(refreshMemory, 5000);
+
+// === Raycaster tooltip for 3D dots ===
+const tooltipEl = document.createElement('div');
+tooltipEl.style.cssText = 'position:absolute;background:rgba(0,0,0,0.85);color:#fff;padding:4px 8px;border-radius:3px;font:11px Consolas,monospace;pointer-events:none;z-index:1000;display:none;max-width:240px';
+document.body.appendChild(tooltipEl);
+const raycaster = new THREE.Raycaster();
+raycaster.params.Points = {threshold: 5};
+const mouseNDC = new THREE.Vector2();
+renderer.domElement.addEventListener('mousemove', (e) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouseNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouseNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouseNDC, camera);
+  const candidates = [];
+  if (reachPointsGroup.visible) candidates.push(...reachPointsGroup.children);
+  if (memoryGroup.visible) candidates.push(...memoryGroup.children.filter(o => o.userData?.kind));
+  const hits = raycaster.intersectObjects(candidates, false);
+  if (hits.length === 0) { tooltipEl.style.display = 'none'; return; }
+  const o = hits[0].object;
+  const u = o.userData || {};
+  let txt = u.label || u.kind || '?';
+  if (u.note) txt += `\n${u.note}`;
+  if (u.sector) txt += `\n(${SECTOR_LABEL_JA[u.sector] || u.sector} で観測)`;
+  tooltipEl.textContent = txt;
+  tooltipEl.style.left = (e.clientX + 12) + 'px';
+  tooltipEl.style.top  = (e.clientY + 12) + 'px';
+  tooltipEl.style.display = 'block';
+});
+renderer.domElement.addEventListener('mouseleave', () => { tooltipEl.style.display = 'none'; });
 
 document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('btnMemoryClear');
@@ -566,7 +659,108 @@ document.addEventListener('DOMContentLoaded', () => {
     await fetch('/memory/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
     refreshMemory();
   });
+  // === Legend toggle ===
+  const lt = document.getElementById('legendToggle');
+  const lb = document.getElementById('legendBody');
+  if (lt && lb) {
+    lt.addEventListener('click', () => {
+      const v = lb.style.display !== 'none';
+      lb.style.display = v ? 'none' : 'block';
+      lt.querySelector('span').textContent = v ? '▾' : '▴';
+    });
+    // expand by default for new users
+    lb.style.display = 'block';
+    lt.querySelector('span').textContent = '▴';
+  }
+  // === Gesture buttons ===
+  document.querySelectorAll('.gestureBtn').forEach(b => {
+    b.addEventListener('click', async () => {
+      if (state.busy) return;
+      const spec = JSON.parse(b.dataset.spec);
+      runGesture(spec);
+    });
+  });
+  // === Gesture: point at remembered object ===
+  const btnPt = document.getElementById('btnGesturePoint');
+  const selPt = document.getElementById('gesturePointTarget');
+  if (btnPt && selPt) {
+    btnPt.addEventListener('click', async () => {
+      // populate dropdown from current memory
+      const r = await fetch('/memory').then(r => r.json());
+      const items = [];
+      Object.entries(r.sectors || {}).forEach(([sec, e]) => {
+        (e.objects || []).forEach(o => {
+          if (o.label && o.position_mm) items.push({label: o.label, sec, pos: o.position_mm});
+        });
+      });
+      if (items.length === 0) {
+        document.getElementById('gestureResult').textContent = '記憶に物体なし。先に観測+annotate してください';
+        return;
+      }
+      selPt.innerHTML = '<option value="">— 指差し対象を選択 —</option>' +
+        items.map(it => `<option value="${it.label}">${it.label} (${SECTOR_LABEL_JA[it.sec] || it.sec})</option>`).join('');
+      selPt.style.display = 'block';
+    });
+    selPt.addEventListener('change', () => {
+      const label = selPt.value;
+      if (!label) return;
+      selPt.style.display = 'none';
+      runGesture({kind: 'point_at', label, return_home: true});
+    });
+  }
+  // === Rescue banner polling ===
+  setInterval(async () => {
+    try {
+      const j = await fetch('/safety_status').then(r => r.json());
+      const banner = document.getElementById('safetyAlert');
+      const msgEl = document.getElementById('safetyAlertMsg');
+      if (!banner) return;
+      if (j.ok === false && j.reason !== 'angles_unavailable') {
+        banner.style.display = 'block';
+        msgEl.textContent = j.msg || '現在姿勢が安全範囲外です';
+      } else {
+        banner.style.display = 'none';
+      }
+    } catch(e){}
+  }, 2000);
+  const btnRescue = document.getElementById('btnRescueHome');
+  if (btnRescue) btnRescue.addEventListener('click', async () => {
+    if (!confirm('rescue モードで HOME [0,0,-90,0,0,0] へ脱出します。安全 check を bypass しますが、各関節を上方向にのみ動かします。実行しますか？')) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/move', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({angles:[0,0,-90,0,0,0], speed:15, rescue:true})});
+      const j = await r.json();
+      setStatus(j.error ? ('rescue NG: '+j.error) : 'rescue 完了', j.error ? 'err' : 'ok');
+    } finally { setBusy(false); }
+  });
 });
+
+async function runGesture(spec){
+  const badge = document.getElementById('gestureBadge');
+  const out = document.getElementById('gestureResult');
+  badge.textContent = '実行中'; badge.className = 'badge warn';
+  out.textContent = `実行: ${JSON.stringify(spec)}`;
+  setBusy(true);
+  try {
+    const r = await fetch('/gesture', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(spec)});
+    const j = await r.json();
+    if (!r.ok || j.error) {
+      badge.textContent = 'NG'; badge.className = 'badge err';
+      out.textContent = `❌ ${j.error || j.msg || 'gesture failed'}`;
+    } else {
+      badge.textContent = `OK (${(j.completed||[]).length} steps)`; badge.className = 'badge ok';
+      out.textContent = (j.completed || []).map(s => `  ${s.index}. ${s.label}`).join('\n');
+    }
+  } catch(e) {
+    badge.textContent = 'エラー'; badge.className = 'badge err';
+    out.textContent = `通信失敗: ${e.message}`;
+  } finally {
+    setBusy(false);
+    refreshMemory();
+  }
+}
 
 // Toggles for reach visualization. Hidden by default-off would clutter the
 // scene; default-on aids placement.
@@ -669,7 +863,12 @@ function setTargetVisible(on){
 }
 
 const orbit = new OrbitControls(camera, renderer.domElement);
-orbit.target.set(100, 0, 200); orbit.update();
+orbit.target.set(100, 0, 200);
+// Distance limits so wheel-zoom doesn't fly into/out of the scene
+orbit.minDistance = 250;
+orbit.maxDistance = 2500;
+orbit.zoomSpeed = 0.6;
+orbit.update();
 const tcontrol = new TransformControls(camera, renderer.domElement);
 tcontrol.setSize(1.0);
 tcontrol.attach(goalSphere);
@@ -1346,10 +1545,40 @@ function highlightAbortJoint(j){
         labels[idx].classList.add('bad');
         setTimeout(()=>labels[idx].classList.remove('bad'), 6000);
       }
+      // 3D arm joint sphere: pulse red
+      try {
+        const jsph = armCurrent?.joints?.[idx];
+        if (jsph && jsph.material) {
+          const orig = jsph.material.color.getHex();
+          jsph.material.color.setHex(0xff3030);
+          jsph.material.emissive?.setHex?.(0xff3030);
+          // pulse 6 times over 6s
+          let n = 0;
+          const pulse = setInterval(() => {
+            n++;
+            jsph.material.color.setHex(n % 2 === 0 ? 0xff3030 : 0xff8080);
+            if (n >= 12) {
+              clearInterval(pulse);
+              jsph.material.color.setHex(orig);
+              jsph.material.emissive?.setHex?.(0x000000);
+            }
+          }, 500);
+        }
+      } catch(e) {}
     });
     const cur = j.stall.current, tgt = j.stall.target;
     const detail = stuck.map(ji => `J${ji}=${cur[ji-1]}°≠${tgt[ji-1]}°`).join(', ');
-    setStatus(`衝突検知 (stall): ${detail}`, 'err');
+    setStatus(`🚧 衝突検知 (stall): ${detail}`, 'err');
+    // also flash the stall banner if not already shown
+    const banner = document.getElementById('safetyAlert');
+    const msgEl = document.getElementById('safetyAlertMsg');
+    if (banner && msgEl) {
+      msgEl.textContent = `衝突検知: ${detail}`;
+      banner.style.display = 'block';
+      setTimeout(() => {
+        // banner will re-hide on next safety_status poll if pose now ok
+      }, 100);
+    }
     return;
   }
   if(j.peakJoint){

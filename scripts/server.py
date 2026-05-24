@@ -40,8 +40,9 @@ from arm.pose_resolver import resolve_pose  # noqa: E402
 from arm.hub import Hub, VirtualHub, HubBase  # noqa: E402
 from arm.vision_hub import VisionHub, VirtualVisionHub  # noqa: E402
 from arm.spatial_memory import SpatialMemory, j1_to_sector  # noqa: E402
+from arm import gestures as gestures_mod  # noqa: E402
 from arm.constants import (  # noqa: E402
-    MAX_SPEED, DEFAULT_PORT, DEFAULT_CAM_INDEX, HOME_ANGLES, CAMERA_UPRIGHT_J6_DEG,
+    MAX_SPEED, DEFAULT_SPEED, DEFAULT_PORT, DEFAULT_CAM_INDEX, HOME_ANGLES, CAMERA_UPRIGHT_J6_DEG,
     ANGLE_DRIFT_TOL, TOOL_LENGTH, FLOOR_Z, LINK_RADIUS, TABLE_MARGIN, FK_TOOL_SLOP,
     CURRENT_THRESHOLD_MA, CURRENT_POLL_HZ, SUSTAINED_OVER_COUNT,
     SAFE_MODE_CURRENT_MA, CALIBRATION_MARKER,
@@ -470,11 +471,20 @@ class Handler(BaseHTTPRequestHandler):
                     "poll_hz": CURRENT_POLL_HZ,
                     "sustained_polls": SUSTAINED_OVER_COUNT,
                 }); return
+            if path == "/safety_status":
+                # Quick safety check on the CURRENT pose. UI polls this and
+                # surfaces a big banner + rescue button when unsafe.
+                a = HUB.angles()
+                if a is None:
+                    self._json(200, {"ok": False, "reason": "angles_unavailable"}); return
+                ok, msg, bad = check_angles(a)
+                self._json(200, {"ok": ok, "msg": msg, "badJoints": bad, "angles": a}); return
+
             if path == "/memory":
                 # Spatial short-term memory dump (all sectors + freshness)
                 if MEMORY is None:
-                    self._json(200, {"sectors": {}}); return
-                self._json(200, {"sectors": MEMORY.all()}); return
+                    self._json(200, {"sectors": {}, "events": []}); return
+                self._json(200, {"sectors": MEMORY.all(), "events": MEMORY.events(limit=20)}); return
 
             if path == "/workspace_data":
                 # Reach point cloud from probe runs. Returns both the dense
@@ -715,6 +725,119 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     HUB.motion_lock.release()
 
+            if path == "/gesture":
+                """High-level gesture primitive. Internally builds a sequence
+                and runs it via the same atomic motion_lock path as /move_sequence.
+
+                Body: {
+                  kind: 'face'|'bow'|'point_at'|'home',
+                  direction?, target_xyz? (mm), label? (lookup in spatial memory),
+                  depth_deg?, hold_s?, j5_extend_deg?, upright?,
+                  return_home?: bool (append home step at end, default false)
+                }
+                If label is given and target_xyz is not, look up the position
+                from spatial memory.
+                """
+                spec = dict(body or {})
+                # Resolve memory-label lookup for point_at
+                if spec.get("kind") == "point_at" and "target_xyz" not in spec and "label" in spec:
+                    if MEMORY is None:
+                        self._json(503, {"error": "spatial memory unavailable"}); return
+                    label = spec["label"]
+                    all_mem = MEMORY.all()
+                    found = None
+                    for sect_name, sect in all_mem.items():
+                        for obj in sect.get("objects", []) or []:
+                            if obj.get("label") == label and obj.get("position_mm"):
+                                found = obj["position_mm"]; break
+                        if found: break
+                    if not found:
+                        self._json(404, {"error": f"label '{label}' not found in spatial memory"}); return
+                    spec["target_xyz"] = found
+                try:
+                    steps = gestures_mod.build(spec)
+                except (ValueError, KeyError) as e:
+                    self._json(400, {"error": f"gesture build: {e}"}); return
+                if spec.get("return_home", False):
+                    steps.extend(gestures_mod.go_home())
+                # Execute via internal sequence runner (same code as /move_sequence)
+                if not HUB.motion_lock.acquire(blocking=False):
+                    self._json(409, {"error": "motion in progress"}); return
+                completed = []
+                try:
+                    for idx, step in enumerate(steps):
+                        try:
+                            target = _coerce_angles(step.get("angles"))
+                        except ValueError as e:
+                            self._json(422, {"error": str(e), "failed_at": idx, "completed": completed}); return
+                        speed = int(step.get("speed", DEFAULT_SPEED))
+                        cur = HUB.angles()
+                        if cur is None:
+                            self._json(503, {"error": "angles unavailable", "failed_at": idx, "completed": completed}); return
+                        waypoints, ok, msg, bad = plan_and_validate(cur, target)
+                        if not ok:
+                            self._json(422, {"error": f"gesture step {idx} ({step.get('label','?')}): {msg}",
+                                             "badJoints": bad, "failed_at": idx, "completed": completed}); return
+                        code, resp = _execute_joint_waypoints(waypoints, speed)
+                        resp["label"] = step.get("label", f"step_{idx}")
+                        resp["index"] = idx
+                        if code != 200:
+                            completed.append(resp)
+                            self._json(code, {"error": f"gesture step {idx} failed", "completed": completed}); return
+                        completed.append(resp)
+                        pause = float(step.get("pause_s", 0.0))
+                        if pause > 0: time.sleep(min(pause, 5.0))
+                    self._json(200, {"ok": True, "gesture": spec.get("kind"), "completed": completed}); return
+                finally:
+                    HUB.motion_lock.release()
+
+            if path == "/move_sequence":
+                """Atomic sequence of moves under a single motion_lock.
+
+                Body: {steps: [{angles, speed?, label?, pause_s?}, ...]}
+                Each step is safety-checked before execution; on first failure,
+                returns 422 with the step index and reason. Successful steps
+                completed before the failure are NOT rolled back.
+
+                Returns: {ok, completed: [...step_results], failed_at?: idx}
+                """
+                steps = body.get("steps")
+                if not isinstance(steps, list) or not steps:
+                    self._json(400, {"error": "steps (non-empty list) required"}); return
+                if not HUB.motion_lock.acquire(blocking=False):
+                    self._json(409, {"error": "motion in progress"}); return
+                completed = []
+                try:
+                    for idx, step in enumerate(steps):
+                        try:
+                            target = _coerce_angles(step.get("angles"))
+                        except ValueError as e:
+                            self._json(422, {"error": str(e), "failed_at": idx, "completed": completed}); return
+                        speed = int(step.get("speed", DEFAULT_SPEED))
+                        if not 1 <= speed <= MAX_SPEED_RUNTIME:
+                            self._json(422, {"error": f"speed {speed} out of [1,{MAX_SPEED_RUNTIME}]",
+                                             "failed_at": idx, "completed": completed}); return
+                        cur = HUB.angles()
+                        if cur is None:
+                            self._json(503, {"error": "angles unavailable", "failed_at": idx, "completed": completed}); return
+                        waypoints, ok, msg, bad = plan_and_validate(cur, target)
+                        if not ok:
+                            self._json(422, {"error": f"step {idx} ({step.get('label','?')}): {msg}",
+                                             "badJoints": bad, "failed_at": idx, "completed": completed}); return
+                        code, resp = _execute_joint_waypoints(waypoints, speed)
+                        resp["label"] = step.get("label", f"step_{idx}")
+                        resp["index"] = idx
+                        if code != 200:
+                            completed.append(resp)
+                            self._json(code, {"error": f"step {idx} ({step.get('label','?')}) failed",
+                                              "failed_at": idx, "step_response": resp, "completed": completed}); return
+                        completed.append(resp)
+                        pause = float(step.get("pause_s", 0.0))
+                        if pause > 0: time.sleep(min(pause, 5.0))
+                    self._json(200, {"ok": True, "completed": completed, "n_steps": len(steps)}); return
+                finally:
+                    HUB.motion_lock.release()
+
             if path == "/move_cartesian":
                 cart_mode = body.get("mode", "lift")
                 if cart_mode not in ("linear", "lift", "auto"):
@@ -933,19 +1056,20 @@ class Handler(BaseHTTPRequestHandler):
                 """
                 direction = body.get("direction", "back")
                 use_vlm = bool(body.get("use_vlm", False))
-                # Resolve direction → J1. 'front' uses J1=+168 (max), close to
-                # +Y but not quite (J1 hardware limit is ±168°).
+                # Resolve direction → J1. 'front' uses J1=+165 (3° margin from
+                # ±168 limit) — servos overshoot ~0.3° on landing, and a return
+                # move would then start above the joint limit and fail safety.
                 if isinstance(direction, (int, float)):
                     j1 = float(direction)
                 else:
-                    dirmap = {"back": 0.0, "right": 90.0, "front": 168.0, "left": -90.0,
-                              "back_alt": -168.0}  # alt: front from the other side
+                    dirmap = {"back": 0.0, "right": 90.0, "front": 165.0, "left": -90.0,
+                              "back_alt": -165.0}
                     j1 = dirmap.get(str(direction).lower())
                     if j1 is None:
                         self._json(400, {"error": f"unknown direction '{direction}'; expected front|left|right|back or numeric J1 deg"}); return
-                # Clamp J1 to limits (with small margin for safety)
+                # Clamp J1 to limits with 3° margin for overshoot safety
                 lo, hi = JOINT_LIMITS[0]
-                j1 = max(lo + 1, min(hi - 1, j1))
+                j1 = max(lo + 3, min(hi - 3, j1))
                 # J6 = CAMERA_UPRIGHT_J6_DEG rolls the camera so the image is
                 # upright (camera is physically mounted 90° rotated on the flange).
                 # Can be overridden via body for testing.
@@ -1028,6 +1152,8 @@ class Handler(BaseHTTPRequestHandler):
                         },
                         observer="pending",  # set when annotated
                         description="",
+                        frames_dir=ROOT / "data" / "observe_frames",
+                        keep_per_sector=3,
                     )
                     result["memory_sector"] = mem_entry["sector"]
                 self._json(200, result); return
