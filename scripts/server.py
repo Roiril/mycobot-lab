@@ -39,6 +39,7 @@ from arm.ik_path import plan_ik_path  # noqa: E402
 from arm.pose_resolver import resolve_pose  # noqa: E402
 from arm.hub import Hub, VirtualHub, HubBase  # noqa: E402
 from arm.vision_hub import VisionHub, VirtualVisionHub  # noqa: E402
+from arm.spatial_memory import SpatialMemory, j1_to_sector  # noqa: E402
 from arm.constants import (  # noqa: E402
     MAX_SPEED, DEFAULT_PORT, DEFAULT_CAM_INDEX, HOME_ANGLES,
     ANGLE_DRIFT_TOL, TOOL_LENGTH, FLOOR_Z, LINK_RADIUS, TABLE_MARGIN, FK_TOOL_SLOP,
@@ -56,6 +57,7 @@ log = logging.getLogger("mycobot.server")
 
 HUB: HubBase | None = None
 VISION: VisionHub | None = None
+MEMORY: SpatialMemory | None = None
 INDEX_HTML = ""
 AUTH_TOKEN: str | None = None
 SHUTTING_DOWN = False
@@ -468,6 +470,12 @@ class Handler(BaseHTTPRequestHandler):
                     "poll_hz": CURRENT_POLL_HZ,
                     "sustained_polls": SUSTAINED_OVER_COUNT,
                 }); return
+            if path == "/memory":
+                # Spatial short-term memory dump (all sectors + freshness)
+                if MEMORY is None:
+                    self._json(200, {"sectors": {}}); return
+                self._json(200, {"sectors": MEMORY.all()}); return
+
             if path == "/workspace_data":
                 # Reach point cloud from probe runs. Returns both the dense
                 # IK-only envelope (workspace.json) and the motion-confirmed
@@ -925,18 +933,19 @@ class Handler(BaseHTTPRequestHandler):
                 """
                 direction = body.get("direction", "back")
                 use_vlm = bool(body.get("use_vlm", False))
-                # Resolve direction → J1
+                # Resolve direction → J1. 'front' uses J1=+168 (max), close to
+                # +Y but not quite (J1 hardware limit is ±168°).
                 if isinstance(direction, (int, float)):
                     j1 = float(direction)
                 else:
-                    dirmap = {"back": 0.0, "right": 90.0, "front": 180.0, "left": -90.0}
+                    dirmap = {"back": 0.0, "right": 90.0, "front": 168.0, "left": -90.0,
+                              "back_alt": -168.0}  # alt: front from the other side
                     j1 = dirmap.get(str(direction).lower())
                     if j1 is None:
                         self._json(400, {"error": f"unknown direction '{direction}'; expected front|left|right|back or numeric J1 deg"}); return
-                # Clamp J1 to limits
+                # Clamp J1 to limits (with small margin for safety)
                 lo, hi = JOINT_LIMITS[0]
-                if not lo <= j1 <= hi:
-                    self._json(400, {"error": f"J1={j1}° outside limits [{lo},{hi}]"}); return
+                j1 = max(lo + 1, min(hi - 1, j1))
                 observe_angles = [j1, 0.0, -90.0, 0.0, 0.0, 0.0]
                 # Move under motion_lock
                 if not HUB.motion_lock.acquire(blocking=False):
@@ -957,8 +966,13 @@ class Handler(BaseHTTPRequestHandler):
                 angles = HUB.angles()
                 if angles is None:
                     self._json(503, {"error": "angles lost after move"}); return
-                time.sleep(0.4)  # let the camera autoexposure settle at new pose
-                jpg = HUB.frame_jpeg()
+                # Wait for the arm to physically settle (single_shot may return
+                # 'reached' just as the joints first enter tolerance — they're
+                # still decelerating). 800ms covers ~speed-20 settling.
+                time.sleep(0.8)
+                # fresh=True flushes the cv2 driver buffer; otherwise the JPEG
+                # is the frame captured BEFORE the move (~5 frames stale).
+                jpg = HUB.frame_jpeg(fresh=True)
                 from arm.kinematics import joint_positions
                 pts = joint_positions(angles)
                 flange = pts[6]
@@ -996,7 +1010,54 @@ class Handler(BaseHTTPRequestHandler):
                         result["vlm"] = vlm_result
                     except Exception as e:
                         result["vlm_error"] = str(e)
+                # Record in spatial memory (description filled in later via /memory/annotate)
+                if MEMORY is not None:
+                    mem_entry = MEMORY.record(
+                        j1_deg=j1,
+                        frame_path=result.get("frame_path"),
+                        camera_pose={
+                            "flange_mm": result["observe"]["flange_mm"],
+                            "camera_dir_hint": result["observe"]["camera_dir_hint"],
+                            "camera_height_mm": result["observe"]["camera_height_mm"],
+                        },
+                        observer="pending",  # set when annotated
+                        description="",
+                    )
+                    result["memory_sector"] = mem_entry["sector"]
                 self._json(200, result); return
+
+            if path == "/memory/clear":
+                if MEMORY is None:
+                    self._json(200, {"ok": True}); return
+                MEMORY.clear()
+                self._json(200, {"ok": True, "cleared": True}); return
+
+            if path == "/memory/annotate":
+                """Update the spatial memory entry for a sector with a description
+                + structured objects, after Shubie views the captured frame.
+                Body: {sector?: str, j1_deg?: float, description: str,
+                       objects?: [{label, position_mm?, note?}], observer?: str}
+                """
+                if MEMORY is None:
+                    self._json(503, {"error": "memory not initialized"}); return
+                desc = str(body.get("description", "")).strip()
+                objects = body.get("objects")
+                observer = body.get("observer", "シュビー")
+                if "j1_deg" in body:
+                    j1 = float(body["j1_deg"])
+                elif "sector" in body:
+                    # Use sector midpoint to find entry
+                    sector = body["sector"]
+                    all_mem = MEMORY.all()
+                    if sector not in all_mem:
+                        self._json(404, {"error": f"sector '{sector}' not in memory"}); return
+                    j1 = all_mem[sector].get("j1_deg", 0)
+                else:
+                    self._json(400, {"error": "provide j1_deg or sector"}); return
+                updated = MEMORY.annotate(j1_deg=j1, description=desc, objects=objects, observer=observer)
+                if updated is None:
+                    self._json(404, {"error": "no entry for that sector"}); return
+                self._json(200, {"ok": True, "entry": updated}); return
 
             if path == "/perceive":
                 """Body: {query, cameras?, use_table_plane?, confidence_threshold?, consensus?, refine?}
@@ -1316,7 +1377,7 @@ def lan_ip() -> str:
 
 
 def main():
-    global HUB, VISION, INDEX_HTML, AUTH_TOKEN, SHUTTING_DOWN, MAX_SPEED_RUNTIME
+    global HUB, VISION, INDEX_HTML, AUTH_TOKEN, SHUTTING_DOWN, MAX_SPEED_RUNTIME, MEMORY
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser()
@@ -1379,6 +1440,9 @@ def main():
     except Exception as e:
         log.warning("vision init failed (continuing without): %s", e)
         VISION = None
+
+    # Spatial short-term memory (per-sector latest observation)
+    MEMORY = SpatialMemory(ROOT / "data" / "spatial_memory.json")
 
     INDEX_HTML = (ROOT / "scripts" / "ui.html").read_text(encoding="utf-8")
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)

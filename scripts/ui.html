@@ -192,8 +192,9 @@
       <div id="monWarn" style="display:none;margin-top:6px;padding:6px;background:#5a1d10;color:#fff;border-radius:3px;font-size:11px">⚠ 過電流監視 OFF — 衝突しても自動停止しません</div>
       <div id="releaseWarn" style="display:none;margin-top:6px;padding:6px;background:#7a1a10;color:#fff;border-radius:3px;font-weight:bold">⚠⚠ サーボが release されました — 手で支えて下さい</div>
       <div style="margin-top:6px;border-top:1px solid #333;padding-top:6px">
-        <label><input type="checkbox" id="cbReachSphere" checked> reach 球（半径 380mm fast-fail 境界）</label>
-        <label style="margin-left:10px"><input type="checkbox" id="cbReachPoints" checked> probe 点群</label>
+        <label><input type="checkbox" id="cbReachSphere" checked> reach 球</label>
+        <label style="margin-left:8px"><input type="checkbox" id="cbReachPoints" checked> probe 点群</label>
+        <label style="margin-left:8px"><input type="checkbox" id="cbMemory" checked> 空間記憶</label>
       </div>
     </div>
 
@@ -206,7 +207,14 @@
         <button class="dirBtn" data-dir="front" title="J1=180° (+Y)">前</button>
         <button class="dirBtn" data-dir="left" title="J1=-90° (-X)">左</button>
       </div>
-      <div id="observeResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:200px;overflow:auto;white-space:pre-wrap">—</div>
+      <div id="observeResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:160px;overflow:auto;white-space:pre-wrap">—</div>
+      <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <strong style="font-size:11px">空間短期記憶</strong>
+          <button id="btnMemoryClear" style="font-size:10px;padding:2px 6px">忘れる</button>
+        </div>
+        <div id="memoryPanel" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:4px;max-height:240px;overflow:auto"></div>
+      </div>
     </div>
 
     <div class="panel danger">
@@ -389,6 +397,177 @@ async function loadReachPoints(){
 }
 loadReachPoints();
 
+// === Spatial memory visualization ===
+// Each sector that has an observation gets a translucent wedge whose color
+// indicates freshness (green=fresh, yellow=aging, gray=stale). Labels and
+// object markers float in 3D.
+const memoryGroup = new THREE.Group();
+scene.add(memoryGroup);
+
+const SECTOR_RANGES = {
+  back:        [-22.5,   22.5],
+  back_right:  [ 22.5,   67.5],
+  right:       [ 67.5,  112.5],
+  front_right: [112.5,  157.5],
+  front:       [157.5,  180],   // and -180..-157.5
+  front_left:  [-157.5, -112.5],
+  left:        [-112.5, -67.5],
+  back_left:   [-67.5,  -22.5],
+};
+
+function memoryColor(freshness, stale){
+  if (stale) return 0x666666;
+  // freshness 1.0 → vivid green, 0.5 → yellow, 0.1 → orange
+  if (freshness > 0.7) return 0x4ec9b0;
+  if (freshness > 0.3) return 0xdcdc6a;
+  return 0xce9178;
+}
+
+function makeSectorWedge(sectorName, color){
+  // J1=0 corresponds to camera direction -Y in base. So a sector centered at
+  // J1_deg looks toward base direction angle (270 - J1) in standard XY math.
+  // Easier: just draw the wedge at the J1 angle range, mapped to where the
+  // camera looks. We draw a flat ring segment at z=320mm (camera height).
+  const r0 = 100, r1 = 380;  // inner = base column, outer = max reach
+  // sector range in J1 space → world angle.
+  // Camera at J1=0 looks at -Y, so world angle (from +X CCW) = J1 + 270 (mod 360).
+  // We render the wedge facing that direction.
+  let [lo, hi] = SECTOR_RANGES[sectorName];
+  if (sectorName === 'front') {
+    // front spans 157.5..180 + -180..-157.5; use just 157.5..202.5 for viz
+    lo = 157.5; hi = 202.5;
+  }
+  const a0 = (lo + 270) * Math.PI / 180;
+  const a1 = (hi + 270) * Math.PI / 180;
+  const shape = new THREE.Shape();
+  shape.moveTo(r0 * Math.cos(a0), r0 * Math.sin(a0));
+  shape.absarc(0, 0, r0, a0, a1, false);
+  shape.lineTo(r1 * Math.cos(a1), r1 * Math.sin(a1));
+  shape.absarc(0, 0, r1, a1, a0, true);
+  const geom = new THREE.ShapeGeometry(shape);
+  const mat = new THREE.MeshBasicMaterial({color, transparent: true, opacity: 0.20, side: THREE.DoubleSide});
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.position.z = 320;
+  return mesh;
+}
+
+function makeTextSprite(text, color = 0xffffff){
+  // Render text to a canvas → use as sprite. Cheap and always faces camera.
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.font = 'bold 24px Arial';
+  ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  // simple line wrap
+  const max = 220;
+  let line = '';
+  const words = text.split(/\s+/);
+  const lines = [];
+  for (const w of words) {
+    const test = line + (line ? ' ' : '') + w;
+    if (ctx.measureText(test).width > max && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  const lh = 26;
+  lines.slice(-2).forEach((l, i) => ctx.fillText(l, c.width / 2, c.height / 2 + (i - 0.5) * lh));
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({map: tex, transparent: true});
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(150, 38, 1);
+  return sp;
+}
+
+function freshnessColor(freshness, stale){
+  if (stale) return '#666';
+  if (freshness > 0.7) return '#4ec9b0';
+  if (freshness > 0.3) return '#dcdc6a';
+  return '#ce9178';
+}
+
+function updateMemoryPanel(sectors){
+  const panel = document.getElementById('memoryPanel');
+  if (!panel) return;
+  const order = ['front','front_left','left','back_left','back','back_right','right','front_right'];
+  const rows = [];
+  order.forEach(name => {
+    const e = sectors[name];
+    if (!e) {
+      rows.push(`<div style="opacity:0.4;padding:2px 0"><span style="color:#888">[${name}]</span> 未観測</div>`);
+      return;
+    }
+    const c = freshnessColor(e.freshness, e.stale);
+    const age = e.age_s < 60 ? `${Math.round(e.age_s)}s` : `${Math.round(e.age_s/60)}m`;
+    const tag = e.stale ? ' ⚠stale' : '';
+    const desc = (e.description || '(未注釈)').slice(0, 80);
+    const objs = (e.objects || []).map(o => o.label).join(', ') || '-';
+    rows.push(
+      `<div style="padding:3px 0;border-bottom:1px solid #222">
+        <div><span style="color:${c};font-weight:bold">[${name}]</span> <span style="color:#888">${age}${tag}</span></div>
+        <div style="color:#cdcdcd;margin-left:4px">${desc}</div>
+        <div style="color:#888;margin-left:4px;font-size:9px">物体: ${objs}</div>
+      </div>`);
+  });
+  panel.innerHTML = rows.join('');
+}
+
+async function refreshMemory(){
+  try {
+    const r = await fetch('/memory');
+    if (!r.ok) return;
+    const j = await r.json();
+    const sectors = j.sectors || {};
+    updateMemoryPanel(sectors);
+    // clear and rebuild 3D
+    while (memoryGroup.children.length) memoryGroup.remove(memoryGroup.children[0]);
+    Object.entries(sectors).forEach(([name, e]) => {
+      const color = memoryColor(e.freshness, e.stale);
+      // sector wedge
+      try { memoryGroup.add(makeSectorWedge(name, color)); } catch(_){}
+      // label sprite at the wedge center
+      const [lo, hi] = SECTOR_RANGES[name] || [0, 0];
+      const midJ1 = (lo + hi) / 2;
+      const worldAngle = (midJ1 + 270) * Math.PI / 180;
+      const r = 280;
+      const lx = r * Math.cos(worldAngle), ly = r * Math.sin(worldAngle);
+      const ageStr = e.stale ? `❌${Math.round(e.age_s)}s` : `${Math.round(e.age_s)}s`;
+      const labelTxt = `[${name}] ${ageStr} ${e.observer || ''}`;
+      const sp = makeTextSprite(labelTxt, color);
+      sp.position.set(lx, ly, 360);
+      memoryGroup.add(sp);
+      // description-derived object dots (if annotated)
+      (e.objects || []).forEach(obj => {
+        const p = obj.position_mm;
+        if (!p) return;
+        const dot = new THREE.Mesh(
+          new THREE.SphereGeometry(12, 8, 6),
+          new THREE.MeshBasicMaterial({color: 0xffd02f, transparent: true, opacity: e.stale ? 0.3 : 0.85})
+        );
+        dot.position.set(p[0], p[1], p[2]);
+        memoryGroup.add(dot);
+        const lbl = makeTextSprite(obj.label || '?', 0xffd02f);
+        lbl.position.set(p[0], p[1], p[2] + 25);
+        lbl.scale.set(80, 20, 1);
+        memoryGroup.add(lbl);
+      });
+    });
+  } catch(e){ console.warn('memory refresh:', e); }
+}
+refreshMemory();
+setInterval(refreshMemory, 5000);  // refresh every 5s
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('btnMemoryClear');
+  if (btn) btn.addEventListener('click', async () => {
+    if (!confirm('空間短期記憶を全消去しますか？（観測フレーム自体は残ります）')) return;
+    await fetch('/memory/clear', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    refreshMemory();
+  });
+});
+
 // Toggles for reach visualization. Hidden by default-off would clutter the
 // scene; default-on aids placement.
 document.addEventListener('DOMContentLoaded', () => {
@@ -396,6 +575,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const cbPoints = document.getElementById('cbReachPoints');
   if (cbSphere) cbSphere.addEventListener('change', e => { reachSphere.visible = e.target.checked; });
   if (cbPoints) cbPoints.addEventListener('change', e => { reachPointsGroup.visible = e.target.checked; });
+  const cbMem = document.getElementById('cbMemory');
+  if (cbMem) cbMem.addEventListener('change', e => { memoryGroup.visible = e.target.checked; });
 });
 
 // floor
@@ -856,6 +1037,8 @@ document.querySelectorAll('.dirBtn').forEach(btn => {
         });
       }
       out.textContent = txt;
+      // refresh spatial memory viz immediately to show the new sector
+      if (typeof refreshMemory === 'function') refreshMemory();
     } catch(e) {
       badge.textContent = 'エラー'; badge.className = 'badge err';
       out.textContent = `通信失敗: ${e.message}`;

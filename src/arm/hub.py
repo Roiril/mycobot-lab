@@ -298,10 +298,20 @@ class Hub(HubBase):
             log.info("Hub.solve_ik fallback mode=%s", mode)
         return sol
 
-    def frame_jpeg(self):
+    def frame_jpeg(self, fresh: bool = False):
+        """Capture and return a JPEG. fresh=True flushes the OS/driver buffer
+        first (drops ~5 stale frames) — important after arm motion or pose
+        changes when you want the current scene, not the cached one."""
         if self.cap is None:
             return self._last_jpeg
         with self.cam_lock:
+            if fresh:
+                # Drain the camera's internal buffer. cv2.VideoCapture on DSHOW
+                # buffers several frames, so a single read() right after motion
+                # returns an OLD frame from before the move. Reading + tossing
+                # 5-6 frames forces a current capture.
+                for _ in range(6):
+                    self.cap.grab()  # cheap: doesn't decode, just advances
             ok, frame = self.cap.read()
             if ok:
                 ok2, buf = self._cv2.imencode(".jpg", frame, [self._cv2.IMWRITE_JPEG_QUALITY, 70])
