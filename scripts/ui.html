@@ -1168,19 +1168,45 @@ orbit.update();
     } finally { _wheelNorm = false; }
   }, {passive: false, capture: true});
 }
-// TransformControls: 「ポリシー」モードでは未 attach（click-on-grid のみ）
-// 「手首追従」モードでは rotate gizmo として goalSphere に attach し、
-//   gizmo を回す→IK 再計算で姿勢も含めて反映する
+// TransformControls (rotate): 「手首追従」モードで goalSphere の姿勢を回す
 const tcontrol = new TransformControls(camera, renderer.domElement);
 tcontrol.setMode('rotate');
 tcontrol.setSize(0.7);
-scene.add(tcontrol);  // must stay in scene for dragging-changed to fire safely
-// gizmo ドラッグ中は orbit を止める（カメラが回らないように）
+scene.add(tcontrol);
 tcontrol.addEventListener('dragging-changed', (ev) => {
   orbit.enabled = !ev.value;
-  // ドラッグ終了時に IK 再計算
   if(!ev.value && posingMode === 'follow'){
     onGoalDragEnd();
+  }
+});
+
+// TransformControls (translate): World 操作モードで goalSphere の位置を矢印ドラッグ。
+// ドラッグ中は連続的に「最寄りの reach 可能点」にスナップする（自由空間には行けない）。
+const worldDragGizmo = new TransformControls(camera, renderer.domElement);
+worldDragGizmo.setMode('translate');
+worldDragGizmo.setSize(0.9);
+scene.add(worldDragGizmo);
+// objectChange は drag 中に連続発火する → 毎回最寄り reach 点にスナップ
+worldDragGizmo.addEventListener('objectChange', () => {
+  if(opMode !== 'world') return;
+  if(!_reachSelectPts.length) return;
+  const p = goalSphere.position;
+  let bestIdx = -1, bestD2 = Infinity;
+  for(let i = 0; i < _reachSelectPts.length; i++){
+    const q = _reachSelectPts[i];
+    const dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
+    const d2 = dx*dx + dy*dy + dz*dz;
+    if(d2 < bestD2){ bestD2 = d2; bestIdx = i; }
+  }
+  if(bestIdx >= 0){
+    const snap = _reachSelectPts[bestIdx];
+    goalSphere.position.set(snap.x, snap.y, snap.z);
+  }
+});
+worldDragGizmo.addEventListener('dragging-changed', (ev) => {
+  orbit.enabled = !ev.value;
+  if(!ev.value && opMode === 'world'){
+    onGoalDragEnd();  // ドロップ時に IK
   }
 });
 
@@ -2304,6 +2330,12 @@ function _applyOpMode(m) {
   _camFollowTip = (m === 'tps');
   if (_camFollowTip && !wasFollowing) _tipPrevValid = false;  // re-baseline so re-enable doesn't snap
   if (m !== 'joint') focusJoint = -1;  // exit joint focus when leaving joint mode
+  // World モード時のみ、goalSphere に position 矢印 gizmo を attach（最寄り reach 点へスナップ）
+  if (m === 'world') {
+    worldDragGizmo.attach(goalSphere);
+  } else {
+    worldDragGizmo.detach();
+  }
 }
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.modeBtn').forEach(b => {
