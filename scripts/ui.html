@@ -212,6 +212,22 @@
       </div>
     </div>
 
+    <div class="sec">VR</div>
+
+    <div class="panel" id="vrPanel">
+      <h2>WebXR ハンドトラッキング <span class="badge gray" id="vrBadge">off</span></h2>
+      <div style="font-size:11px;color:#888;margin-bottom:6px">Quest 系 HMD で右手 pinch → goalSphere をクラッチ式に駆動。手首追従モード必須。</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">
+        <button id="btnVR" title="immersive-vr セッション開始（hand-tracking, local-floor）">VR 開始</button>
+        <button id="btnVRCalib" disabled title="HMD 前方向を arm +Y に揃える yaw キャリブ">キャリブ</button>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;font-size:11px;color:#aaa">
+        <label>GAIN <input id="vrGain" type="range" min="0.3" max="2.0" step="0.05" value="1.0" style="width:90px"></label>
+        <span id="vrGainVal">1.00</span>
+      </div>
+      <div id="vrStatus" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:60px;overflow:auto">—</div>
+    </div>
+
     <div class="sec">カメラ</div>
 
     <div class="panel" style="padding:0;overflow:hidden">
@@ -414,6 +430,7 @@ const camera = new THREE.PerspectiveCamera(50, cont.clientWidth/cont.clientHeigh
 camera.position.set(600, -500, 500); camera.lookAt(100, 0, 200);
 const renderer = new THREE.WebGLRenderer({antialias:true});
 renderer.setSize(cont.clientWidth, cont.clientHeight);
+renderer.xr.enabled = true;  // WebXR (immersive-vr + hand-tracking)
 cont.appendChild(renderer.domElement);
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.5));
@@ -2295,7 +2312,16 @@ window.addEventListener('resize', ()=>{
   camera.aspect = cont.clientWidth/cont.clientHeight; camera.updateProjectionMatrix();
   renderer.setSize(cont.clientWidth, cont.clientHeight);
 });
-(function loop(){ requestAnimationFrame(loop); _updateCamTracking(); orbit.update(); renderer.render(scene, camera); })();
+renderer.setAnimationLoop((time, frame) => {
+  if (frame) {
+    // WebXR mode — three.js owns the camera; skip manual cam/orbit logic.
+    _updateXR(frame);
+  } else {
+    _updateCamTracking();
+    orbit.update();
+  }
+  renderer.render(scene, camera);
+});
 
 // --- localStorage persist (speed, mode, last XYZ. NOT joint target — stale = dangerous) ---
 // Bump version when default semantics change (e.g. default posePolicy changed
@@ -2314,6 +2340,8 @@ function savePrefs(){
       iz: document.getElementById('iz').value,
       posePolicy: posePolicy,
       posingMode: posingMode,
+      vrGain: xr.gain,
+      vrCalibYaw: xr.calibYaw,
     }));
   } catch {}
 }
@@ -2340,6 +2368,332 @@ window.addEventListener('pointercancel', ()=>{
   }
 });
 
+// ============================================================
+// WebXR ハンドトラッキング → goalSphere クラッチ式駆動
+// ============================================================
+// 方針:
+//   - immersive-vr セッション + hand-tracking + local-floor
+//   - 右手の thumb-tip / index-tip 距離 < 25mm (hysteresis exit 35mm) で pinch
+//   - pinch 開始時の手 pose と goalSphere pose をアンカー
+//   - pinch 中、手 delta を yaw キャリブ越しに arm base 空間に変換
+//   - goalSphere.pos = anchor + delta * GAIN（EMA smoothing α=0.3）
+//   - reachable grid (_reachSelectPts) で clamp
+//   - 20Hz で onGoalDragEnd() → 既存 /solve_ik
+//   - scene 単位は mm のまま、XR enter で scene.scale=0.001 にして m スケール整合
+//   - 既存「手首追従」モード必須（pose explicit を /solve_ik に渡す既存パイプ流用）
+// 既存規約: HTTPS or localhost、Quest 推奨、LAN 公開時は --token 必須
+
+const PINCH_ENTER_M = 0.025;  // 25mm
+const PINCH_EXIT_M  = 0.035;  // 35mm hysteresis
+const XR_IK_INTERVAL_MS = 50;  // 20Hz
+const XR_SMOOTH_ALPHA = 0.3;
+const XR_REACH_CLAMP_THRESHOLD_MM = 25;  // 最寄り点までこれ以上ならクランプ判定
+
+const xr = {
+  session: null,
+  // hand viz: 25 joints × 2 hands as small spheres
+  handViz: { left: [], right: [] },
+  pinching: { left: false, right: false },
+  // Phase 2: clutch anchor
+  anchor: null,    // { handPos:{x,y,z}, anchorTargetPos: THREE.Vector3, anchorTargetQuat: THREE.Quaternion }
+  smoothTarget: new THREE.Vector3(),
+  lastIKAt: 0,
+  // calibration
+  calibYaw: 0,     // radians; rotate hand delta around viewer +Y by this before mapping to arm base
+  gain: 1.0,
+  // viewer ref space for hand pose lookup (set on session start)
+  refSpace: null,
+  // diagnostic
+  outOfReach: false,
+};
+
+function _xrBuildHandViz() {
+  if (xr.handViz.left.length) return;
+  const geom = new THREE.SphereGeometry(0.008, 6, 5);  // 8mm spheres (scene-mm; visible in VR at 0.001 scale)
+  for (const side of ['left', 'right']) {
+    const color = side === 'right' ? 0xff8800 : 0x66ccff;
+    const mat = new THREE.MeshBasicMaterial({ color });
+    for (let i = 0; i < 25; i++) {
+      const m = new THREE.Mesh(geom, mat);
+      m.visible = false;
+      m.scale.setScalar(1000);  // 8mm scene unit; we want 8mm in physical = 8 scene units when scene.scale=0.001
+      scene.add(m);
+      xr.handViz[side].push(m);
+    }
+  }
+}
+
+function _xrSetStatus(msg) {
+  const el = document.getElementById('vrStatus');
+  if (el) el.textContent = msg;
+}
+function _xrBadge(text, cls = 'gray') {
+  const b = document.getElementById('vrBadge');
+  if (b) { b.textContent = text; b.className = `badge ${cls}`; }
+}
+
+async function _xrStart() {
+  if (!navigator.xr) {
+    setStatus('WebXR API 未対応のブラウザ', 'err');
+    _xrSetStatus('navigator.xr 無し（Quest Browser 等で開く必要）');
+    return;
+  }
+  try {
+    const ok = await navigator.xr.isSessionSupported('immersive-vr');
+    if (!ok) {
+      setStatus('immersive-vr 未対応', 'err');
+      _xrSetStatus('immersive-vr 非対応 — Quest Browser 推奨');
+      return;
+    }
+    const session = await navigator.xr.requestSession('immersive-vr', {
+      requiredFeatures: ['hand-tracking', 'local-floor'],
+    });
+    xr.session = session;
+    await renderer.xr.setSession(session);
+    xr.refSpace = renderer.xr.getReferenceSpace();
+    session.addEventListener('end', _xrOnEnd);
+    _xrBuildHandViz();
+    // scene scale: mm → m (so 1 scene unit = 1mm and physical-meter aligns at scale 0.001)
+    scene.scale.setScalar(0.001);
+    setStatus('VR session 開始', 'ok');
+    _xrBadge('on', 'ok');
+    _xrSetStatus('hand-tracking 有効。右手 pinch で goalSphere 駆動（手首追従モード必須）');
+    document.getElementById('btnVR').textContent = 'VR 終了';
+    document.getElementById('btnVRCalib').disabled = false;
+  } catch (e) {
+    setStatus('VR 開始失敗: ' + e.message, 'err');
+    _xrSetStatus('失敗: ' + e.message);
+  }
+}
+
+function _xrOnEnd() {
+  xr.session = null;
+  xr.refSpace = null;
+  xr.anchor = null;
+  ['left', 'right'].forEach(s => xr.handViz[s].forEach(m => m.visible = false));
+  xr.pinching = { left: false, right: false };
+  scene.scale.setScalar(1);  // restore non-VR rendering scale
+  document.getElementById('btnVR').textContent = 'VR 開始';
+  document.getElementById('btnVRCalib').disabled = true;
+  _xrBadge('off');
+  _xrSetStatus('—');
+  setStatus('VR session 終了', 'ok');
+}
+
+// Per-XR-frame hook (called from main loop when frame !== null)
+function _updateXR(frame) {
+  if (!frame || !xr.session) return;
+  const refSpace = renderer.xr.getReferenceSpace();
+  if (!refSpace) return;
+
+  let rightHand = null;
+  for (const source of frame.session.inputSources) {
+    if (!source.hand) continue;
+    const side = source.handedness;
+    if (side !== 'left' && side !== 'right') continue;
+    if (side === 'right') rightHand = source.hand;
+
+    const viz = xr.handViz[side];
+    let i = 0;
+    for (const joint of source.hand.values()) {
+      const pose = frame.getJointPose(joint, refSpace);
+      if (pose && i < viz.length) {
+        const p = pose.transform.position;
+        // refSpace は meters。scene 単位は mm (scene.scale=0.001 でVR rendering)
+        // hand viz は scene 内オブジェクト、scene.scale=0.001 で 1 scene unit = 1mm = 0.001m なので
+        // m → scene unit は ×1000
+        viz[i].position.set(p.x * 1000, p.y * 1000, p.z * 1000);
+        viz[i].visible = true;
+      }
+      i++;
+    }
+    while (i < viz.length) { viz[i].visible = false; i++; }
+
+    // Pinch detection (両手) — hysteresis
+    const thumbJ = source.hand.get('thumb-tip');
+    const indexJ = source.hand.get('index-finger-tip');
+    if (thumbJ && indexJ) {
+      const tp = frame.getJointPose(thumbJ, refSpace);
+      const ip = frame.getJointPose(indexJ, refSpace);
+      if (tp && ip) {
+        const dx = tp.transform.position.x - ip.transform.position.x;
+        const dy = tp.transform.position.y - ip.transform.position.y;
+        const dz = tp.transform.position.z - ip.transform.position.z;
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        const was = xr.pinching[side];
+        if (!was && dist < PINCH_ENTER_M) {
+          xr.pinching[side] = true;
+          if (side === 'right') _xrOnPinchStart(rightHand, frame, refSpace);
+          console.log(`[XR] pinch START ${side} dist=${(dist*1000).toFixed(1)}mm`);
+        } else if (was && dist > PINCH_EXIT_M) {
+          xr.pinching[side] = false;
+          if (side === 'right') _xrOnPinchEnd();
+          console.log(`[XR] pinch END ${side} dist=${(dist*1000).toFixed(1)}mm`);
+        }
+      }
+    }
+  }
+
+  // Phase 2: 右手 pinch 中の goalSphere 駆動 (follow モード時のみ)
+  if (xr.pinching.right && xr.anchor && rightHand && posingMode === 'follow') {
+    _xrUpdateGoalFromHand(rightHand, frame, refSpace);
+  }
+}
+
+function _xrOnPinchStart(hand, frame, refSpace) {
+  if (posingMode !== 'follow') {
+    _xrSetStatus('pinch 検出したが手首追従モードでないので無視');
+    return;
+  }
+  const wrist = hand.get('wrist');
+  if (!wrist) return;
+  const pose = frame.getJointPose(wrist, refSpace);
+  if (!pose) return;
+  xr.anchor = {
+    handPos: {
+      x: pose.transform.position.x,
+      y: pose.transform.position.y,
+      z: pose.transform.position.z,
+    },
+    anchorTargetPos: goalSphere.position.clone(),
+    anchorTargetQuat: goalSphere.quaternion.clone(),
+  };
+  xr.smoothTarget.copy(goalSphere.position);
+  _xrSetStatus(`pinch start at hand=(${xr.anchor.handPos.x.toFixed(2)}, ${xr.anchor.handPos.y.toFixed(2)}, ${xr.anchor.handPos.z.toFixed(2)})m`);
+}
+
+function _xrOnPinchEnd() {
+  xr.anchor = null;
+  _xrSetStatus('pinch release — freeze');
+}
+
+// Hand delta (viewer space, m) → arm base delta (scene mm)
+//   viewer: +X右 +Y上 +Z後 (toward viewer)
+//   arm base: +X右 +Y奥 +Z上
+//   default map (no yaw calib): arm_x = hand_x, arm_y = -hand_z, arm_z = hand_y
+function _xrViewerDeltaToArm(dx, dy, dz) {
+  // Apply yaw calibration around viewer +Y axis
+  const cy = Math.cos(xr.calibYaw), sy = Math.sin(xr.calibYaw);
+  const xr_ = dx * cy + dz * sy;     // rotated viewer X
+  const zr_ = -dx * sy + dz * cy;    // rotated viewer Z
+  // Map to arm base (×1000 for m → mm)
+  return {
+    x: xr_ * 1000,
+    y: -zr_ * 1000,   // viewer -Z = arm +Y
+    z: dy * 1000,     // viewer +Y = arm +Z
+  };
+}
+
+function _xrUpdateGoalFromHand(hand, frame, refSpace) {
+  const wrist = hand.get('wrist');
+  if (!wrist) return;
+  const pose = frame.getJointPose(wrist, refSpace);
+  if (!pose) return;
+  const a = xr.anchor.handPos;
+  const dx = pose.transform.position.x - a.x;
+  const dy = pose.transform.position.y - a.y;
+  const dz = pose.transform.position.z - a.z;
+  const armDelta = _xrViewerDeltaToArm(dx, dy, dz);
+
+  // Target world position (no smoothing yet)
+  const t = xr.anchor.anchorTargetPos;
+  let tx = t.x + armDelta.x * xr.gain;
+  let ty = t.y + armDelta.y * xr.gain;
+  let tz = t.z + armDelta.z * xr.gain;
+
+  // Reachable clamp via nearest-grid-point
+  if (_reachSelectPts.length) {
+    let bestD2 = Infinity, bestIdx = -1;
+    for (let i = 0; i < _reachSelectPts.length; i++) {
+      const q = _reachSelectPts[i];
+      const ex = tx - q.x, ey = ty - q.y, ez = tz - q.z;
+      const d2 = ex*ex + ey*ey + ez*ez;
+      if (d2 < bestD2) { bestD2 = d2; bestIdx = i; }
+    }
+    if (bestIdx >= 0) {
+      const minD = Math.sqrt(bestD2);
+      // If raw target is "noticeably" outside the reach point set, snap and mark out-of-reach
+      if (minD > XR_REACH_CLAMP_THRESHOLD_MM) {
+        const q = _reachSelectPts[bestIdx];
+        tx = q.x; ty = q.y; tz = q.z;
+        xr.outOfReach = true;
+      } else {
+        xr.outOfReach = false;
+      }
+    }
+  }
+
+  // EMA smoothing
+  xr.smoothTarget.lerp(new THREE.Vector3(tx, ty, tz), XR_SMOOTH_ALPHA);
+  goalSphere.position.copy(xr.smoothTarget);
+  // For Phase 2 MVP: keep orientation locked at anchor (rotation tracking deferred)
+  goalSphere.quaternion.copy(xr.anchor.anchorTargetQuat);
+
+  // 20Hz IK throttle
+  const now = performance.now();
+  if (now - xr.lastIKAt > XR_IK_INTERVAL_MS) {
+    xr.lastIKAt = now;
+    if (!state.busy) onGoalDragEnd();
+  }
+
+  setGoalColor(xr.outOfReach ? 'fail' : 'ok');
+}
+
+// Yaw calibration: align HMD-forward with arm +Y
+function _xrCalibrate(frame) {
+  if (!frame) {
+    // Defer: capture next frame
+    xr._pendingCalib = true;
+    _xrSetStatus('calib pending — frame 待ち');
+    return;
+  }
+  const refSpace = renderer.xr.getReferenceSpace();
+  const viewerPose = frame.getViewerPose(refSpace);
+  if (!viewerPose) { _xrSetStatus('calib 失敗 — viewerPose 無し'); return; }
+  // Viewer の forward = -Z in viewer space (HMD looks down -Z by convention)
+  // Express in refSpace using viewerPose.transform.matrix
+  const m = viewerPose.transform.matrix;  // 4×4 column-major
+  // forward_viewer = (0,0,-1) → world = m * (0,0,-1,0) takes 3rd col negated
+  const fx = -m[8];
+  const fz = -m[10];  // ignore vertical fy
+  // Arm +Y is the "forward" direction. Required yaw to rotate viewer-forward (in XZ plane) to arm +Y.
+  // arm_forward as viewer dir: arm +Y = viewer -Z (default map). After yaw_calib c+s around Y:
+  //   arm_forward_in_viewer_after_calib = R_y(calib) * (0, 0, -1) = (-sin(calib), 0, -cos(calib))
+  // Want this to match (fx, 0, fz). Solve:
+  //   sin(calib) = -fx; cos(calib) = -fz  → calib = atan2(-fx, -fz)
+  xr.calibYaw = Math.atan2(-fx, -fz);
+  savePrefs();
+  _xrSetStatus(`yaw calib=${(xr.calibYaw * 180 / Math.PI).toFixed(1)}°`);
+}
+
+// Hook calibrate button (frame-deferred — _updateXR picks up the pending flag)
+document.getElementById('btnVR').addEventListener('click', () => {
+  if (xr.session) {
+    xr.session.end();
+  } else {
+    _xrStart();
+  }
+});
+document.getElementById('btnVRCalib').addEventListener('click', () => {
+  xr._pendingCalib = true;
+  _xrSetStatus('calib 予約 — 次の XR frame で実行');
+});
+document.getElementById('vrGain').addEventListener('input', (e) => {
+  xr.gain = parseFloat(e.target.value) || 1.0;
+  document.getElementById('vrGainVal').textContent = xr.gain.toFixed(2);
+  savePrefs();
+});
+
+// Wrap _updateXR to handle deferred calibration
+const _xrOrigUpdate = _updateXR;
+_updateXR = function(frame) {
+  if (xr._pendingCalib) {
+    xr._pendingCalib = false;
+    _xrCalibrate(frame);
+  }
+  _xrOrigUpdate(frame);
+};
+
 // --- boot ---
 (async ()=>{
   try{
@@ -2362,6 +2716,15 @@ window.addEventListener('pointercancel', ()=>{
       posingMode = p.posingMode;
     }
     applyPosingMode();
+    // WebXR prefs
+    if(typeof p.vrGain === 'number' && isFinite(p.vrGain)){
+      xr.gain = Math.max(0.3, Math.min(2.0, p.vrGain));
+      const sl = document.getElementById('vrGain');
+      if(sl){ sl.value = xr.gain; document.getElementById('vrGainVal').textContent = xr.gain.toFixed(2); }
+    }
+    if(typeof p.vrCalibYaw === 'number' && isFinite(p.vrCalibYaw)){
+      xr.calibYaw = p.vrCalibYaw;
+    }
     startTimers();
     await pollCurrent();
     await pollPower();
