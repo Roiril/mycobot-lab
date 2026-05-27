@@ -80,6 +80,10 @@
  button.poseBtn{padding:4px 8px;font-size:11px;background:#3a3a3a;color:#bbb;border:1px solid #555;margin:0}
  button.poseBtn:hover:not(:disabled){background:#4a4a4a;color:#fff}
  button.poseBtn.active{background:#0a8043;color:#fff;border-color:#10a052}
+ button.opModeBtn{padding:3px 10px;font-size:11px;font-weight:600;background:#2a2a2a;color:#aaa;border:1px solid #444;margin:0;border-radius:3px;cursor:pointer}
+ button.opModeBtn:hover{background:#3a3a3a;color:#fff}
+ button.opModeBtn.active{background:#6f42c1;color:#fff;border-color:#8a5cd6}
+ .policyDisabled{opacity:.35;pointer-events:none}
 </style></head><body>
 <div id="root">
   <div id="scene">
@@ -130,6 +134,11 @@
 
     <div class="panel">
       <h2>カルテジアン (mm) <span style="color:#8a8a8a;text-transform:none;font-weight:normal">編集して IK</span></h2>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;padding:6px;background:#1e1e1e;border-radius:3px">
+        <span style="color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px">操作モード</span>
+        <button class="opModeBtn active" data-opmode="policy" title="姿勢ポリシーで IK（位置メイン、ポリシーで姿勢自動決定）">ポリシー</button>
+        <button class="opModeBtn" data-opmode="follow" title="6DOF: 位置(ドラッグ)+姿勢(gizmoで回転) を直接指定。ハンドトラッキング前提の操作系">手首追従</button>
+      </div>
       <div class="coords-grid">
         <span class="lbl">X</span><input class="coord" id="ix" type="number" step="0.5" aria-label="目標 X 座標 mm"><span class="cur" id="cx">—</span>
         <span class="lbl">Y</span><input class="coord" id="iy" type="number" step="0.5" aria-label="目標 Y 座標 mm"><span class="cur" id="cy">—</span>
@@ -1159,9 +1168,21 @@ orbit.update();
     } finally { _wheelNorm = false; }
   }, {passive: false, capture: true});
 }
-// TransformControls kept but detached — interaction is now click-on-grid.
+// TransformControls: 「ポリシー」モードでは未 attach（click-on-grid のみ）
+// 「手首追従」モードでは rotate gizmo として goalSphere に attach し、
+//   gizmo を回す→IK 再計算で姿勢も含めて反映する
 const tcontrol = new TransformControls(camera, renderer.domElement);
+tcontrol.setMode('rotate');
+tcontrol.setSize(0.7);
 scene.add(tcontrol);  // must stay in scene for dragging-changed to fire safely
+// gizmo ドラッグ中は orbit を止める（カメラが回らないように）
+tcontrol.addEventListener('dragging-changed', (ev) => {
+  orbit.enabled = !ev.value;
+  // ドラッグ終了時に IK 再計算
+  if(!ev.value && posingMode === 'follow'){
+    onGoalDragEnd();
+  }
+});
 
 // Click-to-select: mousedown records position; mouseup triggers only if no drag occurred.
 let _mdPos = null;
@@ -1297,6 +1318,10 @@ function syncGoalSphereToTarget(){
   const tip = endEffector(state.target);
   if(!tcontrol.dragging){
     goalSphere.position.copy(tip);
+    // follow モードでは orientation も実機 tip に合わせる（gizmo がズレないように）
+    if(posingMode === 'follow'){
+      goalSphere.quaternion.copy(tipQuat(state.target));
+    }
     setGoalColor('ok');
     state.ikFailed = false;
   }
@@ -1637,6 +1662,7 @@ async function abort(){
 
 // --- cartesian IK ---
 let posePolicy = 'preserve';
+let posingMode = 'policy';  // 'policy' = ポリシー自動姿勢, 'follow' = 6DOF gizmo 直接指定
 const POLICY_LABEL = {
   'extend_toward': '指差し',
   'align_+z': '上から', 'align_-z': '下から',
@@ -1654,6 +1680,12 @@ const MODE_BADGE = {
 };
 
 function buildPoseSpec(target){
+  // Follow モード: goalSphere の quaternion を Euler XYZ (extrinsic) に変換して explicit 指定
+  if(posingMode === 'follow'){
+    const e = new THREE.Euler().setFromQuaternion(goalSphere.quaternion, 'ZYX');  // 'ZYX' intrinsic = XYZ extrinsic
+    const RAD2DEG = 180 / Math.PI;
+    return {kind:'explicit', euler_xyz:[e.x * RAD2DEG, e.y * RAD2DEG, e.z * RAD2DEG]};
+  }
   if(posePolicy === 'extend_toward') return {kind:'extend_toward', target:[target.x, target.y, target.z]};
   if(posePolicy === 'preserve')      return {kind:'preserve'};
   if(posePolicy === 'align_side_auto'){
@@ -1667,6 +1699,23 @@ function buildPoseSpec(target){
     return {kind:'align_tool', approach:axis};
   }
   return {kind:'preserve'};
+}
+
+// 現在の target 関節角から tip orientation (quaternion) を計算
+function tipQuat(angles){
+  const T6 = linkFrames(angles)[6];
+  const m = new THREE.Matrix4().set(
+    T6[0][0], T6[0][1], T6[0][2], 0,
+    T6[1][0], T6[1][1], T6[1][2], 0,
+    T6[2][0], T6[2][1], T6[2][2], 0,
+    0, 0, 0, 1
+  );
+  return new THREE.Quaternion().setFromRotationMatrix(m);
+}
+// Follow モード時、現在の関節角から goalSphere の orientation を「実機 tip 姿勢」に同期
+function syncGoalOrientationFromTip(){
+  if(posingMode !== 'follow') return;
+  goalSphere.quaternion.copy(tipQuat(state.target));
 }
 
 function setPoseModeBadge(mode){
@@ -1751,7 +1800,7 @@ async function runIK(x, y, z, fallbackChain = ['extend_toward', 'align_+z']){
     await onTargetChange();
     if (mySeq !== ikSeq) return false;
     setPoseModeBadge(j.ikMode || 'full');
-    const label = POLICY_LABEL[posePolicy] || posePolicy;
+    const label = posingMode === 'follow' ? '手首追従' : (POLICY_LABEL[posePolicy] || posePolicy);
     const mode = j.ikMode || 'full';
     const modeText = MODE_BADGE[mode]?.text || mode;
     setStatus(`IK OK [${label}] 達成度=${modeText}`, mode === 'position_only' ? 'warn' : 'ok');
@@ -1766,12 +1815,43 @@ async function runIK(x, y, z, fallbackChain = ['extend_toward', 'align_+z']){
 // Pose policy buttons
 document.querySelectorAll('.poseBtn').forEach(btn => {
   btn.addEventListener('click', ()=>{
+    if(posingMode === 'follow') return;  // follow 中は policy 無効
     if(btn.dataset.pose === posePolicy) return;  // no-op if unchanged
     document.querySelectorAll('.poseBtn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     posePolicy = btn.dataset.pose;
     savePrefs();
     setStatus(`姿勢ポリシー: ${POLICY_LABEL[posePolicy] || posePolicy}`);
+    const p = goalSphere.position;
+    runIK(p.x, p.y, p.z);
+  });
+});
+
+// Operation mode toggle (ポリシー / 手首追従)
+function applyPosingMode(){
+  document.querySelectorAll('.opModeBtn').forEach(b => {
+    b.classList.toggle('active', b.dataset.opmode === posingMode);
+  });
+  // ポリシー関係 UI を follow 中は薄く+無効化
+  const policyWrap = document.querySelector('.poseBtn')?.closest('div[style*="border-top"]');
+  if(policyWrap) policyWrap.classList.toggle('policyDisabled', posingMode === 'follow');
+  if(posingMode === 'follow'){
+    syncGoalOrientationFromTip();
+    tcontrol.attach(goalSphere);
+    setStatus('手首追従モード: 黄球を gizmo で回転すると姿勢も IK', 'ok');
+  } else {
+    tcontrol.detach();
+    setStatus(`ポリシーモード: ${POLICY_LABEL[posePolicy] || posePolicy}`, 'ok');
+  }
+}
+document.querySelectorAll('.opModeBtn').forEach(btn => {
+  btn.addEventListener('click', ()=>{
+    const next = btn.dataset.opmode;
+    if(next === posingMode) return;
+    posingMode = next;
+    savePrefs();
+    applyPosingMode();
+    // 即座に再 IK して新モードの挙動を反映
     const p = goalSphere.position;
     runIK(p.x, p.y, p.z);
   });
@@ -2364,6 +2444,7 @@ function savePrefs(){
       iy: document.getElementById('iy').value,
       iz: document.getElementById('iz').value,
       posePolicy: posePolicy,
+      posingMode: posingMode,
     }));
   } catch {}
 }
@@ -2412,6 +2493,10 @@ window.addEventListener('pointercancel', ()=>{
         b.classList.toggle('active', b.dataset.pose === posePolicy);
       });
     }
+    if(p.posingMode === 'follow' || p.posingMode === 'policy'){
+      posingMode = p.posingMode;
+    }
+    applyPosingMode();
     startTimers();
     await pollCurrent();
     await pollPower();
