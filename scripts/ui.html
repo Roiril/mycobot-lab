@@ -259,26 +259,6 @@
       <div id="gestureResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:4px;max-height:80px;overflow:auto;white-space:pre-wrap"></div>
     </div>
 
-    <div class="panel">
-      <h2>ターゲット物体 (掴み対象)</h2>
-      <div style="font-size:11px;color:#aaa;margin-bottom:6px">
-        黄球位置に物体があると想定。半径を物体サイズに合わせる。
-        実行で <strong>上空 → 接近 → 把持位置 → 引き上げ</strong> の3段モーション（グリッパは現状無効）。
-      </div>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <label style="color:#aaa">半径 <input id="targetRadius" type="number" min="5" max="60" value="20" step="1" style="width:50px" aria-label="物体半径 mm"></label>
-        <span style="color:#9d9d9d">mm</span>
-        <label style="color:#aaa;margin-left:auto"><input type="checkbox" id="cbShowTarget" checked> 表示</label>
-      </div>
-      <div style="margin-top:4px;display:flex;gap:6px;align-items:center">
-        <span id="targetReach" class="badge gray">未確認</span>
-        <span style="color:#9d9d9d;font-size:11px">(位置のみ・3段判定)</span>
-      </div>
-      <div style="margin-top:8px">
-        <button id="btnGrasp" disabled>接近 &amp; 引上げ（把持は無効）</button>
-      </div>
-    </div>
-
     <div class="sec">監視</div>
 
     <div class="panel" id="monPanel">
@@ -1102,42 +1082,8 @@ const goalSphere = new THREE.Mesh(new THREE.SphereGeometry(18, 20, 14), goalMat)
 goalSphere.position.set(215, -89, 374);
 scene.add(goalSphere);
 
-// --- target object: wireframe sphere centered on goal, size = radius slider ---
-// depthWrite:false so it doesn't occlude arm geometry when goal is "inside" the wrist
-const TARGET_COLOR = {ok: 0x39ff14, fail: 0xff0055, unknown: 0xff8800};  // neon green/pink/orange
-const targetMat = new THREE.LineBasicMaterial({color:TARGET_COLOR.unknown});
-const targetObj = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.SphereGeometry(20, 10, 7)), targetMat);
-targetObj.renderOrder = -1;
-targetObj.position.copy(goalSphere.position);
-scene.add(targetObj);
-// Approach: down arrow (pre-grasp → grasp). Lift: up arrow (grasp → lift end).
-const approachArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1), new THREE.Vector3(0,0,0), 80, 0xff8800, 18, 10);  // neon orange
-scene.add(approachArrow);
-const liftArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,0), 100, 0x00ffff, 18, 10);  // neon cyan
-scene.add(liftArrow);
-let targetRadius = 20;
-let lastGeomRadius = -1;
-function updateTargetObject(){
-  const p = goalSphere.position;
-  targetObj.position.copy(p);
-  if(targetRadius !== lastGeomRadius){
-    targetObj.geometry.dispose();
-    const _baseGeo = new THREE.SphereGeometry(targetRadius, 10, 7);
-    targetObj.geometry = new THREE.EdgesGeometry(_baseGeo);
-    _baseGeo.dispose();
-    lastGeomRadius = targetRadius;
-  }
-  // Approach arrow: starts at pre-grasp, points down, length = approach_offset
-  approachArrow.position.set(p.x, p.y, p.z + GRASP_APPROACH_MM);
-  approachArrow.setLength(GRASP_APPROACH_MM - (targetRadius + GRIPPER_TIP_CLEARANCE), 18, 10);
-  // Lift arrow: starts at grasp z, points up, length = lift_offset - (grasp_z - z)
-  approachArrow.position.set(p.x, p.y, p.z + GRASP_APPROACH_MM);
-  liftArrow.position.set(p.x, p.y, p.z + (targetRadius + GRIPPER_TIP_CLEARANCE));
-  liftArrow.setLength(GRASP_LIFT_MM - (targetRadius + GRIPPER_TIP_CLEARANCE), 18, 10);
-}
-function setTargetVisible(on){
-  targetObj.visible = on; approachArrow.visible = on; liftArrow.visible = on;
-}
+// ターゲット物体（把持対象）の可視化は把持機能と共に削除（把持は無効化済）。
+// 必要になったら git log の a9a3a0d 以前を参照。
 
 const orbit = new OrbitControls(camera, renderer.domElement);
 orbit.target.set(100, 0, 200);
@@ -1273,65 +1219,6 @@ async function onGoalDragEnd(){
     btnApply.title = '目標が安全範囲内になると有効';
     lastGoodTarget = [...state.target];
   }
-  updateTargetObject();
-  // also pre-check grasp reachability: pre-grasp pose 80mm above
-  await checkGraspReachability();
-}
-
-let reachSeq = 0;
-async function checkGraspReachability(){
-  if(state.busy) return;
-  const seq = ++reachSeq;
-  const p = goalSphere.position;
-  const badge = document.getElementById('targetReach');
-  const btn = document.getElementById('btnGrasp');
-  badge.textContent = '確認中'; badge.className = 'badge gray'; btn.disabled = true;
-  // Check all 3 stages: pre-grasp (z+approach), grasp (z+radius+clearance), lift (z+lift)
-  const graspZ = p.z + targetRadius + GRIPPER_TIP_CLEARANCE;
-  const stages = [
-    ['pre-grasp', p.x, p.y, p.z + GRASP_APPROACH_MM],
-    ['grasp',     p.x, p.y, graspZ],
-    ['lift',      p.x, p.y, p.z + GRASP_LIFT_MM],
-  ];
-  try{
-    const results = [];
-    for(const [name, x, y, z] of stages){
-      let j;
-      try {
-        j = await fetchIK({x, y, z}, 1500);
-      } catch(err) {
-        if(seq !== reachSeq) return;
-        results.push({name, ok: false, msg: err.name === 'AbortError' ? 'timeout' : err.message});
-        break;
-      }
-      if(seq !== reachSeq) return;  // newer check started; abandon stale result
-      results.push({name, ok: j.ok, msg: j.msg});
-      if(!j.ok) break;
-    }
-    if(seq !== reachSeq) return;
-    const allOk = results.every(r => r.ok);
-    if(allOk){
-      badge.textContent = '3段OK'; badge.className = 'badge ok';
-      targetMat.color.setHex(TARGET_COLOR.ok);
-      btn.disabled = state.busy || !state.power;
-    } else {
-      const failed = results.find(r => !r.ok);
-      badge.textContent = `${failed.name} NG`; badge.className = 'badge err';
-      targetMat.color.setHex(TARGET_COLOR.fail);
-      btn.disabled = true;
-    }
-  }catch(e){
-    if(seq !== reachSeq) return;
-    badge.textContent = 'チェック失敗'; badge.className = 'badge warn';
-    targetMat.color.setHex(TARGET_COLOR.unknown);
-  }
-}
-function invalidateReachability(){
-  // Slider/joint change → previous reachability result is stale
-  const badge = document.getElementById('targetReach');
-  badge.textContent = '未確認'; badge.className = 'badge gray';
-  targetMat.color.setHex(TARGET_COLOR.unknown);
-  document.getElementById('btnGrasp').disabled = true;
 }
 
 // Reset color on drag start so user knows the failure state is being re-evaluated
@@ -1351,7 +1238,6 @@ function syncGoalSphereToTarget(){
     setGoalColor('ok');
     state.ikFailed = false;
   }
-  updateTargetObject();
 }
 
 // --- state ---
@@ -1412,7 +1298,6 @@ let checkSeq = 0;
 async function onTargetChange(){
   updateArm(armTarget, state.target);
   syncGoalSphereToTarget();
-  invalidateReachability();  // slider/joint change → stale; re-check on demand or via debounce below
   const tip = endEffector(state.target);
   // numeric updates
   for(let i=0;i<6;i++){
@@ -1462,10 +1347,6 @@ function setConnState(ok){
     connFail++;
     if(connFail >= 3){
       b.className = 'err'; b.textContent = 'NO CONN';
-      // Reset target color to unknown when disconnected
-      targetMat.color.setHex(TARGET_COLOR.unknown);
-      const badge = document.getElementById('targetReach');
-      if(badge){ badge.textContent = '接続切'; badge.className = 'badge warn'; }
     }
   }
 }
@@ -1937,49 +1818,7 @@ function clampSpeed(){
 document.getElementById('speed').addEventListener('change', clampSpeed);
 document.getElementById('btnMoveCart').onclick = moveCartesian;
 
-// --- target object: radius, visibility, grasp execute ---
-document.getElementById('targetRadius').addEventListener('change', (e)=>{
-  let r = Math.round(parseFloat(e.target.value));
-  if(isNaN(r) || r < 5) r = 5; if(r > 60) r = 60;
-  e.target.value = r; targetRadius = r;
-  updateTargetObject();
-  invalidateReachability(); checkGraspReachability();
-  savePrefs();
-});
-document.getElementById('cbShowTarget').addEventListener('change', (e)=>{
-  setTargetVisible(e.target.checked);
-});
-
-document.getElementById('btnGrasp').onclick = async ()=>{
-  if(state.busy || !state.power) return;
-  const p = goalSphere.position;
-  const graspZ = p.z + targetRadius + GRIPPER_TIP_CLEARANCE;
-  const preZ = p.z + GRASP_APPROACH_MM;
-  const liftZ = p.z + GRASP_LIFT_MM;
-  const speed = Math.min(clampSpeed(), GRASP_SPEED_MAX);
-  const msg = `物体 (${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)}) r=${targetRadius}mm\n\n` +
-    `1) pre-grasp:  上空 z=${preZ.toFixed(0)}mm\n` +
-    `2) approach:   降下 z=${graspZ.toFixed(0)}mm (物体表面+${GRIPPER_TIP_CLEARANCE}mm — 衝突回避)\n` +
-    `3) lift:       引上げ z=${liftZ.toFixed(0)}mm\n\n` +
-    `速度: ${speed} (grasp cap: ${GRASP_SPEED_MAX})\n` +
-    `把持: ${GRIPPER_PRESENT ? '有効' : '無効（ハード未接続）'}\n\n実行しますか？`;
-  if(!confirm(msg)) return;
-  setBusy(true);
-  setStatus('grasp sequence 実行中…');
-  try{
-    const r = await fetch('/grasp_sequence',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({x:p.x, y:p.y, z:p.z, radius:targetRadius, speed, expected_current:state.current})});
-    const j = await r.json();
-    if(j.error){
-      setStatus(`grasp NG${j.stage?`[${j.stage}]`:''}: ${j.error}`, 'err');
-      highlightAbortJoint(j);
-    } else {
-      setStatus(`grasp 完了 ${j.nJointWp}wp / ${j.elapsed}s (tip stopped at z=${j.graspZ?.toFixed?.(0) ?? '?'}mm)`, 'ok');
-      if(j.angles){ state.target = [...j.angles]; setSlidersFrom(state.target); state.userTouched = false; }
-    }
-  }catch(e){ setStatus('送信失敗: '+e,'err'); }
-  finally { setBusy(false); }
-};
+// ターゲット物体・把持の handler は機能ごと削除（把持は無効化済、UI も外した）
 
 function highlightAbortJoint(j){
   // Stall detection (preferred — current-based monitor is unreliable on this firmware)
@@ -2272,7 +2111,6 @@ function _jogTick() {
 
   // 1. Update goal sphere immediately (visual responsiveness)
   goalSphere.position.set(newX, newY, newZ);
-  updateTargetObject();
 
   // 2. Send /jog at ~30Hz max, fire-and-forget
   if (now - _jogLastSent < 33) return;
@@ -2295,7 +2133,6 @@ function _jogTick() {
       // SAFETY or IK_FAIL — snap back
       if (_jogLastValid) {
         goalSphere.position.set(_jogLastValid.x, _jogLastValid.y, _jogLastValid.z);
-        updateTargetObject();
       }
       setStatusOnce(j.code === 'SAFETY' ? '自己干渉で停止' : 'IK 不可で停止', 'warn');
     }
@@ -2480,7 +2317,7 @@ function savePrefs(){
     }));
   } catch {}
 }
-['speed','cartMode','ix','iy','iz','targetRadius'].forEach(id => {
+['speed','cartMode','ix','iy','iz'].forEach(id => {
   const el = document.getElementById(id);
   if(el) el.addEventListener('change', savePrefs);
 });
@@ -2515,10 +2352,6 @@ window.addEventListener('pointercancel', ()=>{
     if(p.ix !== undefined) document.getElementById('ix').value = p.ix;
     if(p.iy !== undefined) document.getElementById('iy').value = p.iy;
     if(p.iz !== undefined) document.getElementById('iz').value = p.iz;
-    if(p.targetRadius !== undefined){
-      document.getElementById('targetRadius').value = p.targetRadius;
-      targetRadius = parseFloat(p.targetRadius) || 20;
-    }
     if(p.posePolicy && POLICY_LABEL[p.posePolicy]){
       posePolicy = p.posePolicy;
       document.querySelectorAll('.poseBtn').forEach(b => {
