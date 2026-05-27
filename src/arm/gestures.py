@@ -156,7 +156,13 @@ def nod(direction, *, times: int = 2) -> list:
 
 
 def wave(direction, *, times: int = 3) -> list:
-    """Greeting wave: arm raised, J6 swings left-right. Quick + friendly."""
+    """Greeting wave: arm raised, J6 swings left-right. Quick + friendly.
+
+    終端で `wave_settle` を実行して腕を下ろす（face ポーズ）。
+    Why: wave_center は J2=-30°, J3=-45° で**腕が上がった姿勢**。そのまま放置すると
+    J2 が重力に逆らうトルクを掛け続け、サーボが発熱する。「その場で停止」=方向は
+    維持して低トルクの face ポーズに収める、というのが安全な解釈。
+    """
     j1 = _dir_to_j1(direction)
     j6_left  = CAMERA_UPRIGHT_J6_DEG - 30
     j6_right = CAMERA_UPRIGHT_J6_DEG + 30
@@ -167,6 +173,7 @@ def wave(direction, *, times: int = 3) -> list:
         out.append({"label": f"wave_R_{k}", "angles": [j1, -30, -45, 0, -45, j6_right], "speed": 40, "pause_s": 0.1})
         out.append({"label": f"wave_L_{k}", "angles": [j1, -30, -45, 0, -45, j6_left ], "speed": 40, "pause_s": 0.1})
     out.append({"label": "wave_center", "angles": [j1, -30, -45, 0, -45, CAMERA_UPRIGHT_J6_DEG], "speed": 35, "pause_s": 0.1})
+    out.append({"label": "wave_settle", "angles": [j1, 0,   -90, 0, 0,   CAMERA_UPRIGHT_J6_DEG], "speed": 35, "pause_s": 0.1})
     return out
 
 

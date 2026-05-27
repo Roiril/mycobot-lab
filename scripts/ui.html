@@ -248,9 +248,9 @@
       <h2>ジェスチャ <span class="badge gray" id="gestureBadge">idle</span></h2>
       <div style="font-size:11px;color:#888;margin-bottom:6px">記憶を使った高レベル動作</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px">
-        <button class="gestureBtn" data-spec='{"kind":"bow","direction":"front","return_home":true}'>前にお辞儀</button>
-        <button class="gestureBtn" data-spec='{"kind":"nod","direction":"front","return_home":true}'>うなずく</button>
-        <button class="gestureBtn" data-spec='{"kind":"wave","direction":"front","return_home":true}'>手を振る</button>
+        <button class="gestureBtn" data-spec='{"kind":"bow","direction":"front","return_home":false}'>前にお辞儀</button>
+        <button class="gestureBtn" data-spec='{"kind":"nod","direction":"front","return_home":false}'>うなずく</button>
+        <button class="gestureBtn" data-spec='{"kind":"wave","direction":"front","return_home":false}'>手を振る</button>
         <button class="gestureBtn" data-spec='{"kind":"face","direction":"front","return_home":false}'>前を向く</button>
         <button class="gestureBtn" data-spec='{"kind":"home"}'>HOME 戻る</button>
         <button id="btnGesturePoint">記憶物を指差し ▾</button>
@@ -969,7 +969,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const label = selPt.value;
       if (!label) return;
       selPt.style.display = 'none';
-      runGesture({kind: 'point_at', label, return_home: true});
+      runGesture({kind: 'point_at', label, return_home: false});
     });
   }
   // === Rescue banner polling ===
