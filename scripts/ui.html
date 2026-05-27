@@ -6,7 +6,7 @@
  #root{display:flex;height:100%}
  #scene{flex:1;position:relative;min-width:400px}
  #side{width:440px;border-left:1px solid #333;display:flex;flex-direction:column;padding:10px;gap:8px;overflow:auto}
- .panel{background:#252526;border:1px solid #333;border-radius:6px;padding:10px}
+ .panel{background:#252526;border:1px solid #333;border-radius:6px;padding:10px;flex-shrink:0}
  .panel.danger{border-color:#a1260d;border-width:2px}
  .panel.danger label{background:rgba(161,38,13,.15);padding:4px;border-radius:3px;display:block}
  h2{font-size:11px;margin:0 0 6px;color:#9d9d9d;text-transform:uppercase;letter-spacing:1px;display:flex;justify-content:space-between;align-items:center;gap:6px}
@@ -50,10 +50,23 @@
  .coords-grid{display:grid;grid-template-columns:20px 1fr 80px;gap:6px;align-items:center;font-family:ui-monospace,Consolas,monospace}
  .coords-grid .lbl{color:#9d9d9d}
  .coords-grid .cur{color:#9cdcfe;text-align:right;font-size:11px}
- #camPip{position:absolute;bottom:10px;right:10px;width:240px;height:180px;border:1px solid #444;background:#000;border-radius:4px;overflow:hidden;transition:height .2s}
- #camPip.min{height:24px}
- #camPip img{width:100%;height:calc(100% - 18px);object-fit:cover;display:block}
- #camPip .bar{position:absolute;top:0;left:0;right:0;height:18px;background:#222;color:#aaa;font-size:10px;padding:2px 6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none}
+ #camPip{position:relative;width:100%;height:300px;background:#000;border-radius:4px;overflow:hidden;transition:height .2s;flex-shrink:0}
+ #camPip.min{height:0}
+ #camPip img{width:100%;height:calc(100% - 22px);object-fit:cover;display:block}
+ #camReticle{position:absolute;left:0;right:0;top:22px;bottom:0;pointer-events:none;display:flex;align-items:center;justify-content:center}
+ #camReticle::before,#camReticle::after{content:'';position:absolute;background:rgba(255,255,0,0.7);box-shadow:0 0 3px rgba(0,0,0,0.9)}
+ #camReticle::before{width:24px;height:2px}
+ #camReticle::after{width:2px;height:24px}
+ #camPip.min #camReticle{display:none}
+ #camPip .bar{position:absolute;top:0;left:0;right:0;height:22px;background:#1a1a1a;color:#aaa;font-size:10px;padding:2px 6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;z-index:1}
+ .sec{display:flex;align-items:center;gap:8px;color:#555;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;margin:4px 0 0;flex-shrink:0}
+ .sec::before,.sec::after{content:'';flex:1;height:1px;background:#2e2e2e}
+ button.modeBtn{background:#2a2a2a;color:#aaa;border:1px solid #444;padding:2px 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;border-radius:3px;margin:0;cursor:pointer}
+ button.modeBtn:hover{background:#3a3a3a;color:#fff}
+ button.modeBtn.active{background:#0e639c;color:#fff;border-color:#1177bb}
+ button.jogBtn{background:#264f6b;color:#fff;padding:8px 4px;font-size:13px;font-weight:600;font-family:ui-monospace,Consolas,monospace;border-radius:3px;margin:0;border:1px solid #3a6a8a}
+ button.jogBtn:hover:not(:disabled){background:#3777a0}
+ button.jogBtn:active{background:#0e639c}
  #hint{position:absolute;top:10px;left:10px;color:#aaa;background:rgba(0,0,0,.75);padding:6px 10px;border-radius:4px;font-size:11px;max-width:420px;transition:opacity .5s}
  #hint kbd{background:#444;color:#fff;border-radius:3px;padding:1px 4px;font-size:10px;border:1px solid #555}
  #hint.fade{opacity:.15;pointer-events:none}
@@ -71,25 +84,21 @@
 <div id="root">
   <div id="scene">
     <div id="hint">
-      <strong style="color:#ffd02f">黄球</strong>=ゴール / <strong style="color:#ce9178">橙ゴースト</strong>=IK 結果 / <strong style="color:#9cdcfe">青</strong>=実機&nbsp;
-      <strong style="color:#ffa040">橙ワイヤ</strong>=物体 / <strong style="color:#ffa040">↓</strong>接近 <strong style="color:#6acccc">↑</strong>引上げ<br>
-      <kbd>1</kbd>-<kbd>6</kbd> 関節&nbsp;<kbd>←</kbd><kbd>→</kbd> 微調整&nbsp;
-      <kbd>S</kbd> 目標=現在&nbsp;<kbd>H</kbd> HOME&nbsp;<kbd>Enter</kbd> APPLY&nbsp;<kbd>Esc</kbd> ABORT
-    </div>
-    <div id="camPip">
-      <div class="bar">
-        <span>camera (PIP)</span>
-        <span style="display:flex;gap:6px;align-items:center">
-          <button id="btnCaptureCalib" title="現在のフレームを data/calib_images/ に保存（校正用）"
-                  style="font-size:10px;padding:1px 6px;margin:0">Capture Frame</button>
-          <span id="captureCount" style="color:#9d9d9d;font-size:10px">—</span>
-          <span id="camToggle" style="cursor:pointer;user-select:none">[ - ]</span>
-        </span>
+      <div style="display:flex;gap:6px;margin-bottom:4px;align-items:center">
+        <span style="color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px">操作モード</span>
+        <button class="modeBtn active" data-mode="tps" title="カメラ追従 + 視点相対キー">TPS</button>
+        <button class="modeBtn" data-mode="world" title="固定視点 + 世界座標キー">World</button>
+        <button class="modeBtn" data-mode="joint" title="関節を直接ぐりぐり (1-6で関節選択 + ←→で角度)">Joint</button>
+        <span id="modeHint" style="color:#aaa;margin-left:6px;font-size:11px"></span>
       </div>
-      <img id="cam" src="/frame.jpg" alt="camera">
+      <strong style="color:#39ff14">緑点</strong>=到達可 / <strong style="color:#ffff00">黄球</strong>=ゴール / <strong style="color:#ff00ff">ピンク</strong>=IK / <strong style="color:#00e5ff">シアン</strong>=実機<br>
+      <span id="hintKeys"></span>
     </div>
   </div>
   <div id="side">
+
+    <div class="sec">制御</div>
+
     <div class="panel">
       <h2>
         <span>関節 (J1-J6, deg)</span>
@@ -131,12 +140,44 @@
         <button id="btnPullTip">現在 tip 値を入力</button>
       </div>
       <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">
+        <div style="color:#9d9d9d;font-size:11px;margin-bottom:4px;display:flex;align-items:center;gap:6px">
+          <span>目標を微動</span>
+          <span style="color:#666">step</span>
+          <select id="jogStep" style="background:#3c3c3c;color:#ddd;border:1px solid #555;font-size:11px">
+            <option value="1">1mm</option>
+            <option value="5" selected>5mm</option>
+            <option value="10">10mm</option>
+            <option value="20">20mm</option>
+            <option value="50">50mm</option>
+          </select>
+          <span style="color:#666;margin-left:auto">↓APPLYで実行</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:stretch">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3px;flex:1">
+            <div></div>
+            <button class="jogBtn" data-axis="y" data-dir="1" title="+Y (奥)">↑ +Y</button>
+            <div></div>
+            <button class="jogBtn" data-axis="x" data-dir="-1" title="-X (左)">← -X</button>
+            <div style="display:flex;align-items:center;justify-content:center;color:#666;font-size:10px">XY</div>
+            <button class="jogBtn" data-axis="x" data-dir="1" title="+X (右)">+X →</button>
+            <div></div>
+            <button class="jogBtn" data-axis="y" data-dir="-1" title="-Y (手前)">↓ -Y</button>
+            <div></div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px;width:70px">
+            <button class="jogBtn" data-axis="z" data-dir="1" title="+Z (上)">↑ +Z</button>
+            <div style="display:flex;align-items:center;justify-content:center;color:#666;font-size:10px;height:18px">Z</div>
+            <button class="jogBtn" data-axis="z" data-dir="-1" title="-Z (下)">↓ -Z</button>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">
         <div style="color:#9d9d9d;font-size:11px;margin-bottom:4px">姿勢ポリシー <span id="poseModeIndicator" style="margin-left:6px"></span></div>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
-          <button class="poseBtn active" data-pose="extend_toward" title="指差すように手首を伸ばす（人間の自然な reach）">指差し</button>
+          <button class="poseBtn" data-pose="extend_toward" title="指差すように手首を伸ばす（人間の自然な reach）">指差し</button>
           <button class="poseBtn" data-pose="align_+z" title="上から把持（ツールが下を向く）">↓上から</button>
           <button class="poseBtn" data-pose="align_side_auto" title="横から（目標位置から自動で軸を選ぶ）">↦横から</button>
-          <button class="poseBtn" data-pose="preserve" title="現在の手首向きを維持">維持</button>
+          <button class="poseBtn active" data-pose="preserve" title="姿勢は任意（位置のみ到達・最も成功しやすい）">姿勢任意</button>
           <details style="display:inline-block">
             <summary style="cursor:pointer;color:#888;font-size:11px;padding:4px">…詳細軸</summary>
             <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
@@ -162,6 +203,53 @@
       </div>
     </div>
 
+    <div class="sec">カメラ</div>
+
+    <div class="panel" style="padding:0;overflow:hidden">
+      <div id="camPip">
+        <div class="bar">
+          <span>カメラ (ライブ)</span>
+          <span style="display:flex;gap:6px;align-items:center">
+            <button id="btnCaptureCalib" title="現在のフレームを data/calib_images/ に保存（校正用）"
+                    style="font-size:10px;padding:1px 6px;margin:0">Capture</button>
+            <span id="captureCount" style="color:#9d9d9d;font-size:10px">—</span>
+            <span id="camToggle" style="cursor:pointer;user-select:none;font-size:13px;line-height:1">▾</span>
+          </span>
+        </div>
+        <img id="cam" src="/frame.jpg" alt="camera">
+        <div id="camReticle"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>カメラ観測 <span class="badge gray" id="observeBadge">idle</span></h2>
+      <div style="font-size:11px;color:#888;margin-bottom:6px">水平カメラ姿勢で撮影 → シュビーが Read して描写・記憶</div>
+      <div style="display:flex;gap:4px;margin-bottom:4px">
+        <button class="dirBtn" data-dir="back"  title="後ろ向き (J1=0°)">後</button>
+        <button class="dirBtn" data-dir="right" title="右向き (J1=90°)">右</button>
+        <button class="dirBtn" data-dir="front" title="前向き (J1=165°)">前</button>
+        <button class="dirBtn" data-dir="left"  title="左向き (J1=-90°)">左</button>
+      </div>
+      <div id="observeResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:120px;overflow:auto;white-space:pre-wrap">—</div>
+    </div>
+
+    <div class="sec">動作</div>
+
+    <div class="panel">
+      <h2>ジェスチャ <span class="badge gray" id="gestureBadge">idle</span></h2>
+      <div style="font-size:11px;color:#888;margin-bottom:6px">記憶を使った高レベル動作</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px">
+        <button class="gestureBtn" data-spec='{"kind":"bow","direction":"front","return_home":true}'>前にお辞儀</button>
+        <button class="gestureBtn" data-spec='{"kind":"nod","direction":"front","return_home":true}'>うなずく</button>
+        <button class="gestureBtn" data-spec='{"kind":"wave","direction":"front","return_home":true}'>手を振る</button>
+        <button class="gestureBtn" data-spec='{"kind":"face","direction":"front","return_home":false}'>前を向く</button>
+        <button class="gestureBtn" data-spec='{"kind":"home"}'>HOME 戻る</button>
+        <button id="btnGesturePoint">記憶物を指差し ▾</button>
+      </div>
+      <select id="gesturePointTarget" style="display:none;width:100%;padding:4px;background:#252526;color:#cdcdcd;border:1px solid #3c3c3c;font-size:11px;margin-bottom:4px"></select>
+      <div id="gestureResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:4px;max-height:80px;overflow:auto;white-space:pre-wrap"></div>
+    </div>
+
     <div class="panel">
       <h2>ターゲット物体 (掴み対象)</h2>
       <div style="font-size:11px;color:#aaa;margin-bottom:6px">
@@ -182,6 +270,8 @@
       </div>
     </div>
 
+    <div class="sec">監視</div>
+
     <div class="panel" id="monPanel">
       <h2>サーボ実時間監視 <span class="badge ok" id="monBadge">ON</span> <span id="monPowerBadge" class="badge ok" style="margin-left:4px">PWR</span></h2>
       <div id="servoDiag" style="font-family:Consolas,monospace;font-size:11px;line-height:1.4">—</div>
@@ -200,32 +290,7 @@
       <div style="color:#ffb;font-size:10px;margin-top:4px">経路の安全 check を bypass して上向きにのみ脱出します</div>
     </div>
 
-    <div class="panel">
-      <h2>カメラ観測 <span class="badge gray" id="observeBadge">idle</span></h2>
-      <div style="font-size:11px;color:#888;margin-bottom:6px">水平カメラ姿勢で撮影 → シュビーが Read して描写・記憶</div>
-      <div style="display:flex;gap:4px;margin-bottom:4px">
-        <button class="dirBtn" data-dir="back"  title="後ろ向き (J1=0°)">後</button>
-        <button class="dirBtn" data-dir="right" title="右向き (J1=90°)">右</button>
-        <button class="dirBtn" data-dir="front" title="前向き (J1=165°)">前</button>
-        <button class="dirBtn" data-dir="left"  title="左向き (J1=-90°)">左</button>
-      </div>
-      <div id="observeResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:120px;overflow:auto;white-space:pre-wrap">—</div>
-    </div>
-
-    <div class="panel">
-      <h2>ジェスチャ <span class="badge gray" id="gestureBadge">idle</span></h2>
-      <div style="font-size:11px;color:#888;margin-bottom:6px">記憶を使った高レベル動作</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px">
-        <button class="gestureBtn" data-spec='{"kind":"bow","direction":"front","return_home":true}'>前にお辞儀</button>
-        <button class="gestureBtn" data-spec='{"kind":"nod","direction":"front","return_home":true}'>うなずく</button>
-        <button class="gestureBtn" data-spec='{"kind":"wave","direction":"front","return_home":true}'>手を振る</button>
-        <button class="gestureBtn" data-spec='{"kind":"face","direction":"front","return_home":false}'>前を向く</button>
-        <button class="gestureBtn" data-spec='{"kind":"home"}'>HOME 戻る</button>
-        <button id="btnGesturePoint">記憶物を指差し ▾</button>
-      </div>
-      <select id="gesturePointTarget" style="display:none;width:100%;padding:4px;background:#252526;color:#cdcdcd;border:1px solid #3c3c3c;font-size:11px;margin-bottom:4px"></select>
-      <div id="gestureResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:4px;max-height:80px;overflow:auto;white-space:pre-wrap"></div>
-    </div>
+    <div class="sec">情報</div>
 
     <div class="panel" id="memPanel">
       <h2>空間短期記憶 <button id="btnMemoryClear" style="font-size:10px;padding:2px 6px;float:right">忘れる</button></h2>
@@ -250,6 +315,8 @@
         <label style="display:block"><input type="checkbox" id="cbMemory" checked> 空間記憶 (扇形+物体)</label>
       </div>
     </div>
+
+    <div class="sec">危険</div>
 
     <div class="panel danger">
       <h2>緊急操作</h2>
@@ -352,7 +419,7 @@ function endEffector(angles){
 
 // --- scene ---
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1e1e1e);
+scene.background = new THREE.Color(0x000000);
 const cont = document.getElementById('scene');
 const camera = new THREE.PerspectiveCamera(50, cont.clientWidth/cont.clientHeight, 1, 5000);
 camera.position.set(600, -500, 500); camera.lookAt(100, 0, 200);
@@ -367,11 +434,159 @@ const dl = new THREE.DirectionalLight(0xffffff, 0.8); dl.position.set(500,500,10
 // shows the geometric outer bound used for IK fast-fail
 const REACH_MM = 380;  // matches src/arm/ik_numeric._MAX_REACH_MM
 const reachSphere = new THREE.Mesh(
-  new THREE.SphereGeometry(REACH_MM, 24, 12),
-  new THREE.MeshBasicMaterial({color: 0x5a8acc, wireframe: true, transparent: true, opacity: 0.18})
+  new THREE.SphereGeometry(REACH_MM, 16, 10),
+  new THREE.MeshBasicMaterial({color: 0x3a5a7a, wireframe: true})  // opaque
 );
-reachSphere.visible = true;
+reachSphere.visible = false;  // hidden by default; lathe shell replaces it
 scene.add(reachSphere);
+
+// FK-sampled reachable shell (lathe revolution of (r,z) profile)
+// Source: data/reachable_rz.json, generated by scripts/reachable_rz.py.
+// Rotationally symmetric around base Z (J1 sweeps the profile).
+const reachShellGroup = new THREE.Group();
+reachShellGroup.visible = true;
+scene.add(reachShellGroup);
+async function loadReachShell(){
+  try {
+    const r = await fetch('/reachable_rz');
+    if (!r.ok) { console.warn('/reachable_rz not available'); return; }
+    const j = await r.json();
+    const prof = j.profile_rz || [];
+    if (prof.length < 2) return;
+    // idempotent: clear previous meshes if reloaded
+    while (reachShellGroup.children.length) {
+      const c = reachShellGroup.children.pop();
+      c.geometry?.dispose(); c.material?.dispose();
+    }
+    // Outline-only: draw outer + inner profile as a single line loop revolved as
+    // a few longitude ribs. Avoids transparent-overdraw + double-sided LatheGeometry
+    // which was murdering frame rate.
+    const NLON = 8;  // longitudinal copies (lower = lighter)
+    const outerPts = prof.map(p => new THREE.Vector2(p.r_max, p.z));
+    const innerPts = prof.map(p => new THREE.Vector2(p.r_min, p.z));
+    // opaque + dim color = visible without alpha-blend overdraw
+    const lineMat = new THREE.LineBasicMaterial({color: 0x00ffaa});  // neon teal
+    function ribAt(theta){
+      const verts = [];
+      const c = Math.cos(theta), s = Math.sin(theta);
+      for (const p of outerPts) verts.push(p.x * c, p.x * s, p.y);
+      for (let i = innerPts.length - 1; i >= 0; i--)
+        verts.push(innerPts[i].x * c, innerPts[i].x * s, innerPts[i].y);
+      verts.push(verts[0], verts[1], verts[2]);  // close
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      return new THREE.Line(g, lineMat);
+    }
+    for (let i = 0; i < NLON; i++) {
+      reachShellGroup.add(ribAt(2 * Math.PI * i / NLON));
+    }
+    // Top + bottom rings to close the shape visually
+    function ringAt(z, r){
+      const verts = [];
+      const SEG = 48;
+      for (let i = 0; i <= SEG; i++) {
+        const t = 2 * Math.PI * i / SEG;
+        verts.push(r * Math.cos(t), r * Math.sin(t), z);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      return new THREE.Line(g, lineMat);
+    }
+    // sample a handful of z-rings for inner and outer
+    const STEP = Math.max(1, Math.floor(prof.length / 6));
+    for (let i = 0; i < prof.length; i += STEP) {
+      reachShellGroup.add(ringAt(prof[i].z, prof[i].r_max));
+      reachShellGroup.add(ringAt(prof[i].z, prof[i].r_min));
+    }
+    console.info(`reach shell loaded: ${prof.length} z-bins, r:${j.stats?.r_min_mm?.toFixed(0)}..${j.stats?.r_max_mm?.toFixed(0)}mm (line ribs)`);
+  } catch(e){ console.warn('reach shell load:', e); }
+}
+loadReachShell();
+
+// === Reachable point grid (click-to-select target) ===
+// Built by revolving the FK-sampled (r,z) profile around the base Z-axis.
+// Points are guaranteed FK-reachable; IK success rate is near 100% with
+// position-only solve (preserve policy).
+const reachSelectGroup = new THREE.Group();
+scene.add(reachSelectGroup);
+const _reachSelectPts = [];  // parallel to Points buffer — world positions
+
+// Soft circular sprite texture (cached) — turns square PointsMaterial dots into circles.
+let _circleTexCache = null;
+function _circleTex(){
+  if (_circleTexCache) return _circleTexCache;
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const g = c.getContext('2d');
+  g.beginPath(); g.arc(16, 16, 14, 0, Math.PI*2); g.closePath();
+  g.fillStyle = 'white'; g.fill();
+  _circleTexCache = new THREE.CanvasTexture(c);
+  return _circleTexCache;
+}
+
+async function buildReachSelectGrid() {
+  // Prefer the pre-tested IK+safety grid (no false positives). Fall back to
+  // revolving the FK profile if the pre-test hasn't been generated.
+  try {
+    const r = await fetch('/reachable_grid');
+    if (r.ok) {
+      const j = await r.json();
+      const verts = [];
+      for (const p of (j.points || [])) {
+        verts.push(p.x, p.y, p.z);
+        _reachSelectPts.push({x: p.x, y: p.y, z: p.z});
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      const mat = new THREE.PointsMaterial({
+        color: 0x39ff14, size: 4, sizeAttenuation: true,  // neon green
+        transparent: true, opacity: 0.9,
+        map: _circleTex(), alphaTest: 0.5, depthWrite: false,
+      });
+      const pts = new THREE.Points(geo, mat);
+      pts.userData.isReachGrid = true;
+      reachSelectGroup.add(pts);
+      console.info(`reach grid (pre-tested): ${_reachSelectPts.length} pts`);
+      return;
+    }
+  } catch (e) { /* fall through */ }
+
+  // --- fallback: FK profile revolve (some points may fail IK/safety) ---
+  try {
+    const resp = await fetch('/reachable_rz').then(r => r.json());
+    const prof = resp.profile_rz || [];
+    if (prof.length < 2) { console.warn('reach grid: no data'); return; }
+    const NANGLES = 20;
+    const zStride = Math.max(1, Math.floor(prof.length / 80));
+    const verts = [];
+    for (let ai = 0; ai < NANGLES; ai++) {
+      const th = 2 * Math.PI * ai / NANGLES;
+      const ct = Math.cos(th), st = Math.sin(th);
+      for (let zi = 0; zi < prof.length; zi += zStride) {
+        const {r_min, r_max, z} = prof[zi];
+        const span = r_max - r_min;
+        if (span < 10) continue;
+        for (const frac of [0.2, 0.55, 0.9]) {
+          const rr = r_min + span * frac;
+          verts.push(rr * ct, rr * st, z);
+          _reachSelectPts.push({x: rr * ct, y: rr * st, z});
+        }
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    const mat = new THREE.PointsMaterial({
+      color: 0xffaa00, size: 4, sizeAttenuation: true,  // neon amber = unverified
+      transparent: true, opacity: 0.8,
+      map: _circleTex(), alphaTest: 0.5, depthWrite: false,
+    });
+    const pts = new THREE.Points(geo, mat);
+    pts.userData.isReachGrid = true;
+    reachSelectGroup.add(pts);
+    console.warn(`reach grid (FK fallback, NOT IK-tested): ${_reachSelectPts.length} pts`);
+  } catch (e) { console.warn('buildReachSelectGrid:', e); }
+}
+buildReachSelectGrid();
 
 // Tag scene objects with userData.kind so the Raycaster can return a tooltip
 function makeProbeDot(color, radius, opacity, kind, label){
@@ -555,12 +770,12 @@ function updateMemoryPanel(sectors){
     }
     const c = freshnessColor(e.freshness, e.stale);
     const tag = e.stale ? ' (古い)' : '';
-    const desc = (e.description || '(未注釈 — シュビーに見てもらう)').slice(0, 80);
+    const desc = e.description || '(未注釈 — シュビーに見てもらう)';
     const objs = (e.objects || []).map(o => o.label).join(', ') || '-';
     rows.push(
       `<div style="padding:3px 0;border-bottom:1px solid #222">
         <div><span style="color:${c};font-weight:bold">${ja}</span> <span style="color:#888">${ageLabel(e.age_s)}${tag}</span></div>
-        <div style="color:#cdcdcd;margin-left:4px">${desc}</div>
+        <div style="color:#cdcdcd;margin-left:4px;white-space:pre-wrap;word-break:break-all">${desc}</div>
         <div style="color:#888;margin-left:4px;font-size:9px">物体: ${objs}</div>
       </div>`);
   });
@@ -653,6 +868,44 @@ renderer.domElement.addEventListener('mousemove', (e) => {
   tooltipEl.style.display = 'block';
 });
 renderer.domElement.addEventListener('mouseleave', () => { tooltipEl.style.display = 'none'; });
+
+// === Reach grid hover highlight (single sprite follows mouse-nearest point) ===
+const _hoverGeo = new THREE.BufferGeometry();
+_hoverGeo.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0], 3));
+const _hoverMat = new THREE.PointsMaterial({
+  color: 0xffffff, size: 10, sizeAttenuation: true,
+  transparent: true, opacity: 1.0,
+  map: _circleTex(), alphaTest: 0.5, depthWrite: false, depthTest: false,
+});
+const hoverPoint = new THREE.Points(_hoverGeo, _hoverMat);
+hoverPoint.visible = false;
+hoverPoint.renderOrder = 999;
+scene.add(hoverPoint);
+
+const _hoverRay = new THREE.Raycaster();
+_hoverRay.params.Points = {threshold: 12};
+renderer.domElement.addEventListener('mousemove', (e) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  _hoverRay.setFromCamera(ndc, camera);
+  const gridObjs = reachSelectGroup.children.filter(o => o.userData.isReachGrid);
+  const hits = _hoverRay.intersectObjects(gridObjs);
+  if (!hits.length) { hoverPoint.visible = false; return; }
+  const pt = _reachSelectPts[hits[0].index];
+  if (!pt) { hoverPoint.visible = false; return; }
+  const pos = _hoverGeo.attributes.position;
+  pos.setXYZ(0, pt.x, pt.y, pt.z);
+  pos.needsUpdate = true;
+  hoverPoint.visible = true;
+  renderer.domElement.style.cursor = 'pointer';
+});
+renderer.domElement.addEventListener('mouseleave', () => {
+  hoverPoint.visible = false;
+  renderer.domElement.style.cursor = '';
+});
 
 document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('btnMemoryClear');
@@ -789,10 +1042,10 @@ document.addEventListener('DOMContentLoaded', () => {
 // floor
 const floorMesh = new THREE.Mesh(
   new THREE.PlaneGeometry(1200, 1200),
-  new THREE.MeshStandardMaterial({color:0x2a2a32, transparent:true, opacity:0.5})
+  new THREE.MeshStandardMaterial({color:0x0a0a18, transparent:true, opacity:0.7})  // deep dark indigo
 );
 scene.add(floorMesh);
-const grid = new THREE.GridHelper(1000, 20, 0x555555, 0x333333);
+const grid = new THREE.GridHelper(1000, 20, 0xff00ff, 0x202060);  // neon magenta axes, dim indigo grid
 grid.rotation.x = Math.PI/2; scene.add(grid);
 scene.add(new THREE.AxesHelper(120));
 
@@ -831,27 +1084,27 @@ function tintArm(arm, color){
   arm.mat.color.setHex(color); arm.jmat.color.setHex(color); arm.tip.material.color.setHex(color); arm.tip.material.emissive.setHex(color);
 }
 
-const armCurrent = buildArm(0x9cdcfe, 1.0);    // opaque = real arm
-const armTarget  = buildArm(0xce9178, 0.45);   // translucent ghost = IK preview
+const armCurrent = buildArm(0x00e5ff, 1.0);    // neon cyan = real arm
+const armTarget  = buildArm(0xff00ff, 0.5);    // neon magenta ghost = IK preview
 
 // --- goal sphere: yellow, independent from any arm. User's primary drag target. ---
-const goalMat = new THREE.MeshStandardMaterial({color:0xffd02f, emissive:0xffd02f, emissiveIntensity:0.35});
+const goalMat = new THREE.MeshStandardMaterial({color:0xffff00, emissive:0xffff00, emissiveIntensity:0.9});  // neon yellow
 const goalSphere = new THREE.Mesh(new THREE.SphereGeometry(18, 20, 14), goalMat);
 goalSphere.position.set(215, -89, 374);
 scene.add(goalSphere);
 
 // --- target object: wireframe sphere centered on goal, size = radius slider ---
 // depthWrite:false so it doesn't occlude arm geometry when goal is "inside" the wrist
-const TARGET_COLOR = {ok: 0x6acc6a, fail: 0xff4040, unknown: 0xffa040};
-const targetMat = new THREE.MeshBasicMaterial({color:TARGET_COLOR.unknown, wireframe:true, transparent:true, opacity:0.55, depthWrite:false});
-const targetObj = new THREE.Mesh(new THREE.SphereGeometry(20, 18, 14), targetMat);
+const TARGET_COLOR = {ok: 0x39ff14, fail: 0xff0055, unknown: 0xff8800};  // neon green/pink/orange
+const targetMat = new THREE.LineBasicMaterial({color:TARGET_COLOR.unknown});
+const targetObj = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.SphereGeometry(20, 10, 7)), targetMat);
 targetObj.renderOrder = -1;
 targetObj.position.copy(goalSphere.position);
 scene.add(targetObj);
 // Approach: down arrow (pre-grasp → grasp). Lift: up arrow (grasp → lift end).
-const approachArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1), new THREE.Vector3(0,0,0), 80, 0xffa040, 18, 10);
+const approachArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1), new THREE.Vector3(0,0,0), 80, 0xff8800, 18, 10);  // neon orange
 scene.add(approachArrow);
-const liftArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,0), 100, 0x6acccc, 18, 10);
+const liftArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,0), 100, 0x00ffff, 18, 10);  // neon cyan
 scene.add(liftArrow);
 let targetRadius = 20;
 let lastGeomRadius = -1;
@@ -860,7 +1113,9 @@ function updateTargetObject(){
   targetObj.position.copy(p);
   if(targetRadius !== lastGeomRadius){
     targetObj.geometry.dispose();
-    targetObj.geometry = new THREE.SphereGeometry(targetRadius, 18, 14);
+    const _baseGeo = new THREE.SphereGeometry(targetRadius, 10, 7);
+    targetObj.geometry = new THREE.EdgesGeometry(_baseGeo);
+    _baseGeo.dispose();
     lastGeomRadius = targetRadius;
   }
   // Approach arrow: starts at pre-grasp, points down, length = approach_offset
@@ -877,26 +1132,72 @@ function setTargetVisible(on){
 
 const orbit = new OrbitControls(camera, renderer.domElement);
 orbit.target.set(100, 0, 200);
-// Distance limits so wheel-zoom doesn't fly into/out of the scene
 orbit.minDistance = 250;
 orbit.maxDistance = 2500;
-orbit.zoomSpeed = 0.25;      // 1 wheel notch = small step
-orbit.enableDamping = true;  // smooth interpolation between frames
+orbit.zoomSpeed = 1.2;
+orbit.enableDamping = true;
 orbit.dampingFactor = 0.1;
 orbit.update();
+
+// Chrome sends deltaMode=0 (pixel) with deltaY up to 300+/notch; other browsers
+// use deltaMode=1 (line) with deltaY ~3. Cap per-event delta so one scroll notch
+// always means a small, consistent zoom step regardless of browser.
+{
+  let _wheelNorm = false;
+  renderer.domElement.addEventListener('wheel', (e) => {
+    if (_wheelNorm) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const capped = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 30);
+    _wheelNorm = true;
+    try {
+      renderer.domElement.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true, cancelable: true,
+        deltaX: 0, deltaY: capped, deltaZ: 0, deltaMode: 0,
+        clientX: e.clientX, clientY: e.clientY,
+      }));
+    } finally { _wheelNorm = false; }
+  }, {passive: false, capture: true});
+}
+// TransformControls kept but detached — interaction is now click-on-grid.
 const tcontrol = new TransformControls(camera, renderer.domElement);
-tcontrol.setSize(1.0);
-tcontrol.attach(goalSphere);
-scene.add(tcontrol);
-tcontrol.addEventListener('dragging-changed', e=>{
-  orbit.enabled = !e.value;
-  if(!e.value) onGoalDragEnd();
+scene.add(tcontrol);  // must stay in scene for dragging-changed to fire safely
+
+// Click-to-select: mousedown records position; mouseup triggers only if no drag occurred.
+let _mdPos = null;
+renderer.domElement.addEventListener('mousedown', e => {
+  _mdPos = {x: e.clientX, y: e.clientY};
+});
+renderer.domElement.addEventListener('mouseup', async e => {
+  if (!_mdPos) return;
+  const dx = e.clientX - _mdPos.x, dy = e.clientY - _mdPos.y;
+  _mdPos = null;
+  if (dx*dx + dy*dy > 36) return;  // was orbit-drag, not a click
+  if (state.busy) return;
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  raycaster.params.Points = {threshold: 15};
+  raycaster.setFromCamera(ndc, camera);
+
+  const gridObjs = reachSelectGroup.children.filter(o => o.userData.isReachGrid);
+  const hits = raycaster.intersectObjects(gridObjs);
+  if (!hits.length) return;
+
+  const pt = _reachSelectPts[hits[0].index];
+  if (!pt) return;
+
+  goalSphere.position.set(pt.x, pt.y, pt.z);
+  onGoalDragEnd();
 });
 
 let lastGoodTarget = null;
 
 function setGoalColor(state_){
-  const c = state_ === 'fail' ? 0xff4040 : (state_ === 'calc' ? 0xffffff : 0xffd02f);
+  const c = state_ === 'fail' ? 0xff0055 : (state_ === 'calc' ? 0xffffff : 0xffff00);  // neon pink / white / yellow
   goalMat.color.setHex(c); goalMat.emissive.setHex(c);
 }
 
@@ -1335,8 +1636,7 @@ async function abort(){
 }
 
 // --- cartesian IK ---
-// Pose policy: default = extend_toward (natural reach pose).
-let posePolicy = 'extend_toward';
+let posePolicy = 'preserve';
 const POLICY_LABEL = {
   'extend_toward': '指差し',
   'align_+z': '上から', 'align_-z': '下から',
@@ -1757,6 +2057,217 @@ document.addEventListener('keydown', e=>{
     sliders[i].value = state.target[i]; state.userTouched = true;
     onTargetChange();
     e.preventDefault();
+    return;
+  }
+  // Realtime jog: when no joint is focused, arrow keys + PgUp/Dn move the
+  // goal sphere in world XYZ continuously (key-held = velocity). The actual
+  // arm follows via /jog (non-blocking send_angles). No APPLY needed.
+});
+
+// Jog key interception MUST be in capture phase: <input type=range> sliders
+// natively consume arrow keys; without capture our preventDefault arrives too
+// late and the slider moves anyway. We intercept on window before the input
+// element's native handler runs.
+window.addEventListener('keydown', e => {
+  if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName) && e.target.type !== 'range') return;
+  if(opMode === 'joint') return;       // joint mode handled by bubble handler
+  if(focusJoint >= 0) return;          // joint focused (1-6 pressed): also let bubble handler win
+  if(_jogKeys.has(e.key)){
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    _heldJogKeys.add(e.key);
+    // Also blur the slider so subsequent keys go to body (not to the slider)
+    if(document.activeElement && document.activeElement.type === 'range') document.activeElement.blur();
+  }
+  if(e.key === 'Shift') _jogShiftHeld = true;
+}, true);  // CAPTURE
+window.addEventListener('keyup', e => {
+  if(_jogKeys.has(e.key)) _heldJogKeys.delete(e.key);
+  if(e.key === 'Shift') _jogShiftHeld = false;
+}, true);
+window.addEventListener('blur', () => { _heldJogKeys.clear(); _jogShiftHeld = false; });
+
+// === Realtime jog: TPS-style teleop (camera-relative arrow keys) ===
+// Design:
+//  - Goal sphere advances locally each RAF tick (60Hz) — instant visual response
+//  - /jog is fire-and-forget at ~30Hz; only the latest ack is honored
+//  - Local cylindrical bound check pre-empts most invalid moves (no flicker)
+//  - Server-side SAFETY rejection causes a snap-back to last valid position
+const _jogKeys = new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','PageUp','PageDown']);
+const _heldJogKeys = new Set();
+let _jogShiftHeld = false;
+const JOG_SPEED_MM_S = 120;              // base velocity (camera-relative)
+const JOG_SPEED_SHIFT = 300;             // with Shift held
+let _jogLastTime = performance.now();
+let _jogLastSent = 0;
+let _jogSeq = 0;                         // monotonic request id
+let _jogAckSeq = -1;                     // highest ack seq received
+let _jogLastValid = null;
+
+// Local fast-fail: cylindrical bounds match ik_numeric._MAX_REACH_*.
+// Rejecting here avoids a round-trip + visual flicker for most out-of-envelope moves.
+function _localReachOK(x, y, z) {
+  const rxy = Math.hypot(x, y);
+  return rxy < 385 && z > 35 && z < 550;
+}
+
+// Camera-relative basis: arrow keys map to "forward/back/left/right" on screen.
+// forward = camera direction projected onto horizontal plane (z component dropped).
+const _camFwd = new THREE.Vector3();
+const _camRight = new THREE.Vector3();
+function _updateCamBasis() {
+  camera.getWorldDirection(_camFwd);
+  _camFwd.z = 0;
+  const len = Math.hypot(_camFwd.x, _camFwd.y);
+  if (len < 1e-6) { _camFwd.set(0, 1, 0); _camRight.set(1, 0, 0); return; }
+  _camFwd.x /= len; _camFwd.y /= len;
+  // right = forward rotated -90° around +Z (right-hand)
+  _camRight.set(_camFwd.y, -_camFwd.x, 0);
+}
+
+function _jogTick() {
+  requestAnimationFrame(_jogTick);
+  const now = performance.now();
+  const dt = Math.min((now - _jogLastTime) / 1000, 0.05);
+  _jogLastTime = now;
+  if (_heldJogKeys.size === 0 || state.busy) return;
+
+  let dx = 0, dy = 0, dz = 0;
+  if (opMode === 'tps') {
+    _updateCamBasis();
+    for (const k of _heldJogKeys) {
+      if      (k === 'ArrowUp')    { dx += _camFwd.x;   dy += _camFwd.y; }
+      else if (k === 'ArrowDown')  { dx -= _camFwd.x;   dy -= _camFwd.y; }
+      else if (k === 'ArrowRight') { dx += _camRight.x; dy += _camRight.y; }
+      else if (k === 'ArrowLeft')  { dx -= _camRight.x; dy -= _camRight.y; }
+      else if (k === 'PageUp')     dz += 1;
+      else if (k === 'PageDown')   dz -= 1;
+    }
+  } else {  // world mode: arrow keys = world XY (Y=奥行き)
+    for (const k of _heldJogKeys) {
+      if      (k === 'ArrowUp')    dy += 1;
+      else if (k === 'ArrowDown')  dy -= 1;
+      else if (k === 'ArrowRight') dx += 1;
+      else if (k === 'ArrowLeft')  dx -= 1;
+      else if (k === 'PageUp')     dz += 1;
+      else if (k === 'PageDown')   dz -= 1;
+    }
+  }
+  const speed = _jogShiftHeld ? JOG_SPEED_SHIFT : JOG_SPEED_MM_S;
+  const p = goalSphere.position;
+  const newX = p.x + dx * speed * dt;
+  const newY = p.y + dy * speed * dt;
+  const newZ = p.z + dz * speed * dt;
+
+  if (!_localReachOK(newX, newY, newZ)) {
+    setStatusOnce('範囲外で停止', 'warn');
+    return;
+  }
+
+  // 1. Update goal sphere immediately (visual responsiveness)
+  goalSphere.position.set(newX, newY, newZ);
+  updateTargetObject();
+
+  // 2. Send /jog at ~30Hz max, fire-and-forget
+  if (now - _jogLastSent < 33) return;
+  _jogLastSent = now;
+  const seq = ++_jogSeq;
+  fetch('/jog', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({x:newX, y:newY, z:newZ}),
+  }).then(r => r.json()).then(j => {
+    if (seq <= _jogAckSeq) return;  // stale response, ignore
+    _jogAckSeq = seq;
+    if (j.ok) {
+      if (j.angles) { state.target = j.angles; updateArm(armTarget, j.angles); setSlidersFrom(j.angles); }
+      _jogLastValid = {x:newX, y:newY, z:newZ};
+      setGoalColor('ok');
+    } else if (j.code === 'THROTTLED' || j.code === 'MOVING') {
+      // ignore
+    } else {
+      // SAFETY or IK_FAIL — snap back
+      if (_jogLastValid) {
+        goalSphere.position.set(_jogLastValid.x, _jogLastValid.y, _jogLastValid.z);
+        updateTargetObject();
+      }
+      setStatusOnce(j.code === 'SAFETY' ? '自己干渉で停止' : 'IK 不可で停止', 'warn');
+    }
+  }).catch(_ => {});
+}
+requestAnimationFrame(_jogTick);
+
+// === Operation mode (TPS / World / Joint) ===
+// tps:   camera follows tip, arrow keys are camera-relative (forward/strafe)
+// world: free camera, arrow keys are world XY (no auto follow)
+// joint: arrow keys adjust the joint selected by 1-6 (legacy slider control)
+let opMode = 'tps';
+let _camFollowTip = true;
+const HINT_KEYS = {
+  tps:   '<kbd>↑</kbd>前 <kbd>↓</kbd>後 <kbd>←→</kbd>左右 <kbd>PgUp/Dn</kbd>上下 <kbd>Shift</kbd>=速 <kbd>C</kbd>カメラ復帰 <kbd>V</kbd>追従切替 <kbd>H</kbd>HOME <kbd>Esc</kbd>ABORT',
+  world: '<kbd>↑↓</kbd>=±Y <kbd>←→</kbd>=±X <kbd>PgUp/Dn</kbd>=±Z <kbd>Shift</kbd>=速 <kbd>H</kbd>HOME <kbd>Esc</kbd>ABORT',
+  joint: '<kbd>1</kbd>-<kbd>6</kbd>=関節選択 <kbd>←→</kbd>=±1° <kbd>Shift</kbd>+<kbd>←→</kbd>=±5° <kbd>H</kbd>HOME <kbd>Esc</kbd>ABORT (実機反映はAPPLY)',
+};
+function _applyOpMode(m) {
+  opMode = m;
+  document.querySelectorAll('.modeBtn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+  const hint = document.getElementById('hintKeys');
+  if (hint) hint.innerHTML = HINT_KEYS[m] || '';
+  const indicator = document.getElementById('modeHint');
+  if (indicator) {
+    indicator.textContent = m === 'tps' ? '視点相対・カメラ追従'
+                          : m === 'world' ? '世界座標・視点固定'
+                          : '関節モード（リアルタイム反映なし）';
+  }
+  // Mode-specific behavior
+  const wasFollowing = _camFollowTip;
+  _camFollowTip = (m === 'tps');
+  if (_camFollowTip && !wasFollowing) _tipPrevValid = false;  // re-baseline so re-enable doesn't snap
+  if (m !== 'joint') focusJoint = -1;  // exit joint focus when leaving joint mode
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.modeBtn').forEach(b => {
+    b.addEventListener('click', () => _applyOpMode(b.dataset.mode));
+  });
+  _applyOpMode('tps');
+});
+
+// === TPS camera: rigid follow (camera + target move together by same delta) ===
+// Preserves the user's chosen view angle/distance while the tip moves.
+// No lerp — when the arm moves, the camera shifts the same amount instantly.
+const _tipPrev = new THREE.Vector3();
+let _tipPrevValid = false;
+function _updateCamTracking() {
+  if (!_camFollowTip || !DH) return;
+  const tip = endEffector(state.current);
+  if (!_tipPrevValid) { _tipPrev.copy(tip); _tipPrevValid = true; return; }
+  const dx = tip.x - _tipPrev.x;
+  const dy = tip.y - _tipPrev.y;
+  const dz = tip.z - _tipPrev.z;
+  if (dx*dx + dy*dy + dz*dz < 1e-6) return;  // no movement → nothing to do
+  orbit.target.x += dx;  orbit.target.y += dy;  orbit.target.z += dz;
+  camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
+  _tipPrev.copy(tip);
+}
+
+// 'C' = recenter camera to a comfortable TPS angle behind the arm; 'V' = toggle tip-tracking
+function _recenterCamera() {
+  if (!DH) return;
+  const tip = endEffector(state.current);
+  camera.position.set(tip.x + 0, tip.y - 500, tip.z + 350);
+  orbit.target.copy(tip);
+  _tipPrev.copy(tip); _tipPrevValid = true;
+  orbit.update();
+  setStatus('カメラ recenter');
+}
+document.addEventListener('keydown', e => {
+  if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+  if (e.key === 'c' || e.key === 'C') { _recenterCamera(); e.preventDefault(); }
+  else if (e.key === 'v' || e.key === 'V') {
+    _camFollowTip = !_camFollowTip;
+    if (_camFollowTip) _tipPrevValid = false;  // re-baseline next frame
+    setStatus(`カメラ追従 ${_camFollowTip ? 'ON' : 'OFF'}`);
+    e.preventDefault();
   }
 });
 
@@ -1769,13 +2280,28 @@ camImg.onerror = ()=>{
 };
 camImg.onload = ()=>{ camErrCount = 0; };
 
-// PIP minimize toggle
+// Camera expand/collapse toggle
 document.getElementById('camToggle').onclick = (e)=>{
   e.stopPropagation();
   const pip = document.getElementById('camPip');
-  pip.classList.toggle('min');
-  e.target.textContent = pip.classList.contains('min') ? '[ + ]' : '[ - ]';
+  const collapsed = pip.classList.toggle('min');
+  e.target.textContent = collapsed ? '▴' : '▾';
 };
+
+// === Cartesian jog: ±X/±Y/±Z on the goal sphere → re-solve IK live ===
+document.querySelectorAll('.jogBtn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (state.busy) { setStatus('動作中は jog 不可', 'err'); return; }
+    const axis = btn.dataset.axis;
+    const dir = parseInt(btn.dataset.dir);
+    const step = parseFloat(document.getElementById('jogStep').value) || 5;
+    const p = goalSphere.position;
+    if (axis === 'x') p.x += step * dir;
+    else if (axis === 'y') p.y += step * dir;
+    else if (axis === 'z') p.z += step * dir;
+    onGoalDragEnd();  // re-solves IK and updates ghost
+  });
+});
 // Capture Frame -> POST /capture_calib_frame, persists JPEG into data/calib_images/<cam>/
 document.getElementById('btnCaptureCalib').onclick = async (e)=>{
   e.stopPropagation();
@@ -1820,10 +2346,12 @@ window.addEventListener('resize', ()=>{
   camera.aspect = cont.clientWidth/cont.clientHeight; camera.updateProjectionMatrix();
   renderer.setSize(cont.clientWidth, cont.clientHeight);
 });
-(function loop(){ requestAnimationFrame(loop); orbit.update(); renderer.render(scene, camera); })();
+(function loop(){ requestAnimationFrame(loop); _updateCamTracking(); orbit.update(); renderer.render(scene, camera); })();
 
 // --- localStorage persist (speed, mode, last XYZ. NOT joint target — stale = dangerous) ---
-const LSKEY = 'mycobot.ui.v1';
+// Bump version when default semantics change (e.g. default posePolicy changed
+// from extend_toward → preserve in v2; old saved values would override the new default).
+const LSKEY = 'mycobot.ui.v2';
 function loadPrefs(){
   try{ return JSON.parse(localStorage.getItem(LSKEY) || '{}'); } catch { return {}; }
 }
