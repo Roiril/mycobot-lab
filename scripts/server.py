@@ -60,6 +60,7 @@ HUB: HubBase | None = None
 VISION: VisionHub | None = None
 MEMORY: SpatialMemory | None = None
 INDEX_HTML = ""
+_LAST_JOG_MONO = 0.0  # last /jog timestamp (monotonic) — throttles serial bus
 AUTH_TOKEN: str | None = None
 SHUTTING_DOWN = False
 MAX_SPEED_RUNTIME = MAX_SPEED  # CLI-overridable
@@ -190,8 +191,6 @@ def _execute_joint_waypoints(joint_wps, speed: int, *, manage_monitor: bool = Tr
             HUB.stop_monitor()
 
 
-_APPROX_MAX_REACH = 380.0  # arm physical reach (mm) — matches ik_numeric._MAX_REACH_MM
-
 
 def _camera_dir_hint(j1_deg: float) -> str:
     """Human-readable description of which way the camera looks at the observe pose."""
@@ -221,16 +220,18 @@ def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles, *, skip_
     of running another full position-only IK (~0.8s saved per failed call).
     """
     x, y, z = position[:3]
-    # Cheap geometric reach check first (catches gross out-of-reach instantly)
-    r = (x*x + y*y + z*z) ** 0.5
-    if r > _APPROX_MAX_REACH + 30:  # 30mm grace beyond nominal reach
+    # Cylindrical fast-fail (mirrors ik_numeric bounds): radial + z limits.
+    # Do NOT use 3D sphere from origin — the base column makes high-z points
+    # appear far from origin while still being within kinematic reach.
+    r_xy = (x*x + y*y) ** 0.5
+    if r_xy > 395 or z > 555 or z < 30:
         return {
             "code": "OUT_OF_REACH",
-            "message": f"位置 ({x:.0f},{y:.0f},{z:.0f}) はアーム到達範囲外",
-            "diagnostics": {"distance_from_base_mm": round(r, 1),
-                            "approx_max_reach_mm": _APPROX_MAX_REACH},
+            "message": f"位置 ({x:.0f},{y:.0f},{z:.0f}) はアーム到達範囲外 (r_xy={r_xy:.0f}mm, z={z:.0f}mm)",
+            "diagnostics": {"r_xy_mm": round(r_xy, 1), "z_mm": round(z, 1),
+                            "limit_r_xy_mm": 395, "limit_z_mm": 555},
             "retry_hints": [{"action": "move_closer", "patch": None,
-                             "rationale": f"R={r:.0f}mm がアーム reach (~{_APPROX_MAX_REACH:.0f}mm) を超えている"}],
+                             "rationale": f"r_xy={r_xy:.0f}mm または z={z:.0f}mm が範囲外"}],
         }
     if skip_repeat_solve:
         # If the caller already exhausted position-only attempts in solve_with_retries,
@@ -241,7 +242,7 @@ def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles, *, skip_
             return {
                 "code": "SOLVER_NONCONVERGENT",
                 "message": "IK ソルバが収束せず（位置のみ要求でも失敗）",
-                "diagnostics": {"position_reachable": "unknown", "distance_from_base_mm": round(r, 1)},
+                "diagnostics": {"position_reachable": "unknown", "r_xy_mm": round(r_xy, 1), "z_mm": round(z, 1)},
                 "retry_hints": [{"action": "retry_with_perturbed_seed", "patch": None,
                                  "rationale": "現在角度を少し動かしてから再試行"}],
             }
@@ -249,7 +250,7 @@ def _diagnose_ik_failure(hub, position, requested_rxyz, current_angles, *, skip_
             "code": "ORIENTATION_INFEASIBLE",
             "message": f"位置 ({x:.0f},{y:.0f},{z:.0f}) は到達可と思われるが要求姿勢 rxyz=({requested_rxyz[0]:.0f},{requested_rxyz[1]:.0f},{requested_rxyz[2]:.0f}) は不可",
             "diagnostics": {"requested_orientation_deg": list(requested_rxyz),
-                            "distance_from_base_mm": round(r, 1)},
+                            "r_xy_mm": round(r_xy, 1), "z_mm": round(z, 1)},
             "retry_hints": [
                 {"action": "use_preserve_pose", "patch": {"pose": {"kind": "preserve"}},
                  "rationale": "姿勢を捨てて位置だけ到達（手首は任意）"},
@@ -370,7 +371,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path = urlparse(self.path).path
             if path in ("/", "/index", "/index.html"):
-                body = INDEX_HTML.encode("utf-8")
+                body = (ROOT / "scripts" / "ui.html").read_text(encoding="utf-8").encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -463,6 +464,30 @@ class Handler(BaseHTTPRequestHandler):
                         try: out[key] = json.loads(f.read_text(encoding="utf-8"))
                         except Exception: pass
                 self._json(200, out); return
+
+            if path == "/reachable_rz":
+                # FK-based reachable (r, z) profile. See scripts/reachable_rz.py.
+                f = ROOT / "data" / "reachable_rz.json"
+                if not f.exists():
+                    self._json(404, {"error": "data/reachable_rz.json missing",
+                                     "hint": "run: python scripts/reachable_rz.py"}); return
+                try:
+                    self._json(200, json.loads(f.read_text(encoding="utf-8")))
+                except Exception as e:
+                    self._json(500, {"error": str(e)})
+                return
+
+            if path == "/reachable_grid":
+                # IK+safety-pre-tested click target points. See scripts/reachable_grid.py.
+                f = ROOT / "data" / "reachable_grid.json"
+                if not f.exists():
+                    self._json(404, {"error": "data/reachable_grid.json missing",
+                                     "hint": "run: python scripts/reachable_grid.py"}); return
+                try:
+                    self._json(200, json.loads(f.read_text(encoding="utf-8")))
+                except Exception as e:
+                    self._json(500, {"error": str(e)})
+                return
 
             if path == "/servo_diagnostics":
                 # Batched per-servo state for UI live monitoring.
@@ -596,6 +621,47 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(400, {"error": str(e)}); return
                 ok, msg, bad = check_angles(angles)
                 self._json(200, {"ok": ok, "msg": msg, "badJoints": bad}); return
+
+            if path == "/jog":
+                # Realtime teleop: position-only IK + safety check + non-blocking send.
+                # Reject if a full /move is in progress (don't fight a planned trajectory).
+                # The client throttles itself; we additionally enforce a server-side
+                # min interval to avoid serial-bus saturation.
+                global _LAST_JOG_MONO
+                now_m = time.monotonic()
+                if now_m - _LAST_JOG_MONO < 0.025:  # 25ms min interval ≈ 40Hz cap
+                    self._json(429, {"ok": False, "code": "THROTTLED"}); return
+                _LAST_JOG_MONO = now_m
+
+                if HUB.motion_lock.locked():
+                    self._json(409, {"ok": False, "code": "MOVING"}); return
+
+                try:
+                    x = float(body.get("x")); y = float(body.get("y")); z = float(body.get("z"))
+                except (TypeError, ValueError):
+                    self._json(400, {"error": "invalid x/y/z"}); return
+                if not all(math.isfinite(v) for v in (x, y, z)):
+                    self._json(400, {"error": "non-finite"}); return
+
+                cur = HUB.angles()
+                if cur is None:
+                    self._json(503, {"ok": False, "code": "NO_ANGLES"}); return
+
+                res, mode = HUB.solve_ik_with_mode([x, y, z], seed=cur)
+                if res is None:
+                    self._json(200, {"ok": False, "code": "IK_FAIL"}); return
+                ok, msg, bad = check_angles(res)
+                if not ok:
+                    self._json(200, {"ok": False, "code": "SAFETY", "msg": msg, "badJoints": bad}); return
+
+                # Non-blocking send. For jog we use a moderate speed; firmware
+                # interpolates between successive commands.
+                speed = int(body.get("speed", min(40, MAX_SPEED_RUNTIME)))
+                speed = max(5, min(speed, MAX_SPEED_RUNTIME))
+                sent = HUB.send_angles_nowait(res, speed)
+                if not sent:
+                    self._json(200, {"ok": False, "code": "NOT_POWERED"}); return
+                self._json(200, {"ok": True, "angles": [round(a, 2) for a in res], "mode": mode}); return
 
             if path == "/solve_ik":
                 """Body: {x, y, z, pose?: {kind:..., ...}, rx?, ry?, rz?}
@@ -743,6 +809,9 @@ class Handler(BaseHTTPRequestHandler):
                         raise KeyError(f"label '{label}' not found in spatial memory")
                     return spec
 
+                # 現在の関節角を取得（bow/nod/wave の「その場で」動作に使う）
+                cur_angles_for_build = HUB.angles()
+
                 steps = []
                 try:
                     for s_in in specs:
@@ -762,7 +831,11 @@ class Handler(BaseHTTPRequestHandler):
                                     steps.extend(gestures_mod.go_home())
                                 continue
                             log.info("point_at extending pose unsafe (%s), falling back to compact", msg)
-                        steps.extend(gestures_mod.build(s))
+                        # bow/nod/wave は from_angles 渡して「その場で」動作させる
+                        # 連鎖中はチェーン内の累積を反映するため、各 build 後に
+                        # cur_angles_for_build を更新せず（in_place は元に戻るので
+                        # 元の関節角のままで次も「その場で」継続）
+                        steps.extend(gestures_mod.build(s, from_angles=cur_angles_for_build))
                         if s.get("return_home", False):
                             steps.extend(gestures_mod.go_home())
                 except KeyError as e:
@@ -1597,7 +1670,6 @@ def main():
     # Spatial short-term memory (per-sector latest observation)
     MEMORY = SpatialMemory(ROOT / "data" / "spatial_memory.json")
 
-    INDEX_HTML = (ROOT / "scripts" / "ui.html").read_text(encoding="utf-8")
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     mode = "OFFLINE" if args.offline else "live"
     print(f"\n  [{mode}] http://localhost:{args.port}/")

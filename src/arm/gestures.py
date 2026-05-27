@@ -32,7 +32,11 @@ def face(direction, *, with_camera_upright: bool = True) -> list:
 
 
 def bow(direction, *, depth_deg: float = 25.0, hold_s: float = 0.5) -> list:
-    """Bow in the given direction. Three steps: face → lean → return."""
+    """Bow in the given direction. Three steps: face → lean → return.
+
+    Legacy absolute-pose variant. Use bow_in_place(from_angles, ...) for
+    「その場で」semantics (don't re-orient to direction first).
+    """
     j1 = _dir_to_j1(direction)
     j6 = CAMERA_UPRIGHT_J6_DEG
     depth = max(10.0, min(40.0, depth_deg))
@@ -41,6 +45,62 @@ def bow(direction, *, depth_deg: float = 25.0, hold_s: float = 0.5) -> list:
         {"label": "bow_down",   "angles": [j1, -depth,    -(90-depth*0.6), 0, depth*0.6, j6], "speed": 30, "pause_s": hold_s},
         {"label": "bow_return", "angles": [j1, 0,         -90, 0, 0,             j6], "speed": 30, "pause_s": 0.1},
     ]
+
+
+# --- 「その場で」variants ---
+# 現在ポーズを起点に、最小限の delta だけ動かしてから元に戻る。
+# 「direction」を指定しない（j1 を変えない）。J2/J5 の tilt や J6 swing で
+# 視覚的にジェスチャと分かる動きを作る。安全のため joint limit にクランプ。
+
+# myCobot 320 の J2 limit = ±135°。ジェスチャで violate しないよう余裕を取る
+_J2_SAFE_MIN, _J2_SAFE_MAX = -130.0, 130.0
+_J5_SAFE_MIN, _J5_SAFE_MAX = -160.0, 160.0
+_J6_SAFE_MIN, _J6_SAFE_MAX = -175.0, 175.0
+
+
+def _clamp(v, lo, hi): return max(lo, min(hi, v))
+
+
+def bow_in_place(from_angles, *, depth_deg: float = 25.0, hold_s: float = 0.5) -> list:
+    """Bow from the current pose. Tilts J2 forward + slight J5 wrist tilt;
+    other joints unchanged. Returns to original pose at end."""
+    cur = [float(a) for a in from_angles]
+    depth = max(10.0, min(40.0, depth_deg))
+    down = list(cur)
+    down[1] = _clamp(cur[1] - depth,         _J2_SAFE_MIN, _J2_SAFE_MAX)
+    down[4] = _clamp(cur[4] + depth * 0.5,   _J5_SAFE_MIN, _J5_SAFE_MAX)
+    return [
+        {"label": "bow_down",   "angles": down, "speed": 30, "pause_s": hold_s},
+        {"label": "bow_return", "angles": cur,  "speed": 30, "pause_s": 0.1},
+    ]
+
+
+def nod_in_place(from_angles, *, times: int = 2) -> list:
+    """Nod from the current pose. Small repeated J2 tilt."""
+    cur = [float(a) for a in from_angles]
+    down = list(cur)
+    down[1] = _clamp(cur[1] - 12.0, _J2_SAFE_MIN, _J2_SAFE_MAX)
+    out = []
+    for k in range(max(1, min(5, times))):
+        out.append({"label": f"nod_down_{k}",   "angles": down, "speed": 35, "pause_s": 0.15})
+        out.append({"label": f"nod_return_{k}", "angles": cur,  "speed": 35, "pause_s": 0.1})
+    return out
+
+
+def wave_in_place(from_angles, *, times: int = 3) -> list:
+    """Wave from the current pose. Just swing J6 left-right; no arm raise.
+    If you want a "raised arm wave", first call point_at or face, then wave."""
+    cur = [float(a) for a in from_angles]
+    j6_right = _clamp(cur[5] + 30.0, _J6_SAFE_MIN, _J6_SAFE_MAX)
+    j6_left  = _clamp(cur[5] - 30.0, _J6_SAFE_MIN, _J6_SAFE_MAX)
+    right = list(cur); right[5] = j6_right
+    left  = list(cur); left[5]  = j6_left
+    out = []
+    for k in range(max(1, min(5, times))):
+        out.append({"label": f"wave_R_{k}", "angles": right, "speed": 40, "pause_s": 0.1})
+        out.append({"label": f"wave_L_{k}", "angles": left,  "speed": 40, "pause_s": 0.1})
+    out.append({"label": "wave_center", "angles": cur, "speed": 35, "pause_s": 0.1})
+    return out
 
 
 def point_at_extending(target_xyz, *, label: Optional[str] = None) -> list:
@@ -177,22 +237,32 @@ def wave(direction, *, times: int = 3) -> list:
     return out
 
 
-def build(spec: dict) -> list:
+def build(spec: dict, from_angles=None) -> list:
     """Build a step sequence from a high-level spec.
 
     spec = {"kind": "face"|"bow"|"nod"|"wave"|"point_at"|"home", ...params}
+    from_angles: 現在の関節角。bow/nod/wave で「その場で」動作させたい時に渡す。
+                 None なら direction-driven の旧 absolute-pose 動作にフォールバック。
     Returns list of move steps (for /move_sequence).
     """
     kind = spec.get("kind")
     if kind == "face":
         return face(spec.get("direction", "back"), with_camera_upright=spec.get("upright", True))
     if kind == "bow":
+        if from_angles is not None:
+            return bow_in_place(from_angles,
+                                depth_deg=spec.get("depth_deg", 25.0),
+                                hold_s=spec.get("hold_s", 0.5))
         return bow(spec.get("direction", "front"),
                    depth_deg=spec.get("depth_deg", 25.0),
                    hold_s=spec.get("hold_s", 0.5))
     if kind == "nod":
+        if from_angles is not None:
+            return nod_in_place(from_angles, times=spec.get("times", 2))
         return nod(spec.get("direction", "front"), times=spec.get("times", 2))
     if kind == "wave":
+        if from_angles is not None:
+            return wave_in_place(from_angles, times=spec.get("times", 3))
         return wave(spec.get("direction", "front"), times=spec.get("times", 3))
     if kind == "point_at":
         # Always use the IK-quality extending pose; compact fallback removed.
