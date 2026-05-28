@@ -2214,26 +2214,16 @@ function _localReachOK(x, y, z) {
   return rxy < 385 && z > 35 && z < 550;
 }
 
-// TPS basis: arrow keys are relative to the ARM TIP's facing direction.
-// forward = flange +z axis (tool/camera pointing direction) projected onto the
-// horizontal plane. Falls back to the last good heading when the tip points
-// straight up/down (horizontal projection degenerate).
+// TPS basis: arrow keys are relative to the CAMERA's facing direction.
+// forward = camera view direction projected onto the horizontal plane.
 const _camFwd = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
-let _tipHeading = new THREE.Vector3(0, 1, 0);  // persists across degenerate frames
-function _updateTipBasis() {
-  // flange +z in base frame = 3rd column of T6
-  const T6 = linkFrames(state.current)[6];
-  let fx = T6[0][2], fy = T6[1][2];  // horizontal components of tool +z
-  const len = Math.hypot(fx, fy);
-  if (len < 0.15) {
-    // tip nearly vertical → keep previous heading to avoid spin/jitter
-    _camFwd.copy(_tipHeading);
-  } else {
-    fx /= len; fy /= len;
-    _camFwd.set(fx, fy, 0);
-    _tipHeading.set(fx, fy, 0);
-  }
+function _updateCamBasis() {
+  camera.getWorldDirection(_camFwd);
+  _camFwd.z = 0;
+  const len = Math.hypot(_camFwd.x, _camFwd.y);
+  if (len < 1e-6) { _camFwd.set(0, 1, 0); _camRight.set(1, 0, 0); return; }
+  _camFwd.x /= len; _camFwd.y /= len;
   // right = forward rotated -90° around +Z (right-hand)
   _camRight.set(_camFwd.y, -_camFwd.x, 0);
 }
@@ -2247,7 +2237,7 @@ function _jogTick() {
 
   let dx = 0, dy = 0, dz = 0;
   if (opMode === 'tps') {
-    _updateTipBasis();
+    _updateCamBasis();
     for (const k of _heldJogKeys) {
       if      (k === 'ArrowUp')    { dx += _camFwd.x;   dy += _camFwd.y; }
       else if (k === 'ArrowDown')  { dx -= _camFwd.x;   dy -= _camFwd.y; }
