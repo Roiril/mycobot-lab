@@ -21,6 +21,7 @@ from .constants import TOOL_LENGTH
 from .ik_policy import (
     J4_NEUTRAL, J5_NEUTRAL, J6_NEUTRAL,
     W_J1_DIRECTION, W_J4_ZERO, W_J5_NEUTRAL, W_J6_NEUTRAL, W_ELBOW_UP,
+    POLICY_SEED_TEMPLATES,
 )
 from .safety import check_angles
 
@@ -177,33 +178,22 @@ def solve_batch(targets: torch.Tensor,
     return final_q, success
 
 
-# ── policy seeds (matches ik_policy._policy_seeds) ────────────────────────
+# ── policy seeds — built from ik_policy.POLICY_SEED_TEMPLATES (single source) ──
 def _policy_seeds_batch(targets: torch.Tensor) -> torch.Tensor:
-    """For each target [B, 3], return [B, S, 6] policy-biased seeds."""
+    """For each target [B, 3], return [B, S, 6] policy-biased seeds.
+    Uses the SAME templates as the CPU solver so both stay in lock-step."""
     _lazy_init()
     B = targets.shape[0]
-    j1_pref = torch.atan2(targets[:, 1], targets[:, 0]) / DEG  # [B]
-    j1_alt = ((j1_pref + 180.0 + 180.0) % 360.0) - 180.0
-    zeros = torch.zeros(B, dtype=DTYPE, device=DEVICE)
-    j5n = torch.full((B,), J5_NEUTRAL, dtype=DTYPE, device=DEVICE)
-    j6n = torch.full((B,), J6_NEUTRAL, dtype=DTYPE, device=DEVICE)
-    j3_90 = torch.full((B,), -90.0, dtype=DTYPE, device=DEVICE)
-    # Each row: [j1, j2, j3, j4, j5, j6]
-    # Seeds biased to the "elbow-up" IK branch (J3 frame z high) come first.
-    # Empirically — for myCobot 320 URDF — J2 positive + J3 positive puts the
-    # elbow (J3 frame) above the wrist; mirror branch (J2-, J3-) puts it below.
-    seeds = torch.stack([
-        torch.stack([j1_pref, zeros+45, zeros+45,  zeros, j5n, j6n], dim=1),  # elbow-up A
-        torch.stack([j1_pref, zeros+30, zeros+90,  zeros, j5n, j6n], dim=1),  # elbow-up B
-        torch.stack([j1_pref, zeros+60, zeros+30,  zeros, j5n, j6n], dim=1),  # elbow-up C (shoulder forward)
-        torch.stack([j1_pref, zeros,    j3_90,    zeros, j5n,  j6n], dim=1),  # default neutral
-        torch.stack([j1_pref, zeros-30, zeros-60, zeros, j5n,  j6n], dim=1),  # elbow-down (fallback)
-        torch.stack([j1_pref, zeros+30, zeros-120, zeros, j5n, j6n], dim=1),
-        torch.stack([j1_alt,  zeros,    j3_90,    zeros, j5n,  j6n], dim=1),  # back-reach
-        torch.stack([j1_pref, zeros,    j3_90,    zeros, zeros, j6n], dim=1),
-        torch.stack([zeros,   zeros,    j3_90,    zeros, zeros, zeros], dim=1),  # HOME
-    ], dim=1)  # [B, S, 6]
-    # Clamp to joint limits
+    j1_pref = torch.atan2(targets[:, 1], targets[:, 0]) / DEG          # [B]
+    j1_alt  = ((j1_pref + 180.0 + 180.0) % 360.0) - 180.0
+    j1_zero = torch.zeros(B, dtype=DTYPE, device=DEVICE)
+    j1_by_kind = {'pref': j1_pref, 'alt': j1_alt, 'zero': j1_zero}
+    def _const(v): return torch.full((B,), float(v), dtype=DTYPE, device=DEVICE)
+    rows = []
+    for kind, j2, j3, j4, j5, j6 in POLICY_SEED_TEMPLATES:
+        j1 = j1_by_kind[kind]
+        rows.append(torch.stack([j1, _const(j2), _const(j3), _const(j4), _const(j5), _const(j6)], dim=1))
+    seeds = torch.stack(rows, dim=1)  # [B, S, 6]
     seeds = torch.maximum(seeds, _LIMITS_LO)
     seeds = torch.minimum(seeds, _LIMITS_HI)
     return seeds

@@ -85,26 +85,41 @@ def _clamp_to_limits(angles: Sequence[float]) -> List[float]:
     return [max(lo, min(hi, float(a))) for a, (lo, hi) in zip(angles, JOINT_LIMITS)]
 
 
-def _policy_seeds(target_xyz: Sequence[float]) -> List[List[float]]:
-    """Seeds biased toward the petal policy. Order matters: most-preferred first."""
+# ── single source of truth for IK seeds ────────────────────────────────────
+# Each entry: (j1_kind, j2, j3, j4, j5, j6). j1_kind selects how J1 is filled:
+#   'pref' = atan2(y, x)  (face the target)
+#   'alt'  = pref + 180   (back-reach branch)
+#   'zero' = 0            (HOME)
+# BOTH the CPU solver (ik_policy._policy_seeds) and the GPU solver
+# (ik_gpu._policy_seeds_batch) build their seeds from THIS list, so the two
+# solvers stay in lock-step. Order matters: most-preferred (elbow-up) first.
+POLICY_SEED_TEMPLATES = [
+    ('pref',  45,   45, 0, J5_NEUTRAL, J6_NEUTRAL),   # elbow-up A
+    ('pref',  30,   90, 0, J5_NEUTRAL, J6_NEUTRAL),   # elbow-up B
+    ('pref',  60,   30, 0, J5_NEUTRAL, J6_NEUTRAL),   # elbow-up C (shoulder forward)
+    ('pref',   0,  -90, 0, J5_NEUTRAL, J6_NEUTRAL),   # neutral
+    ('pref', -30,  -60, 0, J5_NEUTRAL, J6_NEUTRAL),   # elbow-down fallback
+    ('pref',  30, -120, 0, J5_NEUTRAL, J6_NEUTRAL),   # far/low reach
+    ('alt',    0,  -90, 0, J5_NEUTRAL, J6_NEUTRAL),   # back-reach (J1 flipped)
+    ('pref',   0,  -90, 0, 0,          J6_NEUTRAL),   # relaxed wrist (J5 free)
+    ('zero',   0,  -90, 0, 0,          0),            # HOME fallback
+]
+
+
+def _j1_for_kind(kind: str, target_xyz: Sequence[float]) -> float:
     j1_pref = math.degrees(math.atan2(target_xyz[1], target_xyz[0]))
-    j1_alt  = _wrap_to_180(j1_pref + 180.0)  # back-reach variant
-    base = [
-        # primary: face target, neutral wrist
-        [j1_pref, 0,   -90, 0, J5_NEUTRAL, J6_NEUTRAL],
-        # elbow flexed variants (helps reach near/far)
-        [j1_pref, -30, -60, 0, J5_NEUTRAL, J6_NEUTRAL],
-        [j1_pref, 30,  -120, 0, J5_NEUTRAL, J6_NEUTRAL],
-        # higher J3 — for low targets
-        [j1_pref, -30, -30, 0, J5_NEUTRAL, J6_NEUTRAL],
-        # back-reach (J1 flipped) — fallback for far targets behind base
-        [j1_alt,  0,   -90, 0, J5_NEUTRAL, J6_NEUTRAL],
-        # neutral wrist relaxed: let J5 find its own value
-        [j1_pref, 0,   -90, 0, 0,           J6_NEUTRAL],
-        # HOME — always include as a final fallback
-        [0,       0,   -90, 0, 0,           0],
-    ]
-    return [_clamp_to_limits(s) for s in base]
+    if kind == 'pref': return j1_pref
+    if kind == 'alt':  return _wrap_to_180(j1_pref + 180.0)
+    return 0.0  # 'zero'
+
+
+def _policy_seeds(target_xyz: Sequence[float]) -> List[List[float]]:
+    """Seeds biased toward the petal policy, built from POLICY_SEED_TEMPLATES."""
+    out = []
+    for kind, j2, j3, j4, j5, j6 in POLICY_SEED_TEMPLATES:
+        j1 = _j1_for_kind(kind, target_xyz)
+        out.append(_clamp_to_limits([j1, j2, j3, j4, j5, j6]))
+    return out
 
 
 def _dedupe_solutions(sols: List[List[float]], tol_deg: float = 5.0) -> List[List[float]]:
