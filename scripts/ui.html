@@ -2393,15 +2393,16 @@ let _tipPrevValid = false;
 function _updateCamTracking() {
   if (!_camFollowTip || !DH) return;
   const tip = endEffector(state.current);
-  if (!_tipPrevValid) { _tipPrev.copy(tip); _tipPrevValid = true; }
+  if (!_tipPrevValid) { _tipPrev.copy(tip); _tipPrevValid = true; return; }
   const dx = tip.x - _tipPrev.x;
   const dy = tip.y - _tipPrev.y;
   const dz = tip.z - _tipPrev.z;
-  // Pan the camera by the tip's motion (preserve viewing angle + distance)…
+  if (dx*dx + dy*dy + dz*dz < 1e-6) return;  // idle → don't touch orbit (lets right-drag pan / left-drag orbit work freely)
+  // Translate BOTH camera and target by the tip's motion. The tip stays
+  // centered as it moves, but the user's own pan/orbit offset is preserved
+  // (we add a delta rather than hard-locking target onto the tip).
+  orbit.target.x += dx;  orbit.target.y += dy;  orbit.target.z += dz;
   camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
-  // …and lock the look-at center exactly onto the tip so the viewpoint always
-  // faces the moving end of the arm (not a drifting offset).
-  orbit.target.copy(tip);
   _tipPrev.copy(tip);
 }
 
