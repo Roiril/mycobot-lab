@@ -81,15 +81,21 @@ def check_angles(angles: Sequence[float]) -> Tuple[bool, str, List[int]]:
         (3, 6),
         (4, 6),
     ]
+    # Tool is geometrically thinner than arm links (gripper fingers ~20mm dia
+    # vs forearm shells ~70mm). The 105mm clearance was tuned for shell-vs-shell
+    # rubbing; applying it to tool pairs over-rejects (e.g. HOME with a 160mm
+    # tool sits at link4↔tool ~66mm, which is physically fine).
+    TOOL_CLEARANCE = 55.0
     for i, j in pairs:
         if seglen(links[i]) < DEGENERATE_LINK_MM or seglen(links[j]) < DEGENERATE_LINK_MM:
             continue
         d2 = _seg_dist_sq(links[i][0], links[i][1], links[j][0], links[j][1])
-        if d2 < SELF_CLEARANCE * SELF_CLEARANCE:
+        clearance = TOOL_CLEARANCE if j == 6 else SELF_CLEARANCE
+        if d2 < clearance * clearance:
             tag = "ツール" if j == 6 else f"link{j}"
             # blame the higher-indexed joints (further from base, more controllable)
             jhi = j + 1 if j < 6 else 6
-            return False, f"自己干渉: link{i} と {tag} が近接 ({d2**0.5:.0f}mm < {SELF_CLEARANCE:.0f})", [jhi]
+            return False, f"自己干渉: link{i} と {tag} が近接 ({d2**0.5:.0f}mm < {clearance:.0f})", [jhi]
     return True, "ok", []
 
 

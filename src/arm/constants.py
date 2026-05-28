@@ -6,8 +6,8 @@ serves the same numbers to the frontend via the /kinematics endpoint.
 from __future__ import annotations
 
 # --- motion limits ---
-MAX_SPEED = 40              # firmware accepts 1-100; we cap at 40 for safety
-DEFAULT_SPEED = 25
+MAX_SPEED = 80              # firmware accepts 1-100; user-operated arm prioritizes speed, runs while watched
+DEFAULT_SPEED = 60
 
 # --- path planner ---
 PATH_STEP_DEG = 8.0         # max joint delta per waypoint (degrees) — for SAFETY check granularity
@@ -25,7 +25,7 @@ SMOOTH_SINGLE_SHOT = True
 SMOOTH_PROGRESS_NEXT = 0.6  # for chunked paths: send next waypoint when this fraction of progress reached
 
 # --- safety geometry (mm) ---
-TABLE_MARGIN = 10.0         # genuine clearance above table top
+TABLE_MARGIN = 30.0         # genuine clearance above table top (bumped from 10 — TOOL_LENGTH measurement has ~5mm uncertainty + manual ruler error)
 FK_TOOL_SLOP = 5.0          # residual FK error budget (URDF FK is ~1mm accurate; was 30 with old broken DH)
 FLOOR_Z = TABLE_MARGIN + FK_TOOL_SLOP  # min Z for any joint/tool position
 LINK_RADIUS = 35.0          # effective half-width of arm links
@@ -40,7 +40,7 @@ DEGENERATE_LINK_MM = 5.0    # below this length, skip a link in collision pairs
 # The 65.5mm flange offset is now built into the URDF FK (kinematics.py).
 # TOOL_LENGTH means "extension beyond the J6 tool flange, along flange +z".
 # Set this when a gripper / tool is attached; 0 = bare flange.
-TOOL_LENGTH = 0.0
+TOOL_LENGTH = 160.0  # gripper finger tip extension from J6 flange, measured 2026-05-27
 
 # --- motion stall (collision/latch) detection ---
 # Replaces the dead current-based monitor: watches whether commanded joints

@@ -31,6 +31,13 @@ URDF_LINKS = [
     ((  0.0,  65.5,  0.0),   (-PI/2,  0.0,    0.0)),    # j5     → flange (j6 output)
 ]
 
+# Render-only override for the 3D viewport. None = use URDF_LINKS as-is.
+# History: 2026-05-27 experimented with hand-measured link lengths to debug a
+# perceived 3D-vs-real mismatch. Physical XYZ test showed URDF is correct to
+# ~16mm (within ruler precision); the apparent mismatch was just that the 3D
+# renders cylinders not the real arm housing shape. Override reverted.
+URDF_LINKS_VISUAL = None
+
 # Hardware joint limits (myCobot 320, degrees).
 # J3 firmware enforces ±145 (not the ±150 advertised in some spec sheets) —
 # verified empirically: send_angles rejects -150 with "should be -145 ~ 145".

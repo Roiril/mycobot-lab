@@ -56,7 +56,7 @@ def _recommended_speed(confidence: float) -> int:
     return 5
 
 
-def _observe_move_patch(pose_angles, speed=20):
+def _observe_move_patch(pose_angles, speed=50):
     """Build a retry_hints `patch` payload that drives /move to an OBSERVE pose."""
     return {"suggested_move": {"angles": list(pose_angles), "speed": int(speed)}}
 
@@ -71,7 +71,7 @@ def _observe_retry_hints(reason: str):
     if reason == "depth_uncertain":
         hints.append({
             "action": "observe_from_overhead",
-            "patch": _observe_move_patch(_poses.OBSERVE_HIGH, speed=20),
+            "patch": _observe_move_patch(_poses.OBSERVE_HIGH, speed=50),
             "rationale": "光線がテーブル法線に近いほど uncertainty が下がる。OBSERVE_HIGH で真上に近い視点へ",
         })
         hints.append({
@@ -83,17 +83,17 @@ def _observe_retry_hints(reason: str):
     # default reach / observe-from-another-angle set
     hints.append({
         "action": "observe_from_another_angle",
-        "patch": _observe_move_patch(_poses.OBSERVE_LEFT, speed=20),
+        "patch": _observe_move_patch(_poses.OBSERVE_LEFT, speed=50),
         "rationale": "OBSERVE_LEFT (base +30°) で左側面から再撮影",
     })
     hints.append({
         "action": "observe_from_another_angle",
-        "patch": _observe_move_patch(_poses.OBSERVE_RIGHT, speed=20),
+        "patch": _observe_move_patch(_poses.OBSERVE_RIGHT, speed=50),
         "rationale": "OBSERVE_RIGHT (base -30°) で右側面から再撮影",
     })
     hints.append({
         "action": "observe_from_overhead",
-        "patch": _observe_move_patch(_poses.OBSERVE_HIGH, speed=20),
+        "patch": _observe_move_patch(_poses.OBSERVE_HIGH, speed=50),
         "rationale": "OBSERVE_HIGH の俯瞰視点で全体を捉える",
     })
     return hints

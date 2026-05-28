@@ -4,7 +4,13 @@
     {
       "name": "mycobot-server",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["scripts/server.py", "--offline"],
+      "runtimeArgs": ["scripts/server.py", "--offline", "--port", "8001"],
+      "port": 8001
+    },
+    {
+      "name": "mycobot-attach",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-c", "import time; time.sleep(86400)"],
       "port": 8000
     }
   ]

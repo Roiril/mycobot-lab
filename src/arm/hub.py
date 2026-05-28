@@ -54,16 +54,23 @@ class HubBase(abc.ABC):
             angles = self.angles()
             if not angles: return None, "failed"
             seed = list(angles)
+        # NOTE: HOME_SEED second-pass retry was removed for UI latency — it
+        # doubled the worst-case wall-clock (each pass burns its own time_budget).
+        # solve_with_retries already includes HOME-clamped seed perturbations
+        # internally, so the second pass rarely added coverage in practice.
+
+        def _try(s, ori):
+            return solve_with_retries(coords_or_pos[:3], ori, s)
+
         if len(coords_or_pos) >= 6:
             # try firmware first (full pose); on success return mode="firmware"
             fw = self._firmware_ik_only(list(coords_or_pos), list(seed))
             if fw is not None:
                 return fw, "firmware"
-            # Numeric retries with orientation (single time-budgeted pass)
-            return solve_with_retries(coords_or_pos[:3], (coords_or_pos[3], coords_or_pos[4], coords_or_pos[5]), seed)
+            ori = (coords_or_pos[3], coords_or_pos[4], coords_or_pos[5])
+            return _try(seed, ori)
         else:
-            # position-only: numeric only (firmware doesn't help without orientation)
-            return solve_with_retries(coords_or_pos[:3], None, seed)
+            return _try(seed, None)
 
     def _firmware_ik_only(self, coords6, seed):
         """Firmware solve_inv_kinematics, no numeric fallback. Returns angles or None."""
@@ -194,6 +201,19 @@ class Hub(HubBase):
                     log.warning("is_power_on raised: %s", e)
                 time.sleep(0.05)
             return False  # consistent -1 means we can't confirm power
+
+    def send_angles_nowait(self, angles, speed):
+        """Fire-and-forget send_angles for teleop/jog. No completion wait.
+        Returns True iff command was issued (power on, no I/O error)."""
+        if not self.power_ok():
+            return False
+        try:
+            with self.io_lock:
+                self.arm.mc.send_angles(list(angles), speed)
+            return True
+        except Exception as e:
+            log.warning(f"send_angles_nowait: {e}")
+            return False
 
     def send_angles_and_wait(self, angles, speed):
         # power gate: don't issue a command we know will silently fail
@@ -418,6 +438,13 @@ class VirtualHub(HubBase):
 
     def power_ok(self):
         return self._fault != "power"
+
+    def send_angles_nowait(self, angles, speed):
+        if self._fault == "power":
+            return False
+        with self.io_lock:
+            self._angles = list(angles)
+        return True
 
     def send_angles_and_wait(self, angles, speed):
         if self._fault == "timeout":

@@ -168,19 +168,22 @@ def _seed_perturbations(seed: Sequence[float]) -> List[List[float]]:
     return [_clamp_to_limits(a) for a in raw]
 
 
-# Reach bound for fast-fail. myCobot 320 spec lists reach 350mm; geometric max
-# (all links extended) is ~456mm but unreachable as a tool tip due to self-
-# collision. Empirically observed reachable: ≤320mm radial (workspace probe).
-# Set 380mm — well above empirical 320mm to avoid false-rejecting borderline
-# IK solutions, well below 456mm to fast-fail truly impossible targets.
-_MAX_REACH_MM = 380.0
+# Fast-fail bounds. The arm's base column raises J1 above z=0, so the
+# reachable workspace is NOT a sphere from origin. Use separate horizontal
+# (XY-radial) and vertical (z) limits derived from FK workspace sampling
+# (data/reachable_rz.json: r_max≈385mm, z_max≈544mm, z_min≈50mm).
+# Sphere-from-origin check was incorrectly rejecting high-z points like
+# (-282,-58,313) r3d≈425mm but r_xy≈288mm which is well within reach.
+_MAX_REACH_RADIAL_MM = 395.0   # XY-plane distance from base axis
+_MAX_REACH_Z_MM      = 555.0   # absolute z upper bound
+_MIN_REACH_Z_MM      =  30.0   # floor clearance
 
 
 def solve_with_retries(target_pos: Sequence[float],
                        target_orientation: Optional[Tuple[float, float, float]],
                        seed: Sequence[float],
                        roll_relaxation_deg: Tuple[float, ...] = (0, 20, -20, 45, -45),
-                       time_budget_s: float = 0.8,
+                       time_budget_s: float = 0.3,
                        ) -> tuple[Optional[List[float]], str]:
     """Try full-6DoF IK with multi-seed retry + orientation relaxation fallback.
 
@@ -197,9 +200,12 @@ def solve_with_retries(target_pos: Sequence[float],
     t0 = _t.monotonic()
     def out_of_time(): return (_t.monotonic() - t0) > time_budget_s
 
-    # Fast-fail: clearly out-of-reach positions don't deserve seconds of search
-    r = (target_pos[0]**2 + target_pos[1]**2 + target_pos[2]**2) ** 0.5
-    if r > _MAX_REACH_MM:
+    # Fast-fail: clearly out-of-reach positions don't deserve seconds of search.
+    # Use cylindrical bounds (radial + z) — NOT a sphere from origin, because the
+    # base column means high-z points can be far from origin yet still reachable.
+    r_xy = (target_pos[0]**2 + target_pos[1]**2) ** 0.5
+    z    = target_pos[2]
+    if r_xy > _MAX_REACH_RADIAL_MM or z > _MAX_REACH_Z_MM or z < _MIN_REACH_Z_MM:
         return None, "failed"
 
     seeds = _seed_perturbations(seed)

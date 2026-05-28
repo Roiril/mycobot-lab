@@ -31,7 +31,7 @@ from urllib.parse import urlparse, parse_qs
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from arm.kinematics import joint_positions, end_effector, JOINT_LIMITS, DH, URDF_LINKS  # noqa: E402
+from arm.kinematics import joint_positions, end_effector, JOINT_LIMITS, DH, URDF_LINKS, URDF_LINKS_VISUAL  # noqa: E402
 from arm.safety import check_angles  # noqa: E402
 from arm.planner import plan_and_validate  # noqa: E402
 from arm.path_cartesian import linear as cart_linear, lift_translate_lower  # noqa: E402
@@ -71,7 +71,7 @@ def _preflight(body) -> tuple[Optional[dict], Optional[list[float]], Optional[in
     Returns (error_payload, current_angles, speed). On success error_payload is None.
     """
     try:
-        speed = int(body.get("speed", 20))
+        speed = int(body.get("speed", DEFAULT_SPEED))
     except (TypeError, ValueError):
         return {"error": "speed not int"}, None, None
     if not 1 <= speed <= MAX_SPEED_RUNTIME:
@@ -379,11 +379,36 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body); return
             if path == "/favicon.ico":
                 self.send_response(204); self.end_headers(); return
+            if path.startswith("/static/"):
+                # Local vendor assets (three.js etc.) — keeps UI working offline.
+                rel = path[len("/static/"):]
+                if ".." in rel.split("/"):
+                    self.send_response(403); self.end_headers(); return
+                f = ROOT / "scripts" / "static" / rel
+                if not f.is_file():
+                    self.send_response(404); self.end_headers(); return
+                ext = f.suffix.lower()
+                ctype = {".js": "application/javascript; charset=utf-8",
+                         ".mjs": "application/javascript; charset=utf-8",
+                         ".css": "text/css; charset=utf-8",
+                         ".json": "application/json; charset=utf-8",
+                         ".map": "application/json; charset=utf-8",
+                         ".html": "text/html; charset=utf-8",
+                         ".svg": "image/svg+xml"}.get(ext, "application/octet-stream")
+                data = f.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                self.end_headers()
+                self.wfile.write(data); return
             if path == "/kinematics":
                 # Single source of truth for FK/safety; UI fetches this at boot.
                 self._json(200, {
                     "dh": DH,  # deprecated; FK now URDF-based. Kept for any old clients.
                     "urdf_links": URDF_LINKS,
+                    "urdf_links_visual": URDF_LINKS_VISUAL,  # render-only; None = use urdf_links
+                    "tool_length_visual": TOOL_LENGTH,  # render-only tool length; None/equal = use TOOL_LENGTH
                     "joint_limits": JOINT_LIMITS,
                     "tool_length": TOOL_LENGTH,
                     "floor_z": FLOOR_Z, "link_radius": LINK_RADIUS,
@@ -635,6 +660,25 @@ class Handler(BaseHTTPRequestHandler):
 
                 if HUB.motion_lock.locked():
                     self._json(409, {"ok": False, "code": "MOVING"}); return
+
+                # Fast path: if caller supplies pre-computed joint angles (e.g.
+                # from the baked reach grid), skip IK entirely. This is the
+                # zero-latency path used by arrow-key jog snapped to reach pts.
+                baked = body.get("angles")
+                if baked is not None:
+                    try:
+                        res = _coerce_angles(baked)
+                    except ValueError as e:
+                        self._json(400, {"error": str(e)}); return
+                    ok, msg, bad = check_angles(res)
+                    if not ok:
+                        self._json(200, {"ok": False, "code": "SAFETY", "msg": msg, "badJoints": bad}); return
+                    speed = int(body.get("speed", min(40, MAX_SPEED_RUNTIME)))
+                    speed = max(5, min(speed, MAX_SPEED_RUNTIME))
+                    sent = HUB.send_angles_nowait(res, speed)
+                    if not sent:
+                        self._json(200, {"ok": False, "code": "NOT_POWERED"}); return
+                    self._json(200, {"ok": True, "angles": [round(a, 2) for a in res], "mode": "baked"}); return
 
                 try:
                     x = float(body.get("x")); y = float(body.get("y")); z = float(body.get("z"))
@@ -1181,7 +1225,7 @@ class Handler(BaseHTTPRequestHandler):
                     waypoints, ok, msg, bad = plan_and_validate(cur, observe_angles)
                     if not ok:
                         self._json(422, {"error": f"観測姿勢への経路 NG: {msg}", "badJoints": bad}); return
-                    code, mov = _execute_joint_waypoints(waypoints, speed=20)
+                    code, mov = _execute_joint_waypoints(waypoints, speed=DEFAULT_SPEED)
                     if code != 200:
                         self._json(code, {**mov, "stage": "move_to_observe"}); return
                 finally:
@@ -1688,7 +1732,7 @@ def main():
         if HUB.motion_lock.acquire(timeout=6.0):
             try:
                 if not args.offline:
-                    try: HUB.home_blocking(speed=25)
+                    try: HUB.home_blocking(speed=DEFAULT_SPEED)
                     except Exception as e: print(f"home failed: {e}")
             finally:
                 HUB.motion_lock.release()
