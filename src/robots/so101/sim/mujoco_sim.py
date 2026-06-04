@@ -105,3 +105,58 @@ class So101Sim:
         except ImportError:
             from PIL import Image
             Image.fromarray(img).save(path)
+
+
+class MujocoSo101Driver:
+    """So101DriverBase backed by the MuJoCo model — a virtual arm with real
+    geometry. Kinematic (sets qpos directly), so commanded poses render exactly.
+    Lets the control stack (controller.py) run + be watched fully offline.
+
+    Implements the So101DriverBase interface structurally (duck-typed) to avoid
+    pulling mujoco into driver.py's import path.
+    """
+
+    def __init__(self):
+        self.sim = So101Sim()
+        self._gripper: Optional[float] = None
+        self._torque = False
+        self._connected = False
+
+    def connect(self) -> None:
+        self._connected = True
+        self._torque = True
+
+    def disconnect(self) -> None:
+        self._torque = False
+        self._connected = False
+
+    def read_angles(self) -> List[float]:
+        return self.sim.get_angles_deg()
+
+    def read_gripper(self) -> Optional[float]:
+        return self._gripper
+
+    def _gripper_0_100_to_deg(self, v: float) -> float:
+        lo, hi = profile.GRIPPER_LIMIT_DEG
+        return lo + (max(0.0, min(100.0, v)) / 100.0) * (hi - lo)
+
+    def write_angles(self, angles: Sequence[float], gripper: Optional[float] = None) -> None:
+        if not self._connected:
+            raise RuntimeError("driver not connected")
+        if not self._torque:
+            raise RuntimeError("torque disabled; call set_torque(True) first")
+        clamped = [max(lo, min(hi, float(a))) for a, (lo, hi) in zip(angles, profile.JOINT_LIMITS)]
+        gdeg = None
+        if gripper is not None:
+            self._gripper = max(0.0, min(100.0, float(gripper)))
+            gdeg = self._gripper_0_100_to_deg(self._gripper)
+        self.sim.set_angles_deg(clamped, gripper=gdeg)
+
+    def set_torque(self, enabled: bool) -> None:
+        self._torque = bool(enabled)
+
+    def release(self) -> None:
+        self.set_torque(False)
+
+    def render(self, **kw):
+        return self.sim.render(**kw)

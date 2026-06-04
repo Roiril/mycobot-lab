@@ -36,4 +36,5 @@ data/client_logs/
 # SO-101: generated assets (reproducible via build_glb.py / MuJoCo). Source STL
 # + MJCF under sim/ ARE vendored; these are derived/preview artifacts.
 src/robots/so101/meshes_glb/
-src/robots/so101/sim/preview_pose.png
+src/robots/so101/sim/*.png
+src/robots/so101/sim/*.gif
