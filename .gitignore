@@ -25,3 +25,7 @@ data/current_calibration.json
 data/diag_report.json
 data/test_shots/
 data/perceive_log/
+data/client_logs/
+
+# Throwaway debug frame captures dropped in the repo root during sessions
+/frame_*.jpg

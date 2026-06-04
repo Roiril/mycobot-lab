@@ -1,4 +1,19 @@
 # Project Memory Index
 
-- [hardware.md](hardware.md) — 機種・接続・動作確認済み構成・初回接続で詰まった事象の記録
+- [two_systems_arm_vs_hand.md](two_systems_arm_vs_hand.md) — ⚠ アーム(myCobot)とハンド(Hiwonder 5指)は別系統。別MCU/COM/電源/プロトコル。混同禁止
+- [hand_teleop.md](hand_teleop.md) — ✋ハンドの Quest 指追従/Python ドライバ/server endpoint/UI 手動パネル構成
+- [hardware.md](hardware.md) — 機種・接続・動作確認済み構成・初回接続で詰まった事象
+- [mycobot_firmware_quirks.md](mycobot_firmware_quirks.md) — J5 latched lock（M5 再起動以外復旧不能）、get_servo_currents は torque を反映しない
+- [camera_upright_calibration.md](camera_upright_calibration.md) — CAMERA_UPRIGHT_J6_DEG=90 は J1=90° でしか正立しない（image roll が J1 に依存）
+- [server_ui_reload.md](server_ui_reload.md) — ui.html はリクエスト都度読み直し。編集→リロードで即反映。サーバー再起動不要
+- [feedback_quest_reload_protocol.md](feedback_quest_reload_protocol.md) — Quest 反映は「VR セッション終了→リロード→recorder 再注入」順。VR 中リロード禁止
+- [feedback_act_dont_just_promise.md](feedback_act_dont_just_promise.md) — 「やる」と言ったら同じ返信内で必ずツール実行。宣言だけで turn を終えない
+- [feedback_tool_discipline.md](feedback_tool_discipline.md) — Bash は1コールずつ。並列詰め込みで連鎖キャンセル多発。Read/Grep 優先、Temp 直下回避
+- [feedback_change_reflection_debug.md](feedback_change_reflection_debug.md) — 「変えたのに反映されない」時のチェックリスト5段階。ロジック疑う前に必ず通す
+- [feedback_localstorage_version.md](feedback_localstorage_version.md) — UIの永続デフォルト値の意味を変えたら LSKEY を必ずバンプ
+- [feedback_threejs_wireframe.md](feedback_threejs_wireframe.md) — Mesh+wireframe は overdraw 爆弾。LineSegments+EdgesGeometry を使う
+- [browser_ui_testing.md](browser_ui_testing.md) — UI 動作確認は MCP 合成イベント不可→Chrome computer の実 OS キー。状態は DOM/API 経由で観測
+- [dual_impl_single_source.md](dual_impl_single_source.md) — FK/IK が CPU/GPU/JS に重複。定数・seed・スコアは単一ソースから供給しドリフト防止
+- [gpu_ik_and_reach_grid.md](gpu_ik_and_reach_grid.md) — reach 点角度ベイク / GPU IK は FP64 必須 / J1 対称で激減 / 生成器使い分け・再生成手順
 - 接続トラブル時は [.agent/rules/connection-troubleshooting.md](../../.agent/rules/connection-troubleshooting.md) を参照
+- 安全規約は [.agent/rules/safety.md](../../.agent/rules/safety.md) を必読

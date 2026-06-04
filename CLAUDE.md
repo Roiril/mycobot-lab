@@ -2,6 +2,26 @@
 
 Elephant Robotics **myCobot 320-M5**（6-DoF 卓上協働アーム）を Python から制御する研究用プロジェクト。pymycobot 経由で USB-Serial（M5Stack Basic の Transponder 経由）で通信する。
 
+## ⚠ 二系統あり — アーム と ハンド を混同するな
+
+このプロジェクトには **物理的に独立した 2 つのロボット** がある。別マイコン・別 COM ポート・別電源・別プロトコル。「動かして」と言われたら **どちらの話か必ず確認**し、コード・ポート・電源を取り違えないこと。
+
+| | 🦾 **アーム** | ✋ **ハンド** |
+|---|---|---|
+| 機種 | myCobot 320-M5（6-DoF アーム） | Hiwonder 5本指ハンド（LFD-01×5） |
+| 制御 MCU | M5Stack Basic + M5Atom | **Arduino Uno** |
+| 接続 | CH9102 USB-Serial | Arduino USB シリアル |
+| ボーレート | **115200** | **9600** |
+| COM | 動的（≈COM12） | 動的（≈COM10）※別ポート |
+| 電源 | DC 24V 120W（本体） | **外部 6V**（サーボ用、別系統） |
+| SDK/制御 | pymycobot | 生シリアル（`<f> <us>` / `open` / `close`） |
+| コード | `src/arm/` `scripts/server.py` | `hand/`（firmware + 今後 Python ドライバ）|
+| プロトコル | [.agent/rules/mycobot-protocol.md](.agent/rules/mycobot-protocol.md) | [hand/HANDOFF.md](hand/HANDOFF.md) |
+
+- **「ロボットハンド」= 指のハンド**（アームの先端ではない）。アームには現状エンドエフェクタは付いていない。
+- ハンドのファーム書き込み（arduino-cli）・配線・電源は [hand/HANDOFF.md](hand/HANDOFF.md) が正本。
+- 詳細メモリ: [memory/two_systems_arm_vs_hand.md](.claude/memory/two_systems_arm_vs_hand.md)
+
 ## ハードウェア
 
 - 機種: myCobot 320-M5（DC 24V 120W）
@@ -89,6 +109,8 @@ LAN 公開する場合は `--bind 0.0.0.0 --token <secret>` 必須。
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — 設計思想・モジュール構造・抽象化。新機能を追加する前に読む
 - **[docs/AGENT_API.md](docs/AGENT_API.md)** — AI が arm を制御する API リファレンス。動作 verb・Pose ポリシー・エラーコード・retry_hints
+- **[docs/VR_TELEOP.md](docs/VR_TELEOP.md)** — WebXR 遠隔操作（アーム/✋ハンド）の挙動仕様・チューニング値
+- **[docs/QUEST_DEV.md](docs/QUEST_DEV.md)** — Quest 実機開発ループ（bring-up・反映手順・環境固有値・ハマりどころ）。VR を触る前に読む。ツールは `scripts/quest/qctl.py`、反映は `/quest-reload`
 
 ## 共有ハーネス (.agent/)
 
