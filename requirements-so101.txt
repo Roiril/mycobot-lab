@@ -1,0 +1,13 @@
+# SO-101 (lerobot) backend — OPTIONAL dependency, installed in a separate env.
+# Do NOT merge into requirements.txt: lerobot pulls PyTorch and needs Python
+# >=3.12, while the myCobot stack targets 3.10. The server lazy-imports lerobot
+# only when launched with --robot so101 (see SO101Hub).
+#
+# Install (dedicated env, Python >=3.12):
+#   pip install 'lerobot[feetech]'
+#
+# Track A (position control of the arm from Python) works on native Windows:
+# it is pyserial + the Feetech SDK over a COM port. Track B (imitation-learning
+# record/train: TorchCodec/evdev/placo) is deferred and would want WSL2/Linux.
+
+lerobot[feetech]
