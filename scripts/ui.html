@@ -2,119 +2,225 @@
 <html lang="ja"><head><meta charset="utf-8">
 <title>myCobot 320 control</title>
 <style>
- html,body{margin:0;height:100%;background:#1e1e1e;color:#ddd;font:13px system-ui,sans-serif;overflow:hidden;min-width:840px}
+ /* ============================================================
+    Design tokens — VSCode-dark palette, flat & token-driven
+    (couple-sync の規律: 単一アクセント + 機能ステータス色のみ、
+     hex 直書きしない・装飾アクセント禁止・4px 角丸・glow 禁止)
+    ============================================================ */
+ :root{
+   /* surfaces */
+   --bg:#1e1e1e; --surface:#252526; --surface-2:#2d2d30; --surface-3:#333334;
+   --border:#3c3c3c; --border-strong:#525257; --divider:#2b2b2c;
+   /* text */
+   --text:#d4d4d4; --text-muted:#9d9d9d; --text-faint:#6e6e72; --text-inv:#ffffff;
+   /* single accent (VSCode cyan) + filled-primary (VSCode blue) */
+   --accent:#4ec9ff; --accent-bg:#0e639c; --accent-bg-hover:#1177bb;
+   --accent-soft:rgba(78,201,255,.13); --accent-line:rgba(78,201,255,.30);
+   /* functional status (decorative use forbidden) */
+   --ok:#388a5a; --ok-text:#4ec99a;
+   --warn:#9a7d12; --warn-text:#dcdcaa;
+   --danger:#a1260d; --danger-hover:#c5341a; --danger-text:#f14c4c; --danger-soft:rgba(161,38,13,.16);
+   /* monospace data tones (readouts only) */
+   --data-num:#9cdcfe; --data-tgt:#ce9178; --data-ok:#6a9955;
+   /* type */
+   --font-ui:system-ui,"Segoe UI",Roboto,sans-serif;
+   --font-mono:ui-monospace,"SF Mono",Consolas,"Liberation Mono",monospace;
+   --fs-2xs:10px; --fs-xs:11px; --fs-sm:12px; --fs-base:13px; --fs-md:15px;
+   --fw-reg:400; --fw-med:600; --fw-bold:700;
+   /* shape / space / motion */
+   --radius:4px; --radius-sm:3px; --bw:1px;
+   --pad:11px; --gap:8px;
+   --t-fast:.1s; --t-std:.16s; --ease:ease-out;
+ }
+
+ *{box-sizing:border-box}
+ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+   font:var(--fs-base)/1.45 var(--font-ui);overflow:hidden;min-width:840px;
+   -webkit-font-smoothing:antialiased}
+
+ /* ---------- layout ---------- */
  #root{display:flex;height:100%}
  #scene{flex:1;position:relative;min-width:400px}
- #side{width:440px;border-left:1px solid #333;display:flex;flex-direction:column;padding:10px;gap:8px;overflow:auto}
- .panel{background:#252526;border:1px solid #333;border-radius:6px;padding:10px;flex-shrink:0}
- .panel.danger{border-color:#a1260d;border-width:2px}
- .panel.danger label{background:rgba(161,38,13,.15);padding:4px;border-radius:3px;display:block}
- h2{font-size:11px;margin:0 0 6px;color:#9d9d9d;text-transform:uppercase;letter-spacing:1px;display:flex;justify-content:space-between;align-items:center;gap:6px}
- button{background:#0e639c;color:#fff;border:0;padding:6px 12px;border-radius:3px;cursor:pointer;font:13px system-ui;margin-right:4px}
- button:hover:not(:disabled){background:#1177bb}
- button:disabled{background:#444;color:#7a7a7a;cursor:not-allowed;opacity:.7}
- button.warn{background:#a1260d}
- button.warn:hover:not(:disabled){background:#c93b1b}
- button.apply{background:#0a8043;font-weight:600;width:100%;padding:10px;font-size:15px;margin:0}
- button.apply:hover:not(:disabled){background:#10a052}
- button.apply:disabled{background:#3a3a3a;color:#7a7a7a;border:1px dashed #555}
- button.abort{background:#c93b1b;color:#fff;width:100%;padding:10px;font-size:15px;margin:0;font-weight:600}
- button.abort:hover:not(:disabled){background:#e04425}
- button.abort:disabled{background:#5a2a20;color:#9a8a82}
- input[type=number],input[type=text]{background:#3c3c3c;color:#ddd;border:1px solid #555;padding:3px;border-radius:3px;font-family:ui-monospace,"SF Mono",Consolas,"Liberation Mono",monospace}
+ #side{width:452px;border-left:var(--bw) solid var(--border);display:flex;
+   flex-direction:column;padding:12px;gap:10px;overflow:auto}
+ #side::-webkit-scrollbar{width:10px}
+ #side::-webkit-scrollbar-thumb{background:#3a3a3c;border:2px solid var(--bg);border-radius:6px}
+ #side::-webkit-scrollbar-thumb:hover{background:#4a4a4d}
+
+ /* ---------- panel / section ---------- */
+ .panel{background:var(--surface);border:var(--bw) solid var(--border);
+   border-radius:var(--radius);padding:var(--pad);flex-shrink:0}
+ .panel.danger{border-color:var(--danger);background:linear-gradient(0deg,var(--danger-soft),var(--danger-soft)),var(--surface)}
+ .panel.danger label{background:var(--danger-soft);padding:5px 7px;border-radius:var(--radius-sm);display:block}
+ h2{font-size:var(--fs-xs);font-weight:var(--fw-bold);margin:0 0 8px;color:var(--text-muted);
+   text-transform:uppercase;letter-spacing:.8px;display:flex;justify-content:space-between;align-items:center;gap:6px}
+ .sec{display:flex;align-items:center;gap:10px;color:var(--text-faint);font-size:var(--fs-2xs);
+   font-weight:var(--fw-med);text-transform:uppercase;letter-spacing:1.4px;margin:6px 0 0;flex-shrink:0}
+ .sec::before,.sec::after{content:'';flex:1;height:1px;background:var(--divider)}
+
+ /* ---------- buttons: default = quiet/flat, active/primary = single accent ---------- */
+ button{background:var(--surface-3);color:var(--text);border:var(--bw) solid var(--border);
+   padding:6px 11px;border-radius:var(--radius);cursor:pointer;
+   font:var(--fw-med) var(--fs-base) var(--font-ui);margin-right:4px;
+   transition:background var(--t-fast) var(--ease),border-color var(--t-fast) var(--ease),color var(--t-fast) var(--ease)}
+ button:hover:not(:disabled){background:var(--surface-2);border-color:var(--border-strong)}
+ button:active:not(:disabled){transform:translateY(.5px)}
+ button:disabled{background:var(--surface);color:var(--text-faint);border-color:var(--border);cursor:not-allowed;opacity:.6}
+ button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+ /* primary (filled blue) */
+ button.primary,button.apply{background:var(--accent-bg);color:var(--text-inv);border-color:transparent;font-weight:var(--fw-bold)}
+ button.primary:hover:not(:disabled),button.apply:hover:not(:disabled){background:var(--accent-bg-hover);border-color:transparent}
+ button.apply{width:100%;padding:9px;font-size:var(--fs-md);margin:0}
+ button.apply:disabled{background:var(--surface);color:var(--text-faint);border:var(--bw) dashed var(--border-strong)}
+ /* destructive */
+ button.warn{background:transparent;color:var(--danger-text);border-color:var(--danger)}
+ button.warn:hover:not(:disabled){background:var(--danger-soft);border-color:var(--danger-hover)}
+ button.abort{background:var(--danger);color:var(--text-inv);border-color:transparent;width:100%;padding:9px;font-size:var(--fs-md);margin:0;font-weight:var(--fw-bold)}
+ button.abort:hover:not(:disabled){background:var(--danger-hover)}
+ button.abort:disabled{background:var(--surface);color:var(--text-faint);border:var(--bw) solid var(--border)}
+
+ /* ---------- segmented / toggle controls (one shared style) ---------- */
+ button.modeBtn,button.vrModeBtn,button.opModeBtn,button.poseBtn,button.poseLibBtn{
+   background:transparent;color:var(--text-muted);border:var(--bw) solid var(--border);
+   padding:4px 10px;font-size:var(--fs-xs);font-weight:var(--fw-med);border-radius:var(--radius);margin:0}
+ button.modeBtn{text-transform:uppercase;letter-spacing:.5px}
+ button.modeBtn:hover,button.vrModeBtn:hover,button.opModeBtn:hover,button.poseBtn:hover:not(:disabled),button.poseLibBtn:hover{
+   background:var(--surface-3);color:var(--text)}
+ button.modeBtn.active,button.vrModeBtn.active,button.opModeBtn.active,button.poseBtn.active,button.poseLibBtn.active{
+   background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+ .policyDisabled{opacity:.35;pointer-events:none}
+
+ /* top-level UI mode tabs */
+ #topModeBar{display:flex;gap:6px;align-items:center;padding:2px 0 4px;flex-shrink:0}
+ button.topModeBtn{flex:1;padding:7px 10px;font-size:var(--fs-sm);font-weight:var(--fw-bold);
+   background:transparent;color:var(--text-muted);border:var(--bw) solid var(--border);border-radius:var(--radius)}
+ button.topModeBtn:hover{background:var(--surface-3);color:var(--text)}
+ button.topModeBtn.active{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+ #side.mode-classic [data-uimode="pose"]:not(.topModeBtn){display:none}
+ #side.mode-pose [data-uimode="classic"]:not(.topModeBtn){display:none}
+
+ /* jog pad — monospace, accent on press */
+ button.jogBtn{background:var(--surface-3);color:var(--text);padding:8px 4px;font-size:var(--fs-base);
+   font-weight:var(--fw-bold);font-family:var(--font-mono);border:var(--bw) solid var(--border);margin:0}
+ button.jogBtn:hover:not(:disabled){background:var(--surface-2);border-color:var(--border-strong)}
+ button.jogBtn:active{background:var(--accent-bg);border-color:transparent;color:var(--text-inv)}
+
+ /* ---------- pose library ---------- */
+ .poseGroup{margin-bottom:8px}
+ .poseGroup .grpLbl{color:var(--text-muted);font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+ .poseGroup .grpBtns{display:flex;gap:5px;flex-wrap:wrap}
+ button.poseLibBtn{padding:5px 11px;font-size:var(--fs-sm)}
+ .poseEmpty{color:var(--text-faint);font-size:var(--fs-xs);font-style:italic}
+
+ /* ---------- inputs ---------- */
+ input[type=number],input[type=text]{background:var(--bg);color:var(--text);
+   border:var(--bw) solid var(--border-strong);padding:4px 6px;border-radius:var(--radius-sm);font-family:var(--font-mono)}
  input[type=number]{width:64px}
+ input[type=number]:focus,input[type=text]:focus{outline:none;border-color:var(--accent)}
  input.coord{width:64px;text-align:right}
- input.invalid{border-color:#f48771;background:#3a2020}
+ input.invalid{border-color:var(--danger-text);background:var(--danger-soft)}
  input:disabled{opacity:.5;cursor:not-allowed}
- .joint{display:grid;grid-template-columns:24px 1fr 60px 36px;gap:6px;align-items:center;margin-bottom:3px}
- .joint label{color:#9d9d9d;font-family:ui-monospace,Consolas,monospace;cursor:pointer}
- .joint label.bad{color:#f48771;font-weight:bold}
+ input[type=range]{accent-color:var(--accent)}
+
+ /* ---------- joints ---------- */
+ .joint{display:grid;grid-template-columns:24px 1fr 60px 36px;gap:7px;align-items:center;margin-bottom:4px}
+ .joint label{color:var(--text-muted);font-family:var(--font-mono);cursor:pointer}
+ .joint label.bad{color:var(--danger-text);font-weight:var(--fw-bold)}
  .joint label.bad::before{content:"⚠ "}
  .joint input[type=range]{width:100%}
- .joint input[type=range].bad{accent-color:#f48771}
- .joint input[type=range].bad::-webkit-slider-runnable-track{background:#3a2020}
- .joint .tgt{color:#ce9178;text-align:right;font-family:ui-monospace,Consolas,monospace;font-size:11px}
- .joint .delta{color:#9d9d9d;text-align:right;font-family:ui-monospace,Consolas,monospace;font-size:10px}
- .joint .delta.large{color:#dcdc6a}
- #statusLog{font-family:ui-monospace,Consolas,monospace;font-size:11px;max-height:160px;overflow-y:auto;border-top:1px solid #333;padding-top:4px;margin-top:6px}
+ .joint input[type=range].bad{accent-color:var(--danger-text)}
+ .joint .tgt{color:var(--data-tgt);text-align:right;font-family:var(--font-mono);font-size:var(--fs-xs)}
+ .joint .delta{color:var(--text-muted);text-align:right;font-family:var(--font-mono);font-size:var(--fs-2xs)}
+ .joint .delta.large{color:var(--warn-text)}
+
+ /* ---------- status log ---------- */
+ #statusLog{font-family:var(--font-mono);font-size:var(--fs-xs);max-height:160px;overflow-y:auto;
+   border-top:var(--bw) solid var(--divider);padding-top:6px;margin-top:8px}
  #statusLog .line{padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
- #statusLog .err{color:#f48771}
- #statusLog .ok{color:#6a9955}
- #statusLog .warn{color:#dcdc6a}
- #statusLog time{color:#8a8a8a;margin-right:6px}
- .badge{padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
- .badge.ok{background:#0a8043;color:#fff}
- .badge.err{background:#a1260d;color:#fff}
- .badge.warn{background:#7a6a00;color:#fff}
- .badge.gray{background:#555;color:#ccc}
- .coords-grid{display:grid;grid-template-columns:20px 1fr 80px;gap:6px;align-items:center;font-family:ui-monospace,Consolas,monospace}
- .coords-grid .lbl{color:#9d9d9d}
- .coords-grid .cur{color:#9cdcfe;text-align:right;font-size:11px}
- #camPip{position:relative;width:100%;height:300px;background:#000;border-radius:4px;overflow:hidden;transition:height .2s;flex-shrink:0}
- #camPip.min{height:0}
- #camPip img{width:100%;height:calc(100% - 22px);object-fit:cover;display:block}
- #camReticle{position:absolute;left:0;right:0;top:22px;bottom:0;pointer-events:none;display:flex;align-items:center;justify-content:center}
+ #statusLog .err{color:var(--danger-text)}
+ #statusLog .ok{color:var(--data-ok)}
+ #statusLog .warn{color:var(--warn-text)}
+ #statusLog time{color:var(--text-faint);margin-right:6px}
+
+ /* ---------- badges ---------- */
+ .badge{padding:2px 7px;border-radius:var(--radius-sm);font-size:var(--fs-2xs);font-weight:var(--fw-bold);
+   text-transform:uppercase;letter-spacing:.5px;border:var(--bw) solid transparent}
+ .badge.ok{background:rgba(56,138,90,.18);color:var(--ok-text);border-color:rgba(56,138,90,.45)}
+ .badge.err{background:var(--danger-soft);color:var(--danger-text);border-color:rgba(161,38,13,.5)}
+ .badge.warn{background:rgba(154,125,18,.18);color:var(--warn-text);border-color:rgba(154,125,18,.45)}
+ .badge.gray{background:var(--surface-3);color:var(--text-muted);border-color:var(--border)}
+ .badge.teal{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+
+ /* ---------- coords readout ---------- */
+ .coords-grid{display:grid;grid-template-columns:20px 1fr 80px;gap:6px;align-items:center;font-family:var(--font-mono)}
+ .coords-grid .lbl{color:var(--text-muted)}
+ .coords-grid .cur{color:var(--data-num);text-align:right;font-size:var(--fs-xs)}
+
+ /* ---------- camera PiP ---------- */
+ #camPip{position:relative;width:100%;height:300px;background:#000;border-radius:var(--radius);
+   overflow:hidden;transition:height var(--t-std) var(--ease);flex-shrink:0;border:var(--bw) solid var(--border)}
+ #camPip.min{height:0;border-width:0}
+ #camPip img{width:100%;height:calc(100% - 24px);object-fit:cover;display:block}
+ #camReticle{position:absolute;left:0;right:0;top:24px;bottom:0;pointer-events:none;display:flex;align-items:center;justify-content:center}
  #camReticle::before,#camReticle::after{content:'';position:absolute;background:rgba(255,255,0,0.7);box-shadow:0 0 3px rgba(0,0,0,0.9)}
  #camReticle::before{width:24px;height:2px}
  #camReticle::after{width:2px;height:24px}
  #camPip.min #camReticle{display:none}
- #camPip .bar{position:absolute;top:0;left:0;right:0;height:22px;background:#1a1a1a;color:#aaa;font-size:10px;padding:2px 6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;z-index:1}
- .sec{display:flex;align-items:center;gap:8px;color:#555;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;margin:4px 0 0;flex-shrink:0}
- .sec::before,.sec::after{content:'';flex:1;height:1px;background:#2e2e2e}
- button.modeBtn{background:#2a2a2a;color:#aaa;border:1px solid #444;padding:2px 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;border-radius:3px;margin:0;cursor:pointer}
- button.modeBtn:hover{background:#3a3a3a;color:#fff}
- button.modeBtn.active{background:#0e639c;color:#fff;border-color:#1177bb}
- button.vrModeBtn{background:#2a2a2a;color:#aaa;border:1px solid #444;padding:2px 8px;font-size:11px;font-weight:600;border-radius:3px;margin:0;cursor:pointer}
- button.vrModeBtn:hover{background:#3a3a3a;color:#fff}
- button.vrModeBtn.active{background:#0e639c;color:#fff;border-color:#1177bb}
- /* ✋ HAND UI — teal accent to keep it visually distinct from the 🦾 ARM (blue) */
- button.vrModeBtn[data-vrmode="hand"].active{background:#107a55;border-color:#19a673}
- .hand-panel{border-left:3px solid #19a673}
- .hand-panel h2 .badge.teal,.badge.teal{background:#19a673;color:#fff}
- .hand-row{display:flex;gap:6px;align-items:center;margin-bottom:3px;font-size:11px;color:#bbb}
+ #camPip .bar{position:absolute;top:0;left:0;right:0;height:24px;background:var(--surface-2);color:var(--text-muted);
+   font-size:var(--fs-2xs);padding:0 8px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;z-index:1}
+
+ /* ---------- ✋ hand control (distinguished by icon + left accent rule, NOT a 2nd color) ---------- */
+ .hand-panel{border-left:3px solid var(--accent-line)}
+ .hand-row{display:flex;gap:8px;align-items:center;margin-bottom:4px;font-size:var(--fs-xs);color:var(--text-muted)}
  .hand-row label{width:52px;flex-shrink:0}
  .hand-row input[type=range]{flex:1}
- .hand-row .handVal{width:34px;text-align:right;font-family:Consolas,monospace;color:#cdcdcd}
- #btnVRFloat{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:9999;
-   padding:14px 28px;font-size:18px;font-weight:bold;
-   background:#0e639c;color:#fff;border:2px solid #1177bb;border-radius:8px;
-   box-shadow:0 4px 16px rgba(0,0,0,0.5);cursor:pointer}
- #btnVRFloat:hover{background:#1177bb}
- #btnVRFloat.active{background:#7a1a10;border-color:#c0392b}
- button.jogBtn{background:#264f6b;color:#fff;padding:8px 4px;font-size:13px;font-weight:600;font-family:ui-monospace,Consolas,monospace;border-radius:3px;margin:0;border:1px solid #3a6a8a}
- button.jogBtn:hover:not(:disabled){background:#3777a0}
- button.jogBtn:active{background:#0e639c}
- #hint{position:absolute;top:10px;left:10px;color:#aaa;background:rgba(0,0,0,.75);padding:6px 10px;border-radius:4px;font-size:11px;max-width:420px;transition:opacity .5s}
- #hint kbd{background:#444;color:#fff;border-radius:3px;padding:1px 4px;font-size:10px;border:1px solid #555}
- #hint.fade{opacity:.15;pointer-events:none}
+ .hand-row .handVal{width:34px;text-align:right;font-family:var(--font-mono);color:var(--text)}
+
+ /* ---------- floating VR CTA ---------- */
+ #btnVRFloat{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:9999;
+   padding:12px 26px;font-size:var(--fs-md);font-weight:var(--fw-bold);
+   background:var(--accent-bg);color:var(--text-inv);border:var(--bw) solid var(--accent-bg-hover);
+   border-radius:var(--radius);box-shadow:0 6px 20px rgba(0,0,0,.45);cursor:pointer;
+   transition:background var(--t-fast) var(--ease)}
+ #btnVRFloat:hover{background:var(--accent-bg-hover)}
+ #btnVRFloat.active{background:var(--danger);border-color:var(--danger-hover)}
+
+ /* ---------- scene hint overlay ---------- */
+ #hint{position:absolute;top:12px;left:12px;color:var(--text-muted);background:rgba(20,20,20,.82);
+   padding:8px 11px;border-radius:var(--radius);font-size:var(--fs-xs);max-width:430px;
+   border:var(--bw) solid var(--border);transition:opacity .5s}
+ #hint kbd{background:var(--surface-3);color:var(--text);border-radius:var(--radius-sm);padding:1px 5px;font-size:var(--fs-2xs);border:var(--bw) solid var(--border-strong);font-family:var(--font-mono)}
+ #hint.fade{opacity:.14;pointer-events:none}
  #hint.fade:hover{opacity:1}
- .legend{display:flex;gap:12px;font-size:11px;color:#bbb;margin-top:4px}
- .sw{display:inline-block;width:10px;height:10px;margin-right:4px;vertical-align:middle;border-radius:2px}
- #connBadge{font-size:10px;padding:2px 6px;border-radius:3px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
- #connBadge.ok{background:#1a3a1a;color:#7ac76a;border:1px solid #2a5a2a}
- #connBadge.err{background:#5a1d10;color:#fff;animation:pulse 1s infinite}
- @keyframes pulse{50%{opacity:.4}}
- button.poseBtn{padding:4px 8px;font-size:11px;background:#3a3a3a;color:#bbb;border:1px solid #555;margin:0}
- button.poseBtn:hover:not(:disabled){background:#4a4a4a;color:#fff}
- button.poseBtn.active{background:#0a8043;color:#fff;border-color:#10a052}
- button.opModeBtn{padding:3px 10px;font-size:11px;font-weight:600;background:#2a2a2a;color:#aaa;border:1px solid #444;margin:0;border-radius:3px;cursor:pointer}
- button.opModeBtn:hover{background:#3a3a3a;color:#fff}
- button.opModeBtn.active{background:#6f42c1;color:#fff;border-color:#8a5cd6}
- .policyDisabled{opacity:.35;pointer-events:none}
- /* ── top-level UI mode: 従来 (free manipulation) / ポーズ (pose-graph) ── */
- #topModeBar{display:flex;gap:6px;align-items:center;padding:6px 0 2px;flex-shrink:0}
- button.topModeBtn{flex:1;padding:6px 10px;font-size:12px;font-weight:700;background:#262626;color:#9d9d9d;border:1px solid #444;border-radius:4px;cursor:pointer}
- button.topModeBtn:hover{background:#333;color:#fff}
- button.topModeBtn.active{background:#0a8043;color:#fff;border-color:#10a052}
- #side.mode-classic [data-uimode="pose"]:not(.topModeBtn){display:none}
- #side.mode-pose [data-uimode="classic"]:not(.topModeBtn){display:none}
- .poseGroup{margin-bottom:8px}
- .poseGroup .grpLbl{color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}
- .poseGroup .grpBtns{display:flex;gap:4px;flex-wrap:wrap}
- button.poseLibBtn{padding:5px 10px;font-size:12px;background:#33384a;color:#cdd3e0;border:1px solid #4a5168;border-radius:3px;margin:0;cursor:pointer}
- button.poseLibBtn:hover{background:#3f4658;color:#fff}
- button.poseLibBtn.active{background:#0e639c;color:#fff;border-color:#1177bb}
- .poseEmpty{color:#777;font-size:11px;font-style:italic}
+ .legend{display:flex;gap:12px;font-size:var(--fs-xs);color:var(--text-muted);margin-top:4px}
+ .sw{display:inline-block;width:10px;height:10px;margin-right:5px;vertical-align:middle;border-radius:2px}
+
+ /* ---------- connection badge ---------- */
+ #connBadge{font-size:var(--fs-2xs);padding:2px 7px;border-radius:var(--radius-sm);text-transform:uppercase;
+   letter-spacing:.5px;font-weight:var(--fw-bold);border:var(--bw) solid transparent}
+ #connBadge.ok{background:rgba(56,138,90,.16);color:var(--ok-text);border-color:rgba(56,138,90,.4)}
+ #connBadge.err{background:var(--danger-soft);color:var(--danger-text);border-color:rgba(161,38,13,.5);animation:pulse 1s infinite}
+ @keyframes pulse{50%{opacity:.45}}
+
+ /* ---------- sticky status bar (always-visible system state) ---------- */
+ #side{padding-top:0}
+ #statusBar{position:sticky;top:0;z-index:6;display:flex;align-items:center;gap:10px;
+   margin:0 -12px;padding:9px 12px;background:var(--surface);
+   border-bottom:var(--bw) solid var(--border);font-size:var(--fs-xs);font-family:var(--font-mono)}
+ #statusBar .sb-grp{display:flex;align-items:center;gap:6px}
+ #statusBar .sb-spacer{flex:1}
+ #statusBar .sb-brand{color:var(--text-faint);letter-spacing:.5px}
+
+ /* ---------- collapsible panels (accordion) ---------- */
+ .panel{position:relative}
+ .panel > h2{cursor:pointer;padding-right:20px;user-select:none}
+ .panel > h2::after{content:"\25BE";position:absolute;right:10px;top:11px;color:var(--text-faint);
+   font-size:9px;transition:transform var(--t-std) var(--ease)}
+ .panel.collapsed > h2{margin-bottom:0}
+ .panel.collapsed > h2::after{transform:rotate(-90deg)}
+ .panel.collapsed > :not(h2){display:none !important}  /* !important: 子の inline display:flex に勝つ */
+ #legendToggle{padding-right:0}
+ #legendToggle::after{content:none}  /* 独自 ▾ を持つので二重シェブロンを抑止 */
 </style></head><body>
 <div id="root">
   <div id="scene">
@@ -132,6 +238,16 @@
   </div>
   <div id="side" class="mode-classic">
 
+    <div id="statusBar">
+      <span class="sb-grp"><span id="connBadge" class="ok">CONN</span></span>
+      <span class="sb-grp">
+        <span class="badge ok" id="powerBadge">通電</span>
+        <span class="badge warn" id="offlineBadge" style="display:none">OFFLINE</span>
+      </span>
+      <span class="sb-spacer"></span>
+      <span class="sb-brand">myCobot 320</span>
+    </div>
+
     <div id="topModeBar">
       <button class="topModeBtn active" data-uimode="classic"
               title="自由操作。関節スライダ / カルテジアン IK / VR で任意に動かす（6DoF 連続操作系）">従来モード</button>
@@ -142,14 +258,7 @@
     <div class="sec">制御</div>
 
     <div class="panel">
-      <h2>
-        <span>関節 (J1-J6, deg)</span>
-        <span style="display:flex;gap:4px;align-items:center">
-          <span id="connBadge" class="ok">CONN</span>
-          <span class="badge ok" id="powerBadge">通電</span>
-          <span class="badge warn" id="offlineBadge" style="display:none">OFFLINE</span>
-        </span>
-      </h2>
+      <h2><span>関節 (J1-J6, deg)</span></h2>
       <div id="joints"></div>
       <div class="legend">
         <span><span class="sw" style="background:#9cdcfe"></span>現在</span>
@@ -157,8 +266,7 @@
         <span><span class="sw" style="background:#dcdc6a"></span>差分大</span>
       </div>
       <div style="margin-top:10px;display:flex;gap:6px;align-items:center">
-        <button id="btnLiveToggle" title="入力モード切替 (L)：Apply待ち ⇄ リアルタイム追従"
-                style="flex:0 0 auto;padding:6px 10px;border-radius:3px;border:1px solid #555;background:#2a2a2a;color:#ddd;cursor:pointer">
+        <button id="btnLiveToggle" title="入力モード切替 (L)：Apply待ち ⇄ リアルタイム追従" style="flex:0 0 auto">
           ⏸ Apply待ち
         </button>
         <span id="liveHint" style="font-size:11px;color:#9d9d9d">クリック/矢印は目標のみ変更 → APPLY で実行</span>
@@ -223,7 +331,7 @@
             <option value="その他">その他</option>
           </select>
         </div>
-        <button id="btnTeachConfirm" style="background:#0a8043;color:#fff;border:1px solid #10a052;padding:6px 12px;border-radius:3px;cursor:pointer">③ 確定して登録</button>
+        <button id="btnTeachConfirm" class="primary">③ 確定して登録</button>
         <div id="teachStatus" style="font-size:11px;margin-top:5px;color:#aaa"></div>
       </div>
     </div>
@@ -312,7 +420,7 @@
 
     <div class="panel" id="vrPanel" data-uimode="classic">
       <h2>WebXR 遠隔操作 <span class="badge gray" id="vrBadge">off</span></h2>
-      <div style="font-size:11px;color:#888;margin-bottom:6px">Quest 系 HMD。制御方式で <b>🦾アーム</b> か <b style="color:#19a673">✋ハンド</b> を選ぶ。<b>🦾アーム</b>=右手ピンチで追従ON/OFF。<b style="color:#19a673">✋ハンド</b>=<u>クラッチ不要</u>、右手の指を曲げるだけで実ハンドが常時追従（アームは動かない）。</div>
+      <div style="font-size:11px;color:#888;margin-bottom:6px">Quest 系 HMD。制御方式で <b>🦾アーム</b> か <b style="color:var(--accent)">✋ハンド</b> を選ぶ。<b>🦾アーム</b>=右手ピンチで追従ON/OFF。<b style="color:var(--accent)">✋ハンド</b>=<u>クラッチ不要</u>、右手の指を曲げるだけで実ハンドが常時追従（アームは動かない）。</div>
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">
         <button id="btnVR" title="immersive-vr セッション開始（hand-tracking, local-floor）">VR 開始</button>
         <button id="btnVRCalib" disabled title="HMD 前方向を arm +Y に揃える yaw キャリブ">キャリブ</button>
@@ -323,7 +431,7 @@
         <button class="vrModeBtn active" data-vrmode="follow" title="🦾アーム: 手で goalSphere を動かし IK で追従">🦾IK追従</button>
         <button class="vrModeBtn" data-vrmode="hand" title="✋ハンド: 右手の指の曲げ→ロボットハンドの指へ（アームは動かさない）">✋ハンド</button>
       </div>
-      <div id="vrHandTuning" style="display:none;font-size:11px;color:#19a673;margin-bottom:4px">
+      <div id="vrHandTuning" style="display:none;font-size:11px;color:var(--accent);margin-bottom:4px">
         ✋ VR開始 → 右手の指を曲げるだけで実ハンドが追従（キャリブ・クラッチ不要、各指独立）。
       </div>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;font-size:11px;color:#aaa">
@@ -420,15 +528,15 @@
       <div style="margin-top:6px">
         <label><input type="checkbox" id="cbMonitor" checked> 自動 abort 監視（しきい値超で停止）</label>
       </div>
-      <div id="monWarn" style="display:none;margin-top:6px;padding:6px;background:#5a1d10;color:#fff;border-radius:3px;font-size:11px">⚠ 過電流監視 OFF — 衝突しても自動停止しません</div>
-      <div id="releaseWarn" style="display:none;margin-top:6px;padding:6px;background:#7a1a10;color:#fff;border-radius:3px;font-weight:bold">⚠⚠ サーボが release されました — 手で支えて下さい</div>
+      <div id="monWarn" style="display:none;margin-top:6px;padding:6px 8px;background:var(--danger);color:var(--text-inv);border-radius:var(--radius-sm);font-size:11px">⚠ 過電流監視 OFF — 衝突しても自動停止しません</div>
+      <div id="releaseWarn" style="display:none;margin-top:6px;padding:6px 8px;background:var(--danger);color:var(--text-inv);border-radius:var(--radius-sm);font-weight:bold">⚠⚠ サーボが release されました — 手で支えて下さい</div>
     </div>
 
-    <div class="panel" id="safetyAlert" style="display:none;background:#7a1a10;border:1px solid #c0392b">
-      <h2 style="color:#fff">⚠ 安全違反状態</h2>
-      <div id="safetyAlertMsg" style="color:#fff;font-size:11px;margin-bottom:6px"></div>
-      <button id="btnRescueHome" style="width:100%;padding:8px;background:#fff;color:#000;font-weight:bold">rescue モードで HOME へ脱出</button>
-      <div style="color:#ffb;font-size:10px;margin-top:4px">経路の安全 check を bypass して上向きにのみ脱出します</div>
+    <div class="panel danger" id="safetyAlert" style="display:none">
+      <h2>⚠ 安全違反状態</h2>
+      <div id="safetyAlertMsg" style="color:var(--danger-text);font-size:11px;margin-bottom:6px"></div>
+      <button id="btnRescueHome" class="abort" style="width:100%">rescue モードで HOME へ脱出</button>
+      <div style="color:var(--text-muted);font-size:10px;margin-top:4px">経路の安全 check を bypass して上向きにのみ脱出します</div>
     </div>
 
     <div class="sec">情報</div>
@@ -4507,5 +4615,21 @@ window.__state = state;
 window.__fk = { jointPositions, endEffector };
 window.__xr = xr;
 window.__ik = { solveIKLocal, solveIKTeleop, fkPose: _ikFkPose };  // offline 検証用
+</script>
+<script>
+// ── 折りたたみアコーディオン: 各パネルの h2 クリックで開閉、状態は localStorage 永続 ──
+(function initAccordion(){
+  const panels = document.querySelectorAll('#side .panel > h2');
+  panels.forEach((h2, i) => {
+    if (h2.id === 'legendToggle') return;  // 独自トグルを持つので二重化を避ける
+    const panel = h2.parentElement;
+    const key = 'mycobot.collapse.' + (panel.id || ('p' + i));
+    try { if (localStorage.getItem(key) === '1') panel.classList.add('collapsed'); } catch (e) {}
+    h2.addEventListener('click', () => {
+      const now = panel.classList.toggle('collapsed');
+      try { localStorage.setItem(key, now ? '1' : '0'); } catch (e) {}
+    });
+  });
+})();
 </script>
 </body></html>
