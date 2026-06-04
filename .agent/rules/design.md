@@ -25,10 +25,12 @@
 
 ## コンポーネント規約
 
-- **button**: 既定=surface-3 塗り+border+muted。`.primary`/`.apply`=accent-bg 塗り。`.abort`/`.warn`=danger。トグル系(`modeBtn`/`vrModeBtn`/`topModeBtn`/`opModeBtn`/`poseBtn`/`poseLibBtn`)は active=`--accent-soft`地+`--accent`文字+`--accent-line`枠で**統一**（個別色を足さない）
+- **button**: 既定=surface-3 塗り+border+muted。`.primary`/`.apply`=accent-bg 塗り。`.abort`/`.warn`=danger。トグル系(`modeBtn`/`vrModeBtn`/`wsTab`/`opModeBtn`/`poseBtn`/`poseLibBtn`)は active=`--accent-soft`地+`--accent`文字+`--accent-line`枠で**統一**（個別色を足さない）
 - **badge**: `.ok/.warn/.err/.gray/.teal`。teal=アクセントの別名（独立色ではない）
 - **panel**: `.panel` は折りたたみ対応（h2 クリック→`.collapsed`、localStorage 永続）。独自トグルを持つ h2 は accordion init で除外する
-- **status bar**: `#statusBar` は sticky 常時表示。システム状態（接続/通電/オフライン）の一覧性を担う
+- **navigation**: トップは `#wsTabs` の 5 ワークスペースタブ（操作/ポーズ/VR·✋/観測/システム）。`#side` に `ws-<name>` クラスを付け、CSS が `[data-ws~="<name>"]` 以外を隠す（要素は複数 ws を空白区切りで持てる）。選択は localStorage `ui.ws` に永続（旧 `uiMode` から移行）。タブを増やす時は data-ws と `.ws-*` 表示ルールの両方を足す
+- **status bar**: `#statusBar` は sticky 常時表示。システム状態（接続/通電/オフライン）の一覧性 + 全タブから押せる常設 `#sbAbort`（Esc と等価）を担う
+- **safety zone**: `#safetyZone` はタブの外・ワークスペース上部に常時配置（release 警告 / 安全違反 alert）。どのタブでも見える
 - **入力**: bg=`--bg`、focus で border=`--accent`（glow 無し）
 - **アーム/ハンドの区別は色でなくアイコン(🦾/✋)+ラベル**で。2 つ目のアクセント色を作らない
 

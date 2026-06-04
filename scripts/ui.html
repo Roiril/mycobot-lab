@@ -90,14 +90,20 @@
    background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
  .policyDisabled{opacity:.35;pointer-events:none}
 
- /* top-level UI mode tabs */
- #topModeBar{display:flex;gap:6px;align-items:center;padding:2px 0 4px;flex-shrink:0}
- button.topModeBtn{flex:1;padding:7px 10px;font-size:var(--fs-sm);font-weight:var(--fw-bold);
-   background:transparent;color:var(--text-muted);border:var(--bw) solid var(--border);border-radius:var(--radius)}
- button.topModeBtn:hover{background:var(--surface-3);color:var(--text)}
- button.topModeBtn.active{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
- #side.mode-classic [data-uimode="pose"]:not(.topModeBtn){display:none}
- #side.mode-pose [data-uimode="classic"]:not(.topModeBtn){display:none}
+ /* top-level workspace tabs (single nav concept; sub-modes live inside each) */
+ #wsTabs{display:flex;gap:4px;align-items:stretch;padding:2px 0 2px;flex-shrink:0}
+ button.wsTab{flex:1;padding:7px 4px;font-size:var(--fs-xs);font-weight:var(--fw-bold);
+   background:transparent;color:var(--text-muted);border:var(--bw) solid var(--border);border-radius:var(--radius);
+   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ button.wsTab:hover{background:var(--surface-3);color:var(--text)}
+ button.wsTab.active{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+ /* workspace visibility: hide [data-ws] elements not in the active workspace.
+    matching elements get no rule → keep their default display (flex/block). */
+ #side.ws-drive  [data-ws]:not([data-ws~="drive"]){display:none}
+ #side.ws-pose   [data-ws]:not([data-ws~="pose"]){display:none}
+ #side.ws-vr     [data-ws]:not([data-ws~="vr"]){display:none}
+ #side.ws-watch  [data-ws]:not([data-ws~="watch"]){display:none}
+ #side.ws-system [data-ws]:not([data-ws~="system"]){display:none}
 
  /* jog pad — monospace, accent on press */
  button.jogBtn{background:var(--surface-3);color:var(--text);padding:8px 4px;font-size:var(--fs-base);
@@ -210,6 +216,14 @@
  #statusBar .sb-grp{display:flex;align-items:center;gap:6px}
  #statusBar .sb-spacer{flex:1}
  #statusBar .sb-brand{color:var(--text-faint);letter-spacing:.5px}
+ /* persistent mini-ABORT — reachable from any workspace (mirrors Esc) */
+ #sbAbort{padding:3px 10px;margin:0;font-size:var(--fs-2xs);font-weight:var(--fw-bold);letter-spacing:.5px;
+   background:var(--danger);color:var(--text-inv);border:var(--bw) solid transparent;border-radius:var(--radius-sm)}
+ #sbAbort:hover:not(:disabled){background:var(--danger-hover)}
+ #sbAbort:disabled{background:var(--surface-3);color:var(--text-faint);border-color:var(--border)}
+ /* persistent safety zone (always above the workspace, outside tabs) */
+ #safetyZone{display:flex;flex-direction:column;gap:8px;flex-shrink:0}
+ #safetyZone:empty{display:none}
 
  /* ---------- collapsible panels (accordion) ---------- */
  .panel{position:relative}
@@ -226,9 +240,9 @@
   <div id="scene">
     <div id="hint">
       <div style="display:flex;gap:6px;margin-bottom:4px;align-items:center">
-        <span style="color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px">操作モード</span>
-        <button class="modeBtn active" data-mode="tps" title="カメラ追従 + 視点相対キー">TPS</button>
-        <button class="modeBtn" data-mode="world" title="固定視点 + 世界座標キー">World</button>
+        <span style="color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px">視点操作</span>
+        <button class="modeBtn active" data-mode="world" title="固定視点 + 世界座標キー">World</button>
+        <button class="modeBtn" data-mode="tps" title="カメラ追従 + 視点相対キー">TPS</button>
         <button class="modeBtn" data-mode="joint" title="関節を直接ぐりぐり (1-6で関節選択 + ←→で角度)">Joint</button>
         <span id="modeHint" style="color:#aaa;margin-left:6px;font-size:11px"></span>
       </div>
@@ -236,7 +250,7 @@
       <span id="hintKeys"></span>
     </div>
   </div>
-  <div id="side" class="mode-classic">
+  <div id="side" class="ws-drive">
 
     <div id="statusBar">
       <span class="sb-grp"><span id="connBadge" class="ok">CONN</span></span>
@@ -245,19 +259,31 @@
         <span class="badge warn" id="offlineBadge" style="display:none">OFFLINE</span>
       </span>
       <span class="sb-spacer"></span>
+      <button id="sbAbort" disabled title="動作中止（Esc と同じ。どのタブからでも有効）">ABORT</button>
       <span class="sb-brand">myCobot 320</span>
     </div>
 
-    <div id="topModeBar">
-      <button class="topModeBtn active" data-uimode="classic"
-              title="自由操作。関節スライダ / カルテジアン IK / VR で任意に動かす（6DoF 連続操作系）">従来モード</button>
-      <button class="topModeBtn" data-uimode="pose"
-              title="登録ポーズ間の遷移 + 向き(J1)/高さ(J2) パラメータ。手振り・指差しの primitive 運用系">ポーズモード</button>
+    <div id="wsTabs">
+      <button class="wsTab active" data-tab="drive" title="関節スライダ + カルテジアン IK。アームを直接・精密に動かす">操作</button>
+      <button class="wsTab" data-tab="pose" title="登録ポーズ間の遷移 + 向き/高さ調整 + 手で教えるポーズ登録">ポーズ</button>
+      <button class="wsTab" data-tab="vr" title="WebXR 遠隔操作 + ✋ロボットハンド手動操作">VR·✋</button>
+      <button class="wsTab" data-tab="watch" title="カメラライブ / 観測 / ジェスチャ / 空間記憶">観測</button>
+      <button class="wsTab" data-tab="system" title="サーボ監視 / 3D凡例 / 緊急操作">システム</button>
     </div>
 
-    <div class="sec">制御</div>
+    <div id="safetyZone">
+      <div id="releaseWarn" style="display:none;padding:6px 8px;background:var(--danger);color:var(--text-inv);border-radius:var(--radius-sm);font-weight:bold">⚠⚠ サーボが release されました — 手で支えて下さい</div>
+      <div class="panel danger" id="safetyAlert" style="display:none">
+        <h2>⚠ 安全違反状態</h2>
+        <div id="safetyAlertMsg" style="color:var(--danger-text);font-size:11px;margin-bottom:6px"></div>
+        <button id="btnRescueHome" class="abort" style="width:100%">rescue モードで HOME へ脱出</button>
+        <div style="color:var(--text-muted);font-size:10px;margin-top:4px">経路の安全 check を bypass して上向きにのみ脱出します</div>
+      </div>
+    </div>
 
-    <div class="panel">
+    <div class="sec" data-ws="drive pose">制御</div>
+
+    <div class="panel" data-ws="drive pose">
       <h2><span>関節 (J1-J6, deg)</span></h2>
       <div id="joints"></div>
       <div class="legend">
@@ -285,9 +311,9 @@
       <div id="statusLog" aria-live="polite"></div>
     </div>
 
-    <div class="sec" data-uimode="pose">ポーズグラフ</div>
+    <div class="sec" data-ws="pose">ポーズグラフ</div>
 
-    <div class="panel" data-uimode="pose" id="posePanel">
+    <div class="panel" data-ws="pose" id="posePanel">
       <h2>登録ポーズ <span style="color:#8a8a8a;text-transform:none;font-weight:normal">遷移 + 向き/高さ</span></h2>
       <div style="font-size:11px;color:#888;margin-bottom:8px">
         登録ポーズを選ぶ → 目標に反映（ゴースト表示）→ 向き(J1)/高さ(J2) で微調整 → <b>APPLY</b> で遷移。
@@ -336,10 +362,10 @@
       </div>
     </div>
 
-    <div class="panel" data-uimode="classic">
+    <div class="panel" data-ws="drive">
       <h2>カルテジアン (mm) <span style="color:#8a8a8a;text-transform:none;font-weight:normal">編集して IK</span></h2>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;padding:6px;background:#1e1e1e;border-radius:3px">
-        <span style="color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px">操作モード</span>
+        <span style="color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px">IK姿勢</span>
         <button class="opModeBtn active" data-opmode="policy" title="姿勢ポリシーで IK（位置メイン、ポリシーで姿勢自動決定）">ポリシー</button>
         <button class="opModeBtn" data-opmode="follow" title="6DOF: 位置(ドラッグ)+姿勢(gizmoで回転) を直接指定。ハンドトラッキング前提の操作系">手首追従</button>
       </div>
@@ -416,9 +442,9 @@
       </div>
     </div>
 
-    <div class="sec">VR / 遠隔操作</div>
+    <div class="sec" data-ws="vr">VR / 遠隔操作</div>
 
-    <div class="panel" id="vrPanel">
+    <div class="panel" data-ws="vr" id="vrPanel">
       <h2>WebXR 遠隔操作 <span class="badge gray" id="vrBadge">off</span></h2>
       <div style="font-size:11px;color:#888;margin-bottom:6px">Quest 系 HMD。制御方式で <b>🦾アーム</b> か <b style="color:var(--accent)">✋ハンド</b> を選ぶ。<b>🦾アーム</b>=右手ピンチで追従ON/OFF。<b style="color:var(--accent)">✋ハンド</b>=<u>クラッチ不要</u>、右手の指を曲げるだけで実ハンドが常時追従（アームは動かない）。</div>
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">
@@ -457,9 +483,9 @@
       <div id="vrStatus" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:60px;overflow:auto">—</div>
     </div>
 
-    <div class="sec">✋ ロボットハンド（アームとは別系統 / Arduino）</div>
+    <div class="sec" data-ws="vr">✋ ロボットハンド（アームとは別系統 / Arduino）</div>
 
-    <div class="panel hand-panel" id="handPanel">
+    <div class="panel hand-panel" data-ws="vr" id="handPanel">
       <h2>ハンド手動操作 <span class="badge gray" id="handBadge">—</span></h2>
       <div style="font-size:11px;color:#888;margin-bottom:6px">Hiwonder 5本指（LFD-01×5 / Arduino）。スライダ 0=開き / 1=握り。VR の指追従とは独立。<b>これはアームではなく指のハンド</b>。</div>
       <div style="display:flex;gap:4px;margin-bottom:8px">
@@ -471,9 +497,9 @@
       <div id="handStatus" style="font-family:Consolas,monospace;font-size:10px;color:#9d9d9d;margin-top:6px">—</div>
     </div>
 
-    <div class="sec">カメラ</div>
+    <div class="sec" data-ws="watch">カメラ</div>
 
-    <div class="panel" style="padding:0;overflow:hidden">
+    <div class="panel" data-ws="watch" style="padding:0;overflow:hidden">
       <div id="camPip">
         <div class="bar">
           <span>カメラ (ライブ)</span>
@@ -489,7 +515,7 @@
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel" data-ws="watch">
       <h2>カメラ観測 <span class="badge gray" id="observeBadge">idle</span></h2>
       <div style="font-size:11px;color:#888;margin-bottom:6px">水平カメラ姿勢で撮影 → シュビーが Read して描写・記憶</div>
       <div style="display:flex;gap:4px;margin-bottom:4px">
@@ -501,9 +527,9 @@
       <div id="observeResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:120px;overflow:auto;white-space:pre-wrap">—</div>
     </div>
 
-    <div class="sec">動作</div>
+    <div class="sec" data-ws="watch">動作</div>
 
-    <div class="panel">
+    <div class="panel" data-ws="watch">
       <h2>ジェスチャ <span class="badge gray" id="gestureBadge">idle</span></h2>
       <div style="font-size:11px;color:#888;margin-bottom:6px">記憶を使った高レベル動作</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px">
@@ -519,9 +545,9 @@
       <div id="gestureResult" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:4px;max-height:80px;overflow:auto;white-space:pre-wrap"></div>
     </div>
 
-    <div class="sec">監視</div>
+    <div class="sec" data-ws="system">監視</div>
 
-    <div class="panel" id="monPanel">
+    <div class="panel" data-ws="system" id="monPanel">
       <h2>サーボ実時間監視 <span class="badge ok" id="monBadge">ON</span> <span id="monPowerBadge" class="badge ok" style="margin-left:4px">PWR</span></h2>
       <div id="servoDiag" style="font-family:Consolas,monospace;font-size:11px;line-height:1.4">—</div>
       <div id="diagFooter" style="color:#888;font-size:10px;margin-top:4px">—</div>
@@ -529,19 +555,11 @@
         <label><input type="checkbox" id="cbMonitor" checked> 自動 abort 監視（しきい値超で停止）</label>
       </div>
       <div id="monWarn" style="display:none;margin-top:6px;padding:6px 8px;background:var(--danger);color:var(--text-inv);border-radius:var(--radius-sm);font-size:11px">⚠ 過電流監視 OFF — 衝突しても自動停止しません</div>
-      <div id="releaseWarn" style="display:none;margin-top:6px;padding:6px 8px;background:var(--danger);color:var(--text-inv);border-radius:var(--radius-sm);font-weight:bold">⚠⚠ サーボが release されました — 手で支えて下さい</div>
     </div>
 
-    <div class="panel danger" id="safetyAlert" style="display:none">
-      <h2>⚠ 安全違反状態</h2>
-      <div id="safetyAlertMsg" style="color:var(--danger-text);font-size:11px;margin-bottom:6px"></div>
-      <button id="btnRescueHome" class="abort" style="width:100%">rescue モードで HOME へ脱出</button>
-      <div style="color:var(--text-muted);font-size:10px;margin-top:4px">経路の安全 check を bypass して上向きにのみ脱出します</div>
-    </div>
+    <div class="sec" data-ws="watch">情報</div>
 
-    <div class="sec">情報</div>
-
-    <div class="panel" id="memPanel">
+    <div class="panel" data-ws="watch" id="memPanel">
       <h2>空間短期記憶 <button id="btnMemoryClear" style="font-size:10px;padding:2px 6px;float:right">忘れる</button></h2>
       <div id="memoryPanel" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;max-height:200px;overflow:auto"></div>
       <details style="margin-top:6px"><summary style="cursor:pointer;font-size:10px;color:#888">直近イベント履歴</summary>
@@ -549,7 +567,7 @@
       </details>
     </div>
 
-    <div class="panel" id="legendPanel">
+    <div class="panel" data-ws="system" id="legendPanel">
       <h2 style="cursor:pointer" id="legendToggle">3D 凡例 <span style="font-size:11px;color:#888">▾</span></h2>
       <div id="legendBody" style="font-size:11px;display:none">
         <div style="margin:2px 0"><span style="display:inline-block;width:18px;height:18px;background:#5a8acc;opacity:0.4;vertical-align:middle"></span> reach 球 (380mm fast-fail 境界)</div>
@@ -565,9 +583,9 @@
       </div>
     </div>
 
-    <div class="sec">危険</div>
+    <div class="sec" data-ws="system">危険</div>
 
-    <div class="panel danger">
+    <div class="panel danger" data-ws="system">
       <h2>緊急操作</h2>
       <button class="warn" id="btnRelease" style="width:100%;padding:8px">脱力（落下注意・確認あり）</button>
     </div>
@@ -2218,9 +2236,12 @@ document.getElementById('btnRelease').onclick = async ()=>{
 // ABORT is always visible (enabled only when busy). Watchdog releases stuck busy.
 const btnAbort = document.getElementById('btnAbort');
 btnAbort.onclick = abort;
+const sbAbort = document.getElementById('sbAbort');  // persistent mirror in status bar
+if(sbAbort) sbAbort.onclick = abort;
 function setBusy(on){
   state.busy = on;
   btnAbort.disabled = !on;
+  if(sbAbort) sbAbort.disabled = !on;
   // Lock all motion-issuing controls during motion
   const locked = ['btnHome','btnSync','btnMoveCart','btnIK','btnRelease','speed','cartMode'];
   for(const id of locked){
@@ -2905,8 +2926,8 @@ requestAnimationFrame(_jogTick);
 // tps:   camera follows tip, arrow keys are camera-relative (forward/strafe)
 // world: free camera, arrow keys are world XY (no auto follow)
 // joint: arrow keys adjust the joint selected by 1-6 (legacy slider control)
-let opMode = 'tps';
-let _camFollowTip = true;
+let opMode = 'world';
+let _camFollowTip = false;
 const HINT_KEYS = {
   tps:   '<kbd>↑</kbd>前 <kbd>↓</kbd>後 <kbd>←→</kbd>左右 <kbd>PgUp/Dn</kbd>上下 <kbd>Shift</kbd>=速 <kbd>C</kbd>カメラ復帰 <kbd>V</kbd>追従切替 <kbd>H</kbd>HOME <kbd>Esc</kbd>ABORT',
   world: '<kbd>↑↓</kbd>=±Y <kbd>←→</kbd>=±X <kbd>PgUp/Dn</kbd>=±Z <kbd>Shift</kbd>=速 <kbd>H</kbd>HOME <kbd>Esc</kbd>ABORT',
@@ -2937,7 +2958,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.modeBtn').forEach(b => {
     b.addEventListener('click', () => _applyOpMode(b.dataset.mode));
   });
-  _applyOpMode('tps');
+  _applyOpMode('world');
 });
 
 // === TPS camera: smooth centering follow ===
@@ -4430,17 +4451,17 @@ _updateXR = function(frame) {
 // クランプのみ、J2 は高さが変わるため適用後に /check で再判定（既存パイプが自動でやる）。
 (function(){
   const side = document.getElementById('side');
-  let uiMode = 'classic';
-  function setUiMode(m){
-    if(m !== 'classic' && m !== 'pose') return;
-    uiMode = m;
-    side.classList.toggle('mode-classic', m === 'classic');
-    side.classList.toggle('mode-pose', m === 'pose');
-    document.querySelectorAll('.topModeBtn').forEach(b => b.classList.toggle('active', b.dataset.uimode === m));
-    try{ localStorage.setItem('uiMode', m); }catch(e){}
+  const WORKSPACES = ['drive','pose','vr','watch','system'];
+  let workspace = 'drive';
+  function setWorkspace(w){
+    if(!WORKSPACES.includes(w)) return;
+    workspace = w;
+    WORKSPACES.forEach(x => side.classList.toggle('ws-' + x, x === w));
+    document.querySelectorAll('.wsTab').forEach(b => b.classList.toggle('active', b.dataset.tab === w));
+    try{ localStorage.setItem('ui.ws', w); }catch(e){}
   }
-  document.querySelectorAll('.topModeBtn').forEach(btn =>
-    btn.addEventListener('click', () => setUiMode(btn.dataset.uimode)));
+  document.querySelectorAll('.wsTab').forEach(btn =>
+    btn.addEventListener('click', () => setWorkspace(btn.dataset.tab)));
 
   let selectedPose = null;  // {name, angles}
   const j1El = document.getElementById('poseJ1'), j2El = document.getElementById('poseJ2');
@@ -4571,7 +4592,7 @@ _updateXR = function(frame) {
 
   // live current-angle readout while teaching (uses globally-polled state.current)
   setInterval(() => {
-    if(side.classList.contains('mode-pose') && Array.isArray(state.current)){
+    if(side.classList.contains('ws-pose') && Array.isArray(state.current)){
       teachCur.textContent = '現在 J=[' + state.current.map(v => v.toFixed(1)).join(', ') + ']';
     }
   }, 400);
@@ -4607,7 +4628,11 @@ _updateXR = function(frame) {
     }catch(e){ setTeachStatus('登録失敗: ' + e, '#f48771'); }
   });
 
-  try{ if(localStorage.getItem('uiMode') === 'pose') setUiMode('pose'); }catch(e){}
+  try{
+    let w = localStorage.getItem('ui.ws');
+    if(!w && localStorage.getItem('uiMode') === 'pose') w = 'pose';  // migrate old 2-mode key
+    if(w && WORKSPACES.includes(w)) setWorkspace(w);
+  }catch(e){}
 })();
 
 // expose for tests / Quest devtools 経由のリモートデバッグ
