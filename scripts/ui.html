@@ -240,7 +240,7 @@
   <div id="scene">
     <div id="hint">
       <div style="display:flex;gap:6px;margin-bottom:4px;align-items:center">
-        <span style="color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px">視点操作</span>
+        <span style="color:var(--text-muted);font-size:10px;text-transform:uppercase;letter-spacing:1px">視点操作</span>
         <button class="modeBtn active" data-mode="world" title="固定視点 + 世界座標キー">World</button>
         <button class="modeBtn" data-mode="tps" title="カメラ追従 + 視点相対キー">TPS</button>
         <button class="modeBtn" data-mode="joint" title="関節を直接ぐりぐり (1-6で関節選択 + ←→で角度)">Joint</button>
@@ -295,7 +295,7 @@
         <button id="btnLiveToggle" title="入力モード切替 (L)：Apply待ち ⇄ リアルタイム追従" style="flex:0 0 auto">
           ⏸ Apply待ち
         </button>
-        <span id="liveHint" style="font-size:11px;color:#9d9d9d">クリック/矢印は目標のみ変更 → APPLY で実行</span>
+        <span id="liveHint" style="font-size:11px;color:var(--text-muted)">クリック/矢印は目標のみ変更 → APPLY で実行</span>
       </div>
       <div style="margin-top:6px">
         <button class="apply" id="btnApply" disabled title="目標が安全範囲内になると有効">APPLY (Enter)</button>
@@ -306,7 +306,7 @@
       <div style="margin-top:8px">
         <button id="btnSync">目標=現在 (S)</button>
         <button id="btnHome">HOME (H)</button>
-        <label style="margin-left:8px;color:#9d9d9d">speed <input id="speed" type="number" min="5" max="80" value="50" aria-label="動作速度 5-80"></label>
+        <label style="margin-left:8px;color:var(--text-muted)">speed <input id="speed" type="number" min="5" max="80" value="50" aria-label="動作速度 5-80"></label>
       </div>
       <div id="statusLog" aria-live="polite"></div>
     </div>
@@ -321,7 +321,7 @@
       </div>
       <div id="poseLib" style="margin-bottom:10px">読み込み中…</div>
       <div style="border-top:1px solid #333;padding-top:8px">
-        <div style="color:#9d9d9d;font-size:11px;margin-bottom:6px">パラメータ（選択ポーズからのオフセット）</div>
+        <div style="color:var(--text-muted);font-size:11px;margin-bottom:6px">パラメータ（選択ポーズからのオフセット）</div>
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:5px">
           <label style="flex:0 0 70px;color:#aaa;font-size:11px" title="土台ヨー。回しても自己干渉・床干渉は不変なのでクランプのみで安全">向き J1</label>
           <input id="poseJ1" type="range" min="-90" max="90" step="1" value="0" style="flex:1" disabled>
@@ -336,7 +336,7 @@
         <span id="poseSel" style="margin-left:8px;color:#888;font-size:11px">未選択</span>
       </div>
       <div style="margin-top:10px;border-top:1px solid #333;padding-top:8px">
-        <div style="color:#9d9d9d;font-size:11px;margin-bottom:5px">
+        <div style="color:var(--text-muted);font-size:11px;margin-bottom:5px">
           ポーズ登録（手で動かして教える） <span id="teachBadge" class="badge gray">待機</span>
         </div>
         <div style="font-size:11px;color:#888;margin-bottom:7px">
@@ -364,8 +364,8 @@
 
     <div class="panel" data-ws="drive">
       <h2>カルテジアン (mm) <span style="color:#8a8a8a;text-transform:none;font-weight:normal">編集して IK</span></h2>
-      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;padding:6px;background:#1e1e1e;border-radius:3px">
-        <span style="color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px">IK姿勢</span>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;padding:6px;background:var(--bg);border-radius:3px">
+        <span style="color:var(--text-muted);font-size:10px;text-transform:uppercase;letter-spacing:1px">IK姿勢</span>
         <button class="opModeBtn active" data-opmode="policy" title="姿勢ポリシーで IK（位置メイン、ポリシーで姿勢自動決定）">ポリシー</button>
         <button class="opModeBtn" data-opmode="follow" title="6DOF: 位置(ドラッグ)+姿勢(gizmoで回転) を直接指定。ハンドトラッキング前提の操作系">手首追従</button>
       </div>
@@ -379,7 +379,7 @@
         <button id="btnPullTip">現在 tip 値を入力</button>
       </div>
       <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">
-        <div style="color:#9d9d9d;font-size:11px;margin-bottom:4px;display:flex;align-items:center;gap:6px">
+        <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px;display:flex;align-items:center;gap:6px">
           <span>目標を微動</span>
           <span style="color:#666">step</span>
           <select id="jogStep" style="background:#3c3c3c;color:#ddd;border:1px solid #555;font-size:11px">
@@ -411,7 +411,7 @@
         </div>
       </div>
       <div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">
-        <div style="color:#9d9d9d;font-size:11px;margin-bottom:4px">姿勢ポリシー <span id="poseModeIndicator" style="margin-left:6px"></span></div>
+        <div style="color:var(--text-muted);font-size:11px;margin-bottom:4px">姿勢ポリシー <span id="poseModeIndicator" style="margin-left:6px"></span></div>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
           <button class="poseBtn" data-pose="extend_toward" title="指差すように手首を伸ばす（人間の自然な reach）">指差し</button>
           <button class="poseBtn" data-pose="align_+z" title="上から把持（ツールが下を向く）">↓上から</button>
@@ -494,7 +494,7 @@
         <button id="btnHandNeutral" title="全指ニュートラル(1500µs)">中立</button>
       </div>
       <div id="handSliders"></div>
-      <div id="handStatus" style="font-family:Consolas,monospace;font-size:10px;color:#9d9d9d;margin-top:6px">—</div>
+      <div id="handStatus" style="font-family:Consolas,monospace;font-size:10px;color:var(--text-muted);margin-top:6px">—</div>
     </div>
 
     <div class="sec" data-ws="watch">カメラ</div>
@@ -506,7 +506,7 @@
           <span style="display:flex;gap:6px;align-items:center">
             <button id="btnCaptureCalib" title="現在のフレームを data/calib_images/ に保存（校正用）"
                     style="font-size:10px;padding:1px 6px;margin:0">Capture</button>
-            <span id="captureCount" style="color:#9d9d9d;font-size:10px">—</span>
+            <span id="captureCount" style="color:var(--text-muted);font-size:10px">—</span>
             <span id="camToggle" style="cursor:pointer;user-select:none;font-size:13px;line-height:1">▾</span>
           </span>
         </div>
@@ -4546,7 +4546,7 @@ _updateXR = function(frame) {
           } else {
             // 組込ポーズ: 一覧から非表示（非破壊・後で復元可）
             aux.textContent = '⊘'; aux.title = `${p.name} を一覧から非表示（組込・削除はされません）`;
-            aux.style.cssText = 'padding:5px 7px;color:#9d9d9d;border-color:#4a4a4a';
+            aux.style.cssText = 'padding:5px 7px;color:var(--text-muted);border-color:#4a4a4a';
             aux.addEventListener('click', (ev) => {
               ev.stopPropagation();
               const s = getHidden(); s.add(p.name); saveHidden(s);
