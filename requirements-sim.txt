@@ -1,0 +1,12 @@
+# SO-101 offline simulation + asset tooling — OPTIONAL, develop-before-hardware.
+# Separate from requirements.txt (myCobot runtime) and requirements-so101.txt
+# (lerobot driver). All of these install cleanly on native Windows 11.
+#
+#   pip install -r requirements-sim.txt
+#
+# mujoco  : ships the SO-101 MJCF model (src/robots/so101/sim/), used to
+#           cross-check our FK and to render/drive a virtual arm offline.
+# trimesh : converts the vendored STL visuals to per-link GLB (build_glb.py).
+
+mujoco
+trimesh
