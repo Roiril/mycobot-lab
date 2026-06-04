@@ -29,3 +29,6 @@ data/client_logs/
 
 # Throwaway debug frame captures dropped in the repo root during sessions
 /frame_*.jpg
+
+# Harness self-improvement runtime state (friction log + review marker; per-machine)
+.claude/harness/
