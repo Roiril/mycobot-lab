@@ -102,6 +102,14 @@ TARGET_RADIUS_MAX_MM = 60.0
 TARGET_RADIUS_DEFAULT_MM = 20.0
 GRIPPER_TIP_CLEARANCE_MM = 5.0    # extra margin above object surface when no gripper present
 
+# --- gripper actuation (adaptive electric gripper) ---
+# pymycobot set_gripper_state(flag, speed, _type) semantics:
+GRIPPER_TYPE_ADAPTIVE = 1         # _type arg for the adaptive electric gripper
+GRIPPER_FLAG_OPEN = 0
+GRIPPER_FLAG_CLOSE = 1
+GRIPPER_FLAG_RELEASE = 10
+GRIPPER_SPEED_DEFAULT = 50        # 1..100
+
 # --- vision workspace sanity (base frame, mm) ---
 # Used by VisionHub.perceive() to reject localized objects that fall outside
 # the arm's plausible reach cylinder/box. Acts as a final safety net even if

@@ -38,6 +38,23 @@ class HubBase(abc.ABC):
     @abc.abstractmethod
     def release(self) -> None: ...
     @abc.abstractmethod
+    def set_gripper(self, flag: int, speed: int) -> bool: ...
+
+    def gripper_diag(self) -> dict:
+        """Read-only gripper bus probe (overridden by real Hub)."""
+        return {"supported": False}
+
+    def servo_scan(self) -> dict:
+        """Read encoders of servos 1..7 (overridden by real Hub).
+        Used to identify the gripper servo by hand-moving it and watching
+        which encoder changes."""
+        return {"supported": False}
+
+    def mc_call(self, method: str, args: list):
+        """Whitelisted raw pymycobot call for gripper/IO brute-force probing
+        (overridden by real Hub)."""
+        return {"supported": False}
+    @abc.abstractmethod
     def solve_ik(self, coords6, seed: Optional[List[float]] = None) -> Optional[List[float]]: ...
     @abc.abstractmethod
     def live_coords(self) -> Optional[List[float]]: ...
@@ -202,6 +219,66 @@ class Hub(HubBase):
                 time.sleep(0.05)
             return False  # consistent -1 means we can't confirm power
 
+    def submit_jog(self, angles, speed):
+        """Coalescing teleop submit. Stores latest (angles, speed) in a single
+        slot; intermediate values are dropped. A worker thread consumes the
+        slot and calls send_angles serially. Returns immediately (no serial
+        wait). Caller should still pre-validate safety.
+
+        Why: send_angles blocks ~700ms on serial round-trip. At 30Hz client
+        send rate, the io_lock backlogs and arm chases stale targets long
+        after the user released pinch. With coalescing, the worker always
+        consumes the freshest target; intermediate ones are silently dropped.
+        """
+        if not hasattr(self, '_jog_worker_started'):
+            self._jog_latest = None
+            self._jog_lock = threading.Lock()
+            self._jog_event = threading.Event()
+            self._jog_cycle_ms = []   # ring buffer of send_angles durations (diagnostics)
+            self._real_angles = None  # cached readback for VR display (avoids HTTP io_lock contention)
+            self._last_read_t = 0.0
+            self._jog_thread = threading.Thread(target=self._jog_loop, daemon=True, name="jog-worker")
+            self._jog_worker_started = True
+            self._jog_thread.start()
+        with self._jog_lock:
+            self._jog_latest = (list(angles), int(speed))
+        self._jog_event.set()
+        return True
+
+    def _jog_loop(self):
+        # NOTE: no power_ok() in the hot loop. power_ok() is a full is_power_on()
+        # serial round-trip (with retries+sleeps) — calling it every cycle doubled
+        # the bus traffic and halved teleop refresh rate. Power is verified at
+        # connect; if servos drop, send_angles raises and we log it.
+        while True:
+            self._jog_event.wait()
+            self._jog_event.clear()
+            with self._jog_lock:
+                payload = self._jog_latest
+                self._jog_latest = None
+            if payload is None:
+                continue
+            angles, speed = payload
+            try:
+                t0 = time.perf_counter()
+                with self.io_lock:
+                    self.arm.mc.send_angles(list(angles), speed)
+                dt = (time.perf_counter() - t0) * 1000.0
+                self._jog_cycle_ms.append(round(dt, 1))
+                if len(self._jog_cycle_ms) > 200:
+                    self._jog_cycle_ms = self._jog_cycle_ms[-200:]
+                # 実機角度の readback を ~6Hz でキャッシュ（VR 表示用）。送信を所有する
+                # このスレッドで読むので io_lock 競合無し。HTTP /real_angles はキャッシュを返す。
+                now = time.perf_counter()
+                if now - self._last_read_t > 0.15:
+                    self._last_read_t = now
+                    with self.io_lock:
+                        a = self.arm.angles()
+                    if a and a != -1:
+                        self._real_angles = list(a)
+            except Exception as e:
+                log.warning(f"jog worker send_angles: {e}")
+
     def send_angles_nowait(self, angles, speed):
         """Fire-and-forget send_angles for teleop/jog. No completion wait.
         Returns True iff command was issued (power on, no I/O error)."""
@@ -214,6 +291,79 @@ class Hub(HubBase):
         except Exception as e:
             log.warning(f"send_angles_nowait: {e}")
             return False
+
+    def set_gripper(self, flag, speed):
+        """Adaptive electric gripper: flag 0=open, 1=close, 10=release.
+        Fire-and-forget. Returns True iff the command was issued."""
+        from .constants import GRIPPER_TYPE_ADAPTIVE
+        try:
+            with self.io_lock:
+                self.arm.mc.set_gripper_state(int(flag), int(speed), GRIPPER_TYPE_ADAPTIVE)
+            return True
+        except Exception as e:
+            log.warning(f"set_gripper: {e}")
+            return False
+
+    def gripper_diag(self):
+        """Probe whether the firmware answers gripper protocol frames.
+        Values of -1 mean 'no valid reply' (firmware/gripper not responding)."""
+        mc = self.arm.mc
+        out = {"supported": True}
+        with self.io_lock:
+            for name, fn in (
+                ("version", lambda: mc.get_system_version()),
+                ("gripper_mode", lambda: mc.get_gripper_mode()),
+                ("set_value_reply", lambda: mc.set_gripper_value(50, 50, 1)),
+                ("init_electric_reply", lambda: mc.init_electric_gripper()),
+            ):
+                try:
+                    out[name] = fn()
+                except Exception as e:
+                    out[name] = f"ERR: {e}"
+        return out
+
+    def servo_scan(self):
+        """Read servo positions 1..7 to identify the gripper by hand-moving it.
+        get_encoder is range-limited to 1..6, so for a possible 7th (gripper)
+        servo we read the present-position register (addr 56, 2-byte) directly
+        via get_servo_data, which accepts ids 1..7."""
+        mc = self.arm.mc
+        out = {"supported": True}
+        with self.io_lock:
+            try:
+                out["encoders_1_6"] = mc.get_encoders()
+            except Exception as e:
+                out["encoders_1_6"] = f"ERR: {e}"
+            pos = {}
+            for sid in range(1, 8):
+                try:
+                    pos[sid] = mc.get_servo_data(sid, 56, 1)  # present position (STS/SCS reg 0x38)
+                except Exception as e:
+                    pos[sid] = f"ERR: {e}"
+            out["pos_reg56"] = pos
+        return out
+
+    # Whitelist of gripper/IO/servo methods safe to invoke for brute-force
+    # probing. Excludes anything that moves joints or cuts power.
+    _MC_CALL_WHITELIST = frozenset({
+        "set_gripper_state", "set_gripper_value", "set_gripper_mode",
+        "set_gripper_calibration", "init_electric_gripper", "set_electric_gripper",
+        "get_gripper_mode",
+        "set_pro_gripper", "set_pro_gripper_open", "set_pro_gripper_close",
+        "set_pro_gripper_angle", "get_pro_gripper_status", "get_pro_gripper_angle",
+        "set_basic_output", "get_basic_input", "set_digital_output",
+        "get_digital_input", "set_pin_mode",
+        "get_servo_data", "get_system_version", "is_gripper_moving",
+    })
+
+    def mc_call(self, method, args):
+        if method not in self._MC_CALL_WHITELIST:
+            raise ValueError(f"method '{method}' not in probe whitelist")
+        fn = getattr(self.arm.mc, method, None)
+        if fn is None:
+            raise ValueError(f"pymycobot has no method '{method}'")
+        with self.io_lock:
+            return fn(*(args or []))
 
     def send_angles_and_wait(self, angles, speed):
         # power gate: don't issue a command we know will silently fail
@@ -245,6 +395,7 @@ class Hub(HubBase):
             cur = self.angles()
             if cur is None:
                 time.sleep(0.1); continue
+            self._real_angles = list(cur)  # VR 表示用キャッシュ更新（home/move 中も不透明アームが追従）
             if all(abs(c - a) <= WAYPOINT_TOLERANCE for c, a in zip(cur, angles)):
                 return True, cur
             # stall detection: enough samples covering the window, max joint
@@ -285,6 +436,12 @@ class Hub(HubBase):
     def release(self):
         with self.io_lock:
             self.arm.release()
+
+    def power_on(self):
+        """Re-energize servos at the current (hand-posed) position. Used by the
+        teach flow: 脱力 → 手で動かす → 確定 で、確定時にその姿勢を保持させる。"""
+        with self.io_lock:
+            self.arm.power_on()
 
     def _firmware_ik_only(self, coords6, seed):
         """Firmware IK only (no numeric fallback). Used by solve_ik_with_mode."""
@@ -430,6 +587,7 @@ class VirtualHub(HubBase):
         self.monitor_enabled = True
         self._monitor = None
         self._fault = os.environ.get("VHUB_FAULT", "")
+        self._gripper_flag = None  # last commanded gripper flag (None = unknown)
         print(f"[OFFLINE] virtual arm at HOME (fault={self._fault!r})")
 
     def angles(self):
@@ -446,6 +604,12 @@ class VirtualHub(HubBase):
             self._angles = list(angles)
         return True
 
+    def set_gripper(self, flag, speed):
+        if self._fault == "power":
+            return False
+        self._gripper_flag = int(flag)
+        return True
+
     def send_angles_and_wait(self, angles, speed):
         if self._fault == "timeout":
             time.sleep(0.05)
@@ -456,6 +620,7 @@ class VirtualHub(HubBase):
         return True, list(angles)
 
     def release(self): pass
+    def power_on(self): pass
 
     def solve_ik(self, coords6, seed=None):
         """Offline: numeric DLS with multi-seed retry + orientation relaxation."""

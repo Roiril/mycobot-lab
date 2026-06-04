@@ -99,6 +99,31 @@ def check_angles(angles: Sequence[float]) -> Tuple[bool, str, List[int]]:
     return True, "ok", []
 
 
+def check_angles_floor_only(angles: Sequence[float]) -> Tuple[bool, str, List[int]]:
+    """Lightweight variant for VR teleop: joint limits + floor only (no self-collision).
+    User is watching the arm; the only un-recoverable hazard is the floor."""
+    if len(angles) != 6:
+        return False, "angles length != 6", []
+    bad: List[int] = []
+    for i, (a, (lo, hi)) in enumerate(zip(angles, JOINT_LIMITS), 1):
+        if not lo <= a <= hi:
+            bad.append(i)
+    if bad:
+        i = bad[0]
+        lo, hi = JOINT_LIMITS[i-1]
+        return False, f"J{i}={angles[i-1]:.0f}° は限界 [{lo:.0f}, {hi:.0f}] 外", bad
+    pts = joint_positions(angles)
+    tip = end_effector(angles)
+    for i, p in enumerate(pts[1:], 1):
+        if (p[2] - LINK_RADIUS) < FLOOR_Z:
+            margin = p[2] - LINK_RADIUS - FLOOR_Z
+            return False, f"J{i} が床に近接 (z={p[2]:.0f}, 余裕={margin:.0f}mm)", [i]
+    if (tip[2] - LINK_RADIUS) < FLOOR_Z:
+        margin = tip[2] - LINK_RADIUS - FLOOR_Z
+        return False, f"ツール先端が床に近接 (z={tip[2]:.0f}, 余裕={margin:.0f}mm)", [6]
+    return True, "ok", []
+
+
 def clamp_angles(angles: Sequence[float]) -> list[float]:
     """Hard-clamp to joint limits. Returns clamped list (does NOT run check_angles)."""
     return [max(lo, min(hi, a)) for a, (lo, hi) in zip(angles, JOINT_LIMITS)]

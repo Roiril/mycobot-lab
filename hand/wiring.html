@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ロボットハンド配線図 — Arduino Uno + LFD-01 ×5</title>
+<style>
+  :root{
+    --bg:#f4ece0; --ink:#1c1a17; --line:#c9bba6;
+    --orange:#e8821e; --red:#cf3b2e; --gnd:#2b2b2b;
+    --board:#1b6ca8; --card:#fbf6ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI","Hiragino Kaku Gothic ProN",system-ui,sans-serif;
+    line-height:1.6;padding:24px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:#6b6151;margin:0 0 20px;font-size:14px}
+  .wrap{max-width:1200px;margin:0 auto}
+  .diagram{background:var(--card);border:1px solid var(--line);border-radius:0;
+    padding:8px;overflow-x:auto}
+  svg{display:block;width:100%;height:auto;min-width:980px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px}
+  .panel{background:var(--card);border:1px solid var(--line);padding:16px 18px}
+  .panel h2{font-size:15px;margin:0 0 10px;letter-spacing:.02em}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{color:#6b6151;font-weight:600}
+  code{background:#efe6d6;padding:1px 6px;border:1px solid var(--line);font-size:13px}
+  .warn{border-left:4px solid var(--red);background:#fbeeec;padding:12px 14px;margin:14px 0;font-size:14px}
+  .ok{border-left:4px solid #2f7d4f;background:#eef6f0;padding:12px 14px;margin:14px 0;font-size:14px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin:10px 2px 0}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:22px;height:4px;display:inline-block;border-radius:2px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--ink);display:inline-block}
+  text{font-family:inherit}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ロボットハンド配線図</h1>
+  <p class="sub">Arduino Uno ＋ Hiwonder LFD-01 サーボ ×5（5本指独立制御）／外部6V電源</p>
+
+  <div class="diagram">
+  <svg viewBox="0 0 1180 800" role="img" aria-label="配線図">
+    <!-- ===== rails ===== -->
+    <!-- 6V+ rail (red) -->
+    <line x1="870" y1="155" x2="870" y2="690" stroke="#cf3b2e" stroke-width="4"/>
+    <polyline points="870,690 870,712 760,712 760,732" fill="none" stroke="#cf3b2e" stroke-width="4"/>
+    <!-- GND rail (dark) -->
+    <line x1="830" y1="173" x2="830" y2="700" stroke="#2b2b2b" stroke-width="4"/>
+    <polyline points="830,700 830,720 700,720 700,732" fill="none" stroke="#2b2b2b" stroke-width="4"/>
+
+    <!-- ===== signal wires (orange) ===== -->
+    <line x1="320" y1="250" x2="950" y2="137" stroke="#e8821e" stroke-width="3"/>
+    <line x1="320" y1="295" x2="950" y2="262" stroke="#e8821e" stroke-width="3"/>
+    <line x1="320" y1="340" x2="950" y2="387" stroke="#e8821e" stroke-width="3"/>
+    <line x1="320" y1="385" x2="950" y2="512" stroke="#e8821e" stroke-width="3"/>
+    <line x1="320" y1="430" x2="950" y2="637" stroke="#e8821e" stroke-width="3"/>
+
+    <!-- ===== red (+) wires servo->rail ===== -->
+    <line x1="950" y1="155" x2="870" y2="155" stroke="#cf3b2e" stroke-width="3"/>
+    <line x1="950" y1="280" x2="870" y2="280" stroke="#cf3b2e" stroke-width="3"/>
+    <line x1="950" y1="405" x2="870" y2="405" stroke="#cf3b2e" stroke-width="3"/>
+    <line x1="950" y1="530" x2="870" y2="530" stroke="#cf3b2e" stroke-width="3"/>
+    <line x1="950" y1="655" x2="870" y2="655" stroke="#cf3b2e" stroke-width="3"/>
+
+    <!-- ===== brown (GND) wires servo->rail ===== -->
+    <line x1="950" y1="173" x2="830" y2="173" stroke="#2b2b2b" stroke-width="3"/>
+    <line x1="950" y1="298" x2="830" y2="298" stroke="#2b2b2b" stroke-width="3"/>
+    <line x1="950" y1="423" x2="830" y2="423" stroke="#2b2b2b" stroke-width="3"/>
+    <line x1="950" y1="548" x2="830" y2="548" stroke="#2b2b2b" stroke-width="3"/>
+    <line x1="950" y1="673" x2="830" y2="673" stroke="#2b2b2b" stroke-width="3"/>
+
+    <!-- ===== Arduino GND -> GND rail (common ground) ===== -->
+    <line x1="320" y1="478" x2="830" y2="478" stroke="#2b2b2b" stroke-width="3" stroke-dasharray="1 0"/>
+    <circle cx="830" cy="478" r="5" fill="#2b2b2b"/>
+    <rect x="470" y="452" width="150" height="22" fill="#fbeeec" stroke="#cf3b2e"/>
+    <text x="478" y="468" font-size="13" fill="#cf3b2e" font-weight="700">★ 共通GND（必須）</text>
+
+    <!-- junction dots on rails -->
+    <g fill="#cf3b2e">
+      <circle cx="870" cy="155" r="5"/><circle cx="870" cy="280" r="5"/>
+      <circle cx="870" cy="405" r="5"/><circle cx="870" cy="530" r="5"/>
+      <circle cx="870" cy="655" r="5"/>
+    </g>
+    <g fill="#2b2b2b">
+      <circle cx="830" cy="173" r="5"/><circle cx="830" cy="298" r="5"/>
+      <circle cx="830" cy="423" r="5"/><circle cx="830" cy="548" r="5"/>
+      <circle cx="830" cy="673" r="5"/>
+    </g>
+
+    <!-- ===== Arduino board ===== -->
+    <rect x="70" y="210" width="250" height="300" rx="6" fill="#1b6ca8"/>
+    <text x="195" y="245" font-size="18" fill="#fff" font-weight="700" text-anchor="middle">Arduino UNO</text>
+    <!-- USB -->
+    <rect x="40" y="252" width="32" height="34" fill="#9aa6ad" stroke="#5d6b6e"/>
+    <text x="56" y="305" font-size="11" fill="#fff" text-anchor="middle">USB</text>
+    <text x="56" y="232" font-size="11" fill="#1c1a17" text-anchor="middle">→PC</text>
+    <!-- digital pins -->
+    <g font-size="14" fill="#fff" font-weight="700">
+      <text x="312" y="255" text-anchor="end">D3</text>
+      <text x="312" y="300" text-anchor="end">D5</text>
+      <text x="312" y="345" text-anchor="end">D6</text>
+      <text x="312" y="390" text-anchor="end">D9</text>
+      <text x="312" y="435" text-anchor="end">D10</text>
+      <text x="312" y="483" text-anchor="end">GND</text>
+    </g>
+    <g fill="#e8821e">
+      <circle cx="320" cy="250" r="5"/><circle cx="320" cy="295" r="5"/>
+      <circle cx="320" cy="340" r="5"/><circle cx="320" cy="385" r="5"/>
+      <circle cx="320" cy="430" r="5"/>
+    </g>
+    <circle cx="320" cy="478" r="5" fill="#2b2b2b"/>
+    <!-- 5V do-not-use note -->
+    <text x="90" y="360" font-size="12" fill="#ffd9d2">5V端子は使わない ✗</text>
+
+    <!-- ===== servos ===== -->
+    <!-- helper: each servo box -->
+    <g font-size="13">
+      <!-- F0 -->
+      <rect x="950" y="120" width="170" height="70" rx="4" fill="#26252222" stroke="#2b2b2b"/>
+      <rect x="950" y="120" width="170" height="70" rx="4" fill="#fbf6ee" stroke="#2b2b2b"/>
+      <text x="1035" y="148" text-anchor="middle" font-weight="700">Finger 0</text>
+      <text x="1035" y="168" text-anchor="middle" fill="#6b6151">親指 / thumb</text>
+      <text x="1035" y="183" text-anchor="middle" fill="#cf3b2e" font-size="11">範囲せまめ</text>
+      <circle cx="950" cy="137" r="4" fill="#e8821e"/>
+      <circle cx="950" cy="155" r="4" fill="#cf3b2e"/>
+      <circle cx="950" cy="173" r="4" fill="#2b2b2b"/>
+      <!-- F1 -->
+      <rect x="950" y="245" width="170" height="70" rx="4" fill="#fbf6ee" stroke="#2b2b2b"/>
+      <text x="1035" y="278" text-anchor="middle" font-weight="700">Finger 1</text>
+      <text x="1035" y="298" text-anchor="middle" fill="#6b6151">人差し指</text>
+      <circle cx="950" cy="262" r="4" fill="#e8821e"/>
+      <circle cx="950" cy="280" r="4" fill="#cf3b2e"/>
+      <circle cx="950" cy="298" r="4" fill="#2b2b2b"/>
+      <!-- F2 -->
+      <rect x="950" y="370" width="170" height="70" rx="4" fill="#fbf6ee" stroke="#2b2b2b"/>
+      <text x="1035" y="403" text-anchor="middle" font-weight="700">Finger 2</text>
+      <text x="1035" y="423" text-anchor="middle" fill="#6b6151">中指</text>
+      <circle cx="950" cy="387" r="4" fill="#e8821e"/>
+      <circle cx="950" cy="405" r="4" fill="#cf3b2e"/>
+      <circle cx="950" cy="423" r="4" fill="#2b2b2b"/>
+      <!-- F3 -->
+      <rect x="950" y="495" width="170" height="70" rx="4" fill="#fbf6ee" stroke="#2b2b2b"/>
+      <text x="1035" y="528" text-anchor="middle" font-weight="700">Finger 3</text>
+      <text x="1035" y="548" text-anchor="middle" fill="#6b6151">薬指</text>
+      <circle cx="950" cy="512" r="4" fill="#e8821e"/>
+      <circle cx="950" cy="530" r="4" fill="#cf3b2e"/>
+      <circle cx="950" cy="548" r="4" fill="#2b2b2b"/>
+      <!-- F4 -->
+      <rect x="950" y="620" width="170" height="70" rx="4" fill="#fbf6ee" stroke="#2b2b2b"/>
+      <text x="1035" y="653" text-anchor="middle" font-weight="700">Finger 4</text>
+      <text x="1035" y="673" text-anchor="middle" fill="#6b6151">小指</text>
+      <circle cx="950" cy="637" r="4" fill="#e8821e"/>
+      <circle cx="950" cy="655" r="4" fill="#cf3b2e"/>
+      <circle cx="950" cy="673" r="4" fill="#2b2b2b"/>
+    </g>
+
+    <!-- ===== power supply ===== -->
+    <rect x="540" y="732" width="260" height="60" rx="4" fill="#fbf6ee" stroke="#2b2b2b" stroke-width="2"/>
+    <text x="612" y="757" font-size="14" font-weight="700">外部電源</text>
+    <text x="612" y="776" font-size="12" fill="#6b6151">6V（5A推奨）</text>
+    <text x="752" y="752" font-size="16" fill="#cf3b2e" font-weight="700" text-anchor="middle">＋</text>
+    <text x="700" y="752" font-size="16" fill="#2b2b2b" font-weight="700" text-anchor="middle">−</text>
+
+    <!-- pin->finger labels along signal -->
+    <g font-size="11" fill="#a8631a" font-weight="700">
+      <text x="640" y="186">D3 → Finger0</text>
+      <text x="640" y="271">D5 → Finger1</text>
+      <text x="640" y="362">D6 → Finger2</text>
+      <text x="640" y="452">D9 → Finger3</text>
+      <text x="640" y="540">D10 → Finger4</text>
+    </g>
+  </svg>
+  </div>
+
+  <div class="legend">
+    <span><i class="sw" style="background:#e8821e"></i>オレンジ＝信号(PWM) → Dピン</span>
+    <span><i class="sw" style="background:#cf3b2e"></i>赤＝＋6V</span>
+    <span><i class="sw" style="background:#2b2b2b"></i>茶/黒＝GND</span>
+    <span><i class="dot"></i>＝接続点（交差で●が無い所は繋がっていない）</span>
+  </div>
+
+  <div class="warn">
+    <b>★ 共通GNDを必ず繋ぐ：</b> Arduino の <code>GND</code> と 外部電源の <code>−</code> を結線する。
+    これが無いと信号の基準がズレてサーボが正しく動かない（一番ハマるポイント）。
+  </div>
+  <div class="warn">
+    <b>サーボ電源は外部6Vのみ：</b> 赤線を Arduino の <code>5V</code> から取らない。
+    5本同時で最大3.5A流れ、Arduinoのレギュレータが焼ける/落ちる。
+  </div>
+  <div class="ok">
+    <b>給電の順番：</b> ①サーボ3線をArduino/レールへ配線 → ②Arduinoを<b>USBでPCへ</b>（ロジック電源）→ ③外部6Vを投入 → ④スケッチ書込 → ⑤シリアルモニタ(9600/Newline)で <code>0 2000</code>。
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>ピン割り当て（hand_control.ino と一致）</h2>
+      <table>
+        <tr><th>指</th><th>サーボ線(信号)</th><th>Arduinoピン</th></tr>
+        <tr><td>Finger 0（親指）</td><td>オレンジ</td><td><code>D3</code></td></tr>
+        <tr><td>Finger 1</td><td>オレンジ</td><td><code>D5</code></td></tr>
+        <tr><td>Finger 2</td><td>オレンジ</td><td><code>D6</code></td></tr>
+        <tr><td>Finger 3</td><td>オレンジ</td><td><code>D9</code></td></tr>
+        <tr><td>Finger 4</td><td>オレンジ</td><td><code>D10</code></td></tr>
+        <tr><td colspan="3" style="color:#6b6151">赤(＋)×5 → 6V＋レール／茶(GND)×5 ＋ Arduino GND → 6V−レール</td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>サーボ3線の色</h2>
+      <table>
+        <tr><th>色</th><th>役割</th><th>つなぐ先</th></tr>
+        <tr><td><span class="sw" style="background:#e8821e;width:14px;height:14px;border-radius:3px"></span> オレンジ/黄</td><td>信号(PWM)</td><td>Arduino Dピン</td></tr>
+        <tr><td><span class="sw" style="background:#cf3b2e;width:14px;height:14px;border-radius:3px"></span> 赤</td><td>＋電源</td><td>外部6V ＋</td></tr>
+        <tr><td><span class="sw" style="background:#2b2b2b;width:14px;height:14px;border-radius:3px"></span> 茶/黒</td><td>GND</td><td>外部6V −</td></tr>
+      </table>
+      <p style="font-size:13px;color:#6b6151;margin:10px 0 0">
+        赤×5と茶×5は、ブレッドボードや端子台で「＋まとめ」「−まとめ」にして1点で電源へ。
+      </p>
+    </div>
+  </div>
+</div>
+</body>
+</html>

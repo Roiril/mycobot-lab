@@ -30,9 +30,10 @@ from urllib.parse import urlparse, parse_qs
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "hand"))  # ✋ HAND driver (separate robot from the 🦾 ARM)
 
 from arm.kinematics import joint_positions, end_effector, JOINT_LIMITS, DH, URDF_LINKS, URDF_LINKS_VISUAL  # noqa: E402
-from arm.safety import check_angles  # noqa: E402
+from arm.safety import check_angles, check_angles_floor_only  # noqa: E402
 from arm.planner import plan_and_validate  # noqa: E402
 from arm.path_cartesian import linear as cart_linear, lift_translate_lower  # noqa: E402
 from arm.ik_path import plan_ik_path  # noqa: E402
@@ -41,6 +42,8 @@ from arm.hub import Hub, VirtualHub, HubBase  # noqa: E402
 from arm.vision_hub import VisionHub, VirtualVisionHub  # noqa: E402
 from arm.spatial_memory import SpatialMemory, j1_to_sector  # noqa: E402
 from arm import gestures as gestures_mod  # noqa: E402
+from arm import poses as poses_mod  # noqa: E402
+from hand_driver import make_hand, VirtualHand as VirtualHand_hand, HandBase  # noqa: E402  ✋ HAND
 from arm.constants import (  # noqa: E402
     MAX_SPEED, DEFAULT_SPEED, DEFAULT_PORT, DEFAULT_CAM_INDEX, HOME_ANGLES, CAMERA_UPRIGHT_J6_DEG,
     ANGLE_DRIFT_TOL, TOOL_LENGTH, FLOOR_Z, LINK_RADIUS, TABLE_MARGIN, FK_TOOL_SLOP,
@@ -50,7 +53,7 @@ from arm.constants import (  # noqa: E402
     GRASP_APPROACH_SPEED_DEFAULT, GRASP_APPROACH_SPEED_MAX,
     GRASP_OFFSET_MIN_MM, GRASP_OFFSET_MAX_MM,
     TARGET_RADIUS_MIN_MM, TARGET_RADIUS_MAX_MM, TARGET_RADIUS_DEFAULT_MM,
-    GRIPPER_TIP_CLEARANCE_MM,
+    GRIPPER_TIP_CLEARANCE_MM, GRIPPER_SPEED_DEFAULT,
     WORKSPACE_REACH_MAX_MM, WORKSPACE_Z_MAX_MM,
 )
 
@@ -59,8 +62,10 @@ log = logging.getLogger("mycobot.server")
 HUB: HubBase | None = None
 VISION: VisionHub | None = None
 MEMORY: SpatialMemory | None = None
+HAND: HandBase | None = None  # ✋ 5-finger hand (separate robot from the 🦾 arm)
 INDEX_HTML = ""
 _LAST_JOG_MONO = 0.0  # last /jog timestamp (monotonic) — throttles serial bus
+_LAST_HAND_MONO = 0.0  # last /hand/fingers timestamp — throttles hand serial bus
 AUTH_TOKEN: str | None = None
 SHUTTING_DOWN = False
 MAX_SPEED_RUNTIME = MAX_SPEED  # CLI-overridable
@@ -342,6 +347,41 @@ def _coerce_angles(raw) -> list[float]:
     return out
 
 
+# --- taught-pose store (lead-through teaching) ----------------------------
+# Hand-taught poses live in a JSON store, separate from the curated constants
+# in src/arm/poses.py. /poses merges both so the UI sees one library; only
+# taught poses are editable/deletable. This keeps poses.py clean and avoids
+# rewriting Python source from the running server.
+TAUGHT_POSES_PATH = ROOT / "data" / "taught_poses.json"
+
+
+def _load_taught() -> list:
+    try:
+        with open(TAUGHT_POSES_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    poses = data.get("poses", []) if isinstance(data, dict) else []
+    out = []
+    for p in poses:
+        if isinstance(p, dict) and isinstance(p.get("name"), str) \
+                and isinstance(p.get("angles"), list) and len(p["angles"]) == 6:
+            out.append(p)
+    return out
+
+
+def _save_taught(poses: list) -> None:
+    TAUGHT_POSES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = TAUGHT_POSES_PATH.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"poses": poses}, fh, ensure_ascii=False, indent=2)
+    tmp.replace(TAUGHT_POSES_PATH)
+
+
+def _const_pose_names() -> set:
+    return {n for n in dir(poses_mod) if n.isupper() and not n.startswith("_")}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass  # silence access log
 
@@ -351,11 +391,17 @@ class Handler(BaseHTTPRequestHandler):
     # --- helpers ---
     def _json(self, code, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            # クライアントが応答途中で切断（Quest のリロード/ナビゲーション、ポーリング中断等）。
+            # 送る相手が居ないだけなので静かに諦める。これを投げると上位で handler thread が
+            # 落ち、ログがトレースバックで埋まる（VR 開発中はリロード毎に発生）。
+            self.close_connection = True
 
     def _read_body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -428,6 +474,34 @@ class Handler(BaseHTTPRequestHandler):
                     "gripper_tip_clearance_mm": GRIPPER_TIP_CLEARANCE_MM,
                     "gripper_present": False,  # Phase 1+2: no gripper hardware probe yet
                 }); return
+            if path == "/poses":
+                # Named joint poses — single source = src/arm/poses.py. Pose-mode UI
+                # fetches this to build its pose-graph library (taught poses appear here
+                # automatically once added to poses.py). Group by name prefix.
+                def _group(name):
+                    if name.startswith("STANDBY") or name in ("HOME", "REST", "READY"):
+                        return "待機"
+                    if name.startswith("POINT"):
+                        return "指差し"
+                    if name.startswith("OBSERVE"):
+                        return "観測"
+                    return "その他"
+                out = []
+                for nm in dir(poses_mod):
+                    if nm.startswith("_") or not nm.isupper():
+                        continue
+                    val = getattr(poses_mod, nm)
+                    if isinstance(val, (list, tuple)) and len(val) == 6 \
+                            and all(isinstance(v, (int, float)) for v in val):
+                        out.append({"name": nm, "angles": [float(v) for v in val],
+                                    "group": _group(nm), "editable": False})
+                const_names = _const_pose_names()
+                for p in _load_taught():
+                    if p["name"] in const_names:
+                        continue  # constant wins on name collision
+                    out.append({"name": p["name"], "angles": [float(v) for v in p["angles"]],
+                                "group": p.get("group") or "その他", "editable": True})
+                self._json(200, {"poses": out}); return
             if path == "/angles":
                 self._json(200, {"angles": HUB.angles(), "offline": HUB.offline}); return
             if path == "/coords":
@@ -452,6 +526,32 @@ class Handler(BaseHTTPRequestHandler):
                 }); return
             if path == "/power":
                 self._json(200, {"ok": HUB.power_ok()}); return
+            if path == "/hand/status":
+                # ✋ HAND (separate robot). Always present (VirtualHand if no Arduino).
+                if HAND is None:
+                    self._json(200, {"present": False, "connected": False}); return
+                st = HAND.status(); st["present"] = True
+                self._json(200, st); return
+            if path == "/real_angles":
+                # VR 表示用: ワーカーがキャッシュした実機角度を io_lock 無しで返す。
+                # キャッシュが無い（まだ jog してない）場合のみ live 読み。
+                a = getattr(HUB, "_real_angles", None)
+                if a is None:
+                    a = HUB.angles()
+                self._json(200, {"angles": a}); return
+            if path == "/jog_stats":
+                ms = list(getattr(HUB, "_jog_cycle_ms", []))
+                if ms:
+                    s = sorted(ms)
+                    stats = {"n": len(s), "min": s[0], "p50": s[len(s)//2],
+                             "p95": s[int(len(s)*0.95)], "max": s[-1]}
+                else:
+                    stats = {"n": 0}
+                self._json(200, stats); return
+            if path == "/gripper_diag":
+                self._json(200, HUB.gripper_diag()); return
+            if path == "/servo_scan":
+                self._json(200, HUB.servo_scan()); return
             if path == "/currents":
                 import arm.constants as _c
                 cs = HUB.get_currents()
@@ -597,6 +697,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(buf); return
             self.send_response(404); self.end_headers()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True  # クライアント切断（リロード等）。トレースバック不要
         except Exception as e:
             log.exception("GET %s failed", self.path)
             self._json(500, {"error": str(e)})
@@ -605,10 +707,35 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path = urlparse(self.path).path
             # write endpoints require auth (if configured)
-            if path in ("/move", "/home", "/release", "/abort") and not self._auth_ok():
+            if path in ("/move", "/home", "/release", "/abort",
+                        "/power_on", "/poses/register", "/poses/delete",
+                        "/hand/fingers", "/hand/preset") and not self._auth_ok():
                 self._json(401, {"error": "auth required"}); return
 
             body = self._read_body()
+
+            if path == "/clientlog":
+                # Browser-side log shipping. The Quest browser console is
+                # otherwise unreachable, so the UI batches console.* + XR
+                # events and POSTs them here. Persisted as JSONL so a test
+                # session can be analyzed afterwards. No auth (read-only sink).
+                entries = body.get("entries")
+                if not isinstance(entries, list):
+                    self._json(400, {"error": "entries (list) required"}); return
+                log_dir = ROOT / "data" / "client_logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                fpath = log_dir / "vr_session.jsonl"
+                srv_ts = time.time()
+                try:
+                    with open(fpath, "a", encoding="utf-8") as fh:
+                        for e in entries[:500]:  # cap per-batch to bound abuse
+                            if not isinstance(e, dict):
+                                continue
+                            e.setdefault("srv_t", round(srv_ts, 3))
+                            fh.write(json.dumps(e, ensure_ascii=False) + "\n")
+                except Exception as ex:
+                    self._json(500, {"error": f"write failed: {ex}"}); return
+                self._json(200, {"ok": True, "n": len(entries)}); return
 
             if path == "/focus_servo":
                 # Re-focus a single servo (1..6). Use when a specific joint is
@@ -647,6 +774,27 @@ class Handler(BaseHTTPRequestHandler):
                 ok, msg, bad = check_angles(angles)
                 self._json(200, {"ok": ok, "msg": msg, "badJoints": bad}); return
 
+            if path == "/mc_call":
+                # Brute-force gripper/IO probe: run a paced batch of whitelisted
+                # raw pymycobot calls. Body: {calls:[["method",[args]],...], pace_s?}
+                calls = body.get("calls")
+                if not isinstance(calls, list) or not calls:
+                    self._json(400, {"error": "calls (non-empty list) required"}); return
+                pace = max(0.0, min(float(body.get("pace_s", 1.2)), 5.0))
+                call_log = []
+                t0 = time.time()
+                for i, c in enumerate(calls):
+                    method = c[0] if isinstance(c, list) and c else None
+                    args = c[1] if isinstance(c, list) and len(c) > 1 else []
+                    try:
+                        ret = HUB.mc_call(method, args)
+                    except Exception as e:
+                        ret = f"ERR: {e}"
+                    call_log.append({"t": round(time.time() - t0, 1), "call": f"{method}{args}", "ret": ret})
+                    if i < len(calls) - 1 and pace > 0:
+                        time.sleep(pace)
+                self._json(200, {"ok": True, "log": call_log}); return
+
             if path == "/jog":
                 # Realtime teleop: position-only IK + safety check + non-blocking send.
                 # Reject if a full /move is in progress (don't fight a planned trajectory).
@@ -670,14 +818,18 @@ class Handler(BaseHTTPRequestHandler):
                         res = _coerce_angles(baked)
                     except ValueError as e:
                         self._json(400, {"error": str(e)}); return
-                    ok, msg, bad = check_angles(res)
+                    # VR teleop: floor + limits のみ。自己干渉はユーザーが目視管理。
+                    ok, msg, bad = check_angles_floor_only(res)
                     if not ok:
                         self._json(200, {"ok": False, "code": "SAFETY", "msg": msg, "badJoints": bad}); return
                     speed = int(body.get("speed", min(40, MAX_SPEED_RUNTIME)))
                     speed = max(5, min(speed, MAX_SPEED_RUNTIME))
-                    sent = HUB.send_angles_nowait(res, speed)
-                    if not sent:
-                        self._json(200, {"ok": False, "code": "NOT_POWERED"}); return
+                    if hasattr(HUB, 'submit_jog'):
+                        HUB.submit_jog(res, speed)
+                    else:
+                        sent = HUB.send_angles_nowait(res, speed)
+                        if not sent:
+                            self._json(200, {"ok": False, "code": "NOT_POWERED"}); return
                     self._json(200, {"ok": True, "angles": [round(a, 2) for a in res], "mode": "baked"}); return
 
                 try:
@@ -687,14 +839,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not all(math.isfinite(v) for v in (x, y, z)):
                     self._json(400, {"error": "non-finite"}); return
 
-                cur = HUB.angles()
+                # IK seed: prefer the worker's cached readback (no io_lock contention
+                # with the jog worker). Fall back to a live read only if no cache yet.
+                cur = getattr(HUB, "_real_angles", None) or HUB.angles()
                 if cur is None:
                     self._json(503, {"ok": False, "code": "NO_ANGLES"}); return
 
                 res, mode = HUB.solve_ik_with_mode([x, y, z], seed=cur)
                 if res is None:
                     self._json(200, {"ok": False, "code": "IK_FAIL"}); return
-                ok, msg, bad = check_angles(res)
+                # VR teleop: floor + limits のみ。
+                ok, msg, bad = check_angles_floor_only(res)
                 if not ok:
                     self._json(200, {"ok": False, "code": "SAFETY", "msg": msg, "badJoints": bad}); return
 
@@ -702,10 +857,59 @@ class Handler(BaseHTTPRequestHandler):
                 # interpolates between successive commands.
                 speed = int(body.get("speed", min(40, MAX_SPEED_RUNTIME)))
                 speed = max(5, min(speed, MAX_SPEED_RUNTIME))
-                sent = HUB.send_angles_nowait(res, speed)
-                if not sent:
-                    self._json(200, {"ok": False, "code": "NOT_POWERED"}); return
+                if hasattr(HUB, 'submit_jog'):
+                    HUB.submit_jog(res, speed)
+                else:
+                    sent = HUB.send_angles_nowait(res, speed)
+                    if not sent:
+                        self._json(200, {"ok": False, "code": "NOT_POWERED"}); return
                 self._json(200, {"ok": True, "angles": [round(a, 2) for a in res], "mode": mode}); return
+
+            if path == "/hand/fingers":
+                # ✋ HAND teleop: stream finger targets. Body (one of):
+                #   {"bends":[b0..b4]}   normalized 0=open .. 1=closed (preferred)
+                #   {"us":[u0..u4]}      raw microseconds
+                # Server-side throttle mirrors /jog so the 9600-baud Arduino bus
+                # isn't saturated by a 72-90Hz hand-tracking stream.
+                global _LAST_HAND_MONO
+                if HAND is None:
+                    self._json(503, {"ok": False, "code": "NO_HAND"}); return
+                now_m = time.monotonic()
+                if now_m - _LAST_HAND_MONO < 0.025:  # 25ms ≈ 40Hz cap
+                    self._json(429, {"ok": False, "code": "THROTTLED"}); return
+                _LAST_HAND_MONO = now_m
+                try:
+                    if "bends" in body:
+                        raw = body["bends"]
+                        if not isinstance(raw, list) or len(raw) != 5:
+                            self._json(400, {"error": "bends must be length-5 list"}); return
+                        cur = HAND.set_bends([float(v) for v in raw])
+                    elif "us" in body:
+                        raw = body["us"]
+                        if not isinstance(raw, list) or len(raw) != 5:
+                            self._json(400, {"error": "us must be length-5 list"}); return
+                        cur = HAND.set_fingers_us([float(v) for v in raw])
+                    else:
+                        self._json(400, {"error": "body needs 'bends' or 'us'"}); return
+                except (TypeError, ValueError) as e:
+                    self._json(400, {"error": f"bad finger values: {e}"}); return
+                except Exception as e:  # serial write error → report, don't crash
+                    self._json(503, {"ok": False, "code": "HAND_IO", "error": str(e)}); return
+                self._json(200, {"ok": True, "cur_us": cur, "offline": HAND.offline}); return
+
+            if path == "/hand/preset":
+                # ✋ HAND preset: {"preset": "open"|"close"|"neutral"}
+                if HAND is None:
+                    self._json(503, {"ok": False, "code": "NO_HAND"}); return
+                preset = body.get("preset")
+                fn = {"open": HAND.open, "close": HAND.close, "neutral": HAND.neutral}.get(preset)
+                if fn is None:
+                    self._json(400, {"error": "preset must be open|close|neutral"}); return
+                try:
+                    cur = fn()
+                except Exception as e:
+                    self._json(503, {"ok": False, "code": "HAND_IO", "error": str(e)}); return
+                self._json(200, {"ok": True, "preset": preset, "cur_us": cur, "offline": HAND.offline}); return
 
             if path == "/solve_ik":
                 """Body: {x, y, z, pose?: {kind:..., ...}, rx?, ry?, rz?}
@@ -832,9 +1036,10 @@ class Handler(BaseHTTPRequestHandler):
                   • list of dicts: chained gestures, single motion_lock acquire
 
                 Each spec:
-                  kind: 'face'|'bow'|'point_at'|'home'
+                  kind: 'face'|'bow'|'nod'|'wave'|'point_at'|'home'|'gripper'
                   direction?, target_xyz? (mm), label? (memory lookup),
-                  depth_deg?, hold_s?, j5_extend_deg?, upright?
+                  depth_deg?, hold_s?, j5_extend_deg?, upright?,
+                  state? ('open'|'close'|'release', for kind='gripper')
                 """
                 specs = body if isinstance(body, list) else [body]
                 if not specs or any(not isinstance(s, dict) for s in specs):
@@ -894,6 +1099,22 @@ class Handler(BaseHTTPRequestHandler):
                 HUB.start_monitor()
                 try:
                     for idx, step in enumerate(steps):
+                        # Gripper step: actuate end-effector, no joint motion/planning.
+                        if "gripper" in step:
+                            if HUB.abort_flag.is_set():
+                                self._json(499, {"error": "aborted (user) between steps",
+                                                 "failed_at": idx, "completed": completed}); return
+                            flag = int(step["gripper"])
+                            g_speed = int(step.get("speed", GRIPPER_SPEED_DEFAULT))
+                            ok_g = HUB.set_gripper(flag, g_speed)
+                            completed.append({"label": step.get("label", f"step_{idx}"),
+                                              "index": idx, "gripper": flag, "ok": ok_g})
+                            if not ok_g:
+                                self._json(200, {"ok": False, "completed": completed,
+                                                 "error": f"gripper step {idx} not actuated (unpowered or I/O error)"}); return
+                            pause = float(step.get("pause_s", 0.0))
+                            if pause > 0: time.sleep(min(pause, 5.0))
+                            continue
                         try:
                             target = _coerce_angles(step.get("angles"))
                         except ValueError as e:
@@ -1506,6 +1727,52 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, "enabled": enabled,
                                  "warning": None if enabled else "過電流監視 OFF — 衝突しても自動停止しません"}); return
 
+            if path == "/power_on":
+                # Re-engage servos at the current (hand-posed) position. Teach flow:
+                # 脱力 → 手で動かす → 確定 で、その姿勢を保持させる。
+                HUB.power_on()
+                self._json(200, {"ok": True, "angles": HUB.angles()}); return
+
+            if path == "/poses/register":
+                # Register the current (or given) pose into the taught-pose store.
+                # Validates safety; rejects collisions with poses.py constants.
+                name = str(body.get("name", "")).strip()
+                group = str(body.get("group", "その他")).strip() or "その他"
+                if not name:
+                    self._json(400, {"error": "name (ポーズ名) が必要"}); return
+                if len(name) > 40 or any(c in name for c in '\\/"\'`<>{}[]'):
+                    self._json(400, {"error": "name に使えない文字が含まれています"}); return
+                raw = body.get("angles")
+                if raw is None:
+                    cur = HUB.angles()
+                    if not cur or len(cur) != 6:
+                        self._json(400, {"error": "現在の関節角を取得できません"}); return
+                    angles = [round(float(v), 1) for v in cur]
+                else:
+                    try:
+                        angles = [round(v, 1) for v in _coerce_angles(raw)]
+                    except ValueError as e:
+                        self._json(400, {"error": str(e)}); return
+                ok, msg, bad = check_angles(angles)
+                if not ok:
+                    self._json(400, {"error": f"安全判定 NG: {msg}", "badJoints": bad}); return
+                if name in _const_pose_names():
+                    self._json(409, {"error": f"'{name}' は組込ポーズ名と重複（別名にしてください）"}); return
+                taught = [p for p in _load_taught() if p.get("name") != name]  # overwrite same name
+                pose = {"name": name, "angles": angles, "group": group}
+                taught.append(pose)
+                _save_taught(taught)
+                self._json(200, {"ok": True, "pose": pose}); return
+
+            if path == "/poses/delete":
+                name = str(body.get("name", "")).strip()
+                taught = _load_taught()
+                kept = [p for p in taught if p.get("name") != name]
+                if len(kept) == len(taught):
+                    self._json(404, {"error": f"'{name}' は登録ポーズにありません（組込ポーズは削除不可）"}); return
+                _save_taught(kept)
+                self._json(200, {"ok": True}); return
+
             if path == "/release":
                 # set abort first so any in-flight waypoint loop bails immediately
                 HUB.abort_flag.set()
@@ -1521,6 +1788,8 @@ class Handler(BaseHTTPRequestHandler):
                     if acquired: HUB.motion_lock.release()
 
             self.send_response(404); self.end_headers()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True  # クライアント切断。トレースバック不要
         except Exception as e:
             log.exception("POST %s failed", self.path)
             # /perceive returns structured envelopes; others stay legacy {error: ...}.
@@ -1647,7 +1916,7 @@ def lan_ip() -> str:
 
 
 def main():
-    global HUB, VISION, INDEX_HTML, AUTH_TOKEN, SHUTTING_DOWN, MAX_SPEED_RUNTIME, MEMORY
+    global HUB, VISION, INDEX_HTML, AUTH_TOKEN, SHUTTING_DOWN, MAX_SPEED_RUNTIME, MEMORY, HAND
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser()
@@ -1657,6 +1926,12 @@ def main():
     ap.add_argument("--token", default=None, help="X-Auth-Token required for write endpoints when bound to non-loopback")
     ap.add_argument("--cam", type=int, default=DEFAULT_CAM_INDEX)
     ap.add_argument("--max-speed", type=int, default=MAX_SPEED)
+    # ✋ HAND (5-finger robot, separate from the arm)
+    ap.add_argument("--hand-port", default=None, help="Arduino COM port for the hand (default: autodetect)")
+    ap.add_argument("--no-hand", action="store_true", help="disable the hand subsystem entirely")
+    ap.add_argument("--real-hand", action="store_true",
+                    help="use the REAL hand even in --offline (virtual arm + physical hand; "
+                         "for driving only the hand from Quest without moving the arm)")
     args = ap.parse_args()
 
     if args.bind != "127.0.0.1" and not args.token:
@@ -1714,6 +1989,19 @@ def main():
     # Spatial short-term memory (per-sector latest observation)
     MEMORY = SpatialMemory(ROOT / "data" / "spatial_memory.json")
 
+    # ✋ HAND (5-finger robot). Separate Arduino/COM/power from the arm.
+    # Offline → VirtualHand. Live → autodetect Arduino, else degrade to virtual.
+    if args.no_hand:
+        HAND = None
+        log.info("hand subsystem disabled (--no-hand)")
+    elif args.offline and not args.real_hand:
+        HAND = VirtualHand_hand()
+        log.info("hand: VirtualHand (offline)")
+    else:
+        # live, or offline + --real-hand (virtual arm + physical hand)
+        HAND = make_hand(port=args.hand_port)
+        log.info("hand: %s on %s", "connected" if not HAND.offline else "virtual", HAND.port)
+
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     mode = "OFFLINE" if args.offline else "live"
     print(f"\n  [{mode}] http://localhost:{args.port}/")
@@ -1744,6 +2032,11 @@ def main():
                 VISION.shutdown()
         except Exception as e:
             print(f"vision shutdown failed: {e}")
+        try:
+            if HAND is not None:
+                HAND.shutdown()
+        except Exception as e:
+            print(f"hand shutdown failed: {e}")
         HUB.shutdown()
 
 

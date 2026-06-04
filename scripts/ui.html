@@ -64,6 +64,23 @@
  button.modeBtn{background:#2a2a2a;color:#aaa;border:1px solid #444;padding:2px 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;border-radius:3px;margin:0;cursor:pointer}
  button.modeBtn:hover{background:#3a3a3a;color:#fff}
  button.modeBtn.active{background:#0e639c;color:#fff;border-color:#1177bb}
+ button.vrModeBtn{background:#2a2a2a;color:#aaa;border:1px solid #444;padding:2px 8px;font-size:11px;font-weight:600;border-radius:3px;margin:0;cursor:pointer}
+ button.vrModeBtn:hover{background:#3a3a3a;color:#fff}
+ button.vrModeBtn.active{background:#0e639c;color:#fff;border-color:#1177bb}
+ /* ✋ HAND UI — teal accent to keep it visually distinct from the 🦾 ARM (blue) */
+ button.vrModeBtn[data-vrmode="hand"].active{background:#107a55;border-color:#19a673}
+ .hand-panel{border-left:3px solid #19a673}
+ .hand-panel h2 .badge.teal,.badge.teal{background:#19a673;color:#fff}
+ .hand-row{display:flex;gap:6px;align-items:center;margin-bottom:3px;font-size:11px;color:#bbb}
+ .hand-row label{width:52px;flex-shrink:0}
+ .hand-row input[type=range]{flex:1}
+ .hand-row .handVal{width:34px;text-align:right;font-family:Consolas,monospace;color:#cdcdcd}
+ #btnVRFloat{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:9999;
+   padding:14px 28px;font-size:18px;font-weight:bold;
+   background:#0e639c;color:#fff;border:2px solid #1177bb;border-radius:8px;
+   box-shadow:0 4px 16px rgba(0,0,0,0.5);cursor:pointer}
+ #btnVRFloat:hover{background:#1177bb}
+ #btnVRFloat.active{background:#7a1a10;border-color:#c0392b}
  button.jogBtn{background:#264f6b;color:#fff;padding:8px 4px;font-size:13px;font-weight:600;font-family:ui-monospace,Consolas,monospace;border-radius:3px;margin:0;border:1px solid #3a6a8a}
  button.jogBtn:hover:not(:disabled){background:#3777a0}
  button.jogBtn:active{background:#0e639c}
@@ -84,6 +101,20 @@
  button.opModeBtn:hover{background:#3a3a3a;color:#fff}
  button.opModeBtn.active{background:#6f42c1;color:#fff;border-color:#8a5cd6}
  .policyDisabled{opacity:.35;pointer-events:none}
+ /* ── top-level UI mode: 従来 (free manipulation) / ポーズ (pose-graph) ── */
+ #topModeBar{display:flex;gap:6px;align-items:center;padding:6px 0 2px;flex-shrink:0}
+ button.topModeBtn{flex:1;padding:6px 10px;font-size:12px;font-weight:700;background:#262626;color:#9d9d9d;border:1px solid #444;border-radius:4px;cursor:pointer}
+ button.topModeBtn:hover{background:#333;color:#fff}
+ button.topModeBtn.active{background:#0a8043;color:#fff;border-color:#10a052}
+ #side.mode-classic [data-uimode="pose"]:not(.topModeBtn){display:none}
+ #side.mode-pose [data-uimode="classic"]:not(.topModeBtn){display:none}
+ .poseGroup{margin-bottom:8px}
+ .poseGroup .grpLbl{color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}
+ .poseGroup .grpBtns{display:flex;gap:4px;flex-wrap:wrap}
+ button.poseLibBtn{padding:5px 10px;font-size:12px;background:#33384a;color:#cdd3e0;border:1px solid #4a5168;border-radius:3px;margin:0;cursor:pointer}
+ button.poseLibBtn:hover{background:#3f4658;color:#fff}
+ button.poseLibBtn.active{background:#0e639c;color:#fff;border-color:#1177bb}
+ .poseEmpty{color:#777;font-size:11px;font-style:italic}
 </style></head><body>
 <div id="root">
   <div id="scene">
@@ -99,7 +130,14 @@
       <span id="hintKeys"></span>
     </div>
   </div>
-  <div id="side">
+  <div id="side" class="mode-classic">
+
+    <div id="topModeBar">
+      <button class="topModeBtn active" data-uimode="classic"
+              title="自由操作。関節スライダ / カルテジアン IK / VR で任意に動かす（6DoF 連続操作系）">従来モード</button>
+      <button class="topModeBtn" data-uimode="pose"
+              title="登録ポーズ間の遷移 + 向き(J1)/高さ(J2) パラメータ。手振り・指差しの primitive 運用系">ポーズモード</button>
+    </div>
 
     <div class="sec">制御</div>
 
@@ -139,7 +177,58 @@
       <div id="statusLog" aria-live="polite"></div>
     </div>
 
-    <div class="panel">
+    <div class="sec" data-uimode="pose">ポーズグラフ</div>
+
+    <div class="panel" data-uimode="pose" id="posePanel">
+      <h2>登録ポーズ <span style="color:#8a8a8a;text-transform:none;font-weight:normal">遷移 + 向き/高さ</span></h2>
+      <div style="font-size:11px;color:#888;margin-bottom:8px">
+        登録ポーズを選ぶ → 目標に反映（ゴースト表示）→ 向き(J1)/高さ(J2) で微調整 → <b>APPLY</b> で遷移。
+        安全判定は従来と同じ <code>/check</code> が担保（NG なら APPLY 不可）。
+      </div>
+      <div id="poseLib" style="margin-bottom:10px">読み込み中…</div>
+      <div style="border-top:1px solid #333;padding-top:8px">
+        <div style="color:#9d9d9d;font-size:11px;margin-bottom:6px">パラメータ（選択ポーズからのオフセット）</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:5px">
+          <label style="flex:0 0 70px;color:#aaa;font-size:11px" title="土台ヨー。回しても自己干渉・床干渉は不変なのでクランプのみで安全">向き J1</label>
+          <input id="poseJ1" type="range" min="-90" max="90" step="1" value="0" style="flex:1" disabled>
+          <span id="poseJ1Val" style="flex:0 0 48px;text-align:right;font-family:ui-monospace,Consolas,monospace;color:#9cdcfe">+0°</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+          <label style="flex:0 0 70px;color:#aaa;font-size:11px" title="肩ピッチ。高さが変わる＝床干渉/到達に影響するので適用後に安全再判定">高さ J2</label>
+          <input id="poseJ2" type="range" min="-40" max="40" step="1" value="0" style="flex:1" disabled>
+          <span id="poseJ2Val" style="flex:0 0 48px;text-align:right;font-family:ui-monospace,Consolas,monospace;color:#9cdcfe">+0°</span>
+        </div>
+        <button id="btnPoseReset" style="font-size:11px;padding:3px 8px" disabled>オフセット 0 に戻す</button>
+        <span id="poseSel" style="margin-left:8px;color:#888;font-size:11px">未選択</span>
+      </div>
+      <div style="margin-top:10px;border-top:1px solid #333;padding-top:8px">
+        <div style="color:#9d9d9d;font-size:11px;margin-bottom:5px">
+          ポーズ登録（手で動かして教える） <span id="teachBadge" class="badge gray">待機</span>
+        </div>
+        <div style="font-size:11px;color:#888;margin-bottom:7px">
+          ① 脱力 → ② 手でアームを動かして姿勢を作る → ③ 確定。確定時に安全判定 +
+          その姿勢で再通電して保持。<b style="color:#c89">脱力前にアームを手で支えること。</b>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+          <button id="btnTeachRelease" style="background:#5a3a1a;color:#fff;border:1px solid #7a5a2a;padding:6px 12px;border-radius:3px;cursor:pointer">① 脱力</button>
+          <span id="teachCurAngles" style="font-family:ui-monospace,Consolas,monospace;font-size:10px;color:#9cdcfe">—</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+          <input id="teachName" placeholder="ポーズ名 (例: STANDBY_1)" maxlength="40"
+                 style="flex:1;min-width:130px;background:#3c3c3c;color:#ddd;border:1px solid #555;padding:4px 6px;font-size:12px">
+          <select id="teachGroup" style="background:#3c3c3c;color:#ddd;border:1px solid #555;font-size:12px">
+            <option value="待機">待機</option>
+            <option value="指差し">指差し</option>
+            <option value="観測">観測</option>
+            <option value="その他">その他</option>
+          </select>
+        </div>
+        <button id="btnTeachConfirm" style="background:#0a8043;color:#fff;border:1px solid #10a052;padding:6px 12px;border-radius:3px;cursor:pointer">③ 確定して登録</button>
+        <div id="teachStatus" style="font-size:11px;margin-top:5px;color:#aaa"></div>
+      </div>
+    </div>
+
+    <div class="panel" data-uimode="classic">
       <h2>カルテジアン (mm) <span style="color:#8a8a8a;text-transform:none;font-weight:normal">編集して IK</span></h2>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;padding:6px;background:#1e1e1e;border-radius:3px">
         <span style="color:#9d9d9d;font-size:10px;text-transform:uppercase;letter-spacing:1px">操作モード</span>
@@ -219,20 +308,59 @@
       </div>
     </div>
 
-    <div class="sec">VR</div>
+    <div class="sec" data-uimode="classic">VR</div>
 
-    <div class="panel" id="vrPanel">
-      <h2>WebXR ハンドトラッキング <span class="badge gray" id="vrBadge">off</span></h2>
-      <div style="font-size:11px;color:#888;margin-bottom:6px">Quest 系 HMD で右手 pinch → goalSphere をクラッチ式に駆動。手首追従モード必須。</div>
+    <div class="panel" id="vrPanel" data-uimode="classic">
+      <h2>WebXR 遠隔操作 <span class="badge gray" id="vrBadge">off</span></h2>
+      <div style="font-size:11px;color:#888;margin-bottom:6px">Quest 系 HMD。制御方式で <b>🦾アーム</b> か <b style="color:#19a673">✋ハンド</b> を選ぶ。<b>🦾アーム</b>=右手ピンチで追従ON/OFF。<b style="color:#19a673">✋ハンド</b>=<u>クラッチ不要</u>、右手の指を曲げるだけで実ハンドが常時追従（アームは動かない）。</div>
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">
         <button id="btnVR" title="immersive-vr セッション開始（hand-tracking, local-floor）">VR 開始</button>
         <button id="btnVRCalib" disabled title="HMD 前方向を arm +Y に揃える yaw キャリブ">キャリブ</button>
       </div>
-      <div style="display:flex;gap:6px;align-items:center;font-size:11px;color:#aaa">
-        <label>GAIN <input id="vrGain" type="range" min="0.3" max="2.0" step="0.05" value="1.0" style="width:90px"></label>
-        <span id="vrGainVal">1.00</span>
+      <div style="display:flex;gap:6px;align-items:center;font-size:11px;color:#aaa;margin-bottom:4px;flex-wrap:wrap">
+        <span>制御方式</span>
+        <button class="vrModeBtn" data-vrmode="joint" title="🦾アーム: 手の姿勢を J1/J2/J5/J6 に直接マップ（相対）">🦾直接関節</button>
+        <button class="vrModeBtn active" data-vrmode="follow" title="🦾アーム: 手で goalSphere を動かし IK で追従">🦾IK追従</button>
+        <button class="vrModeBtn" data-vrmode="hand" title="✋ハンド: 右手の指の曲げ→ロボットハンドの指へ（アームは動かさない）">✋ハンド</button>
+      </div>
+      <div id="vrHandTuning" style="display:none;font-size:11px;color:#19a673;margin-bottom:4px">
+        ✋ VR開始 → 右手の指を曲げるだけで実ハンドが追従（キャリブ・クラッチ不要、各指独立）。
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;font-size:11px;color:#aaa">
+        <label>速度 <input id="vrSpeed" type="range" min="5" max="100" step="5" value="60" style="width:90px"></label>
+        <span id="vrSpeedVal">60</span>
+      </div>
+      <div id="vrJointTuning" style="font-size:11px;color:#aaa">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px">
+          <label>回転GAIN <input id="vrGain" type="range" min="0.3" max="2.0" step="0.05" value="1.0" style="width:80px"></label>
+          <span id="vrGainVal">1.00</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px">
+          <label>J2高さ°/m <input id="vrHeightScale" type="range" min="0" max="400" step="10" value="150" style="width:80px"></label>
+          <span id="vrHeightScaleVal">150</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:2px">
+          <label title="手ロール（縦軸ひねり）→J1"><input type="checkbox" class="vrSign" data-j="0">J1反転</label>
+          <label title="手上下→J2"><input type="checkbox" class="vrSign" data-j="1">J2反転</label>
+          <label title="手ピッチ（向き）→J5"><input type="checkbox" class="vrSign" data-j="4">J5反転</label>
+          <label title="手ヨー（手首回転）→J6"><input type="checkbox" class="vrSign" data-j="5">J6反転</label>
+        </div>
       </div>
       <div id="vrStatus" style="font-family:Consolas,monospace;font-size:10px;color:#cdcdcd;margin-top:6px;max-height:60px;overflow:auto">—</div>
+    </div>
+
+    <div class="sec">✋ ロボットハンド（アームとは別系統 / Arduino）</div>
+
+    <div class="panel hand-panel" id="handPanel" data-uimode="classic">
+      <h2>ハンド手動操作 <span class="badge gray" id="handBadge">—</span></h2>
+      <div style="font-size:11px;color:#888;margin-bottom:6px">Hiwonder 5本指（LFD-01×5 / Arduino）。スライダ 0=開き / 1=握り。VR の指追従とは独立。<b>これはアームではなく指のハンド</b>。</div>
+      <div style="display:flex;gap:4px;margin-bottom:8px">
+        <button id="btnHandOpen" title="全指オープン">開く</button>
+        <button id="btnHandClose" title="全指クローズ（握る）">握る</button>
+        <button id="btnHandNeutral" title="全指ニュートラル(1500µs)">中立</button>
+      </div>
+      <div id="handSliders"></div>
+      <div id="handStatus" style="font-family:Consolas,monospace;font-size:10px;color:#9d9d9d;margin-top:6px">—</div>
     </div>
 
     <div class="sec">カメラ</div>
@@ -275,6 +403,7 @@
         <button class="gestureBtn" data-spec='{"kind":"nod","return_home":false}' title="現在の姿勢のままうなずく（J2±12°×2）">うなずく</button>
         <button class="gestureBtn" data-spec='{"kind":"wave","return_home":false}' title="現在の姿勢のまま手を振る（J6±30°swing）">手を振る</button>
         <button class="gestureBtn" data-spec='{"kind":"face","direction":"front","return_home":false}'>前を向く</button>
+        <button class="gestureBtn" data-spec='[{"kind":"gripper","state":"close"},{"kind":"gripper","state":"open"}]' title="先端グリッパを閉じてから開く（つまむ→離す）">つまむ</button>
         <button class="gestureBtn" data-spec='{"kind":"home"}'>HOME 戻る</button>
         <button id="btnGesturePoint">記憶物を指差し ▾</button>
       </div>
@@ -337,6 +466,8 @@
   </div>
 </div>
 
+<button id="btnVRFloat" title="immersive-vr セッション開始／終了">VR 開始</button>
+
 <script type="importmap">
 {"imports":{
   "three":"/static/vendor/three/build/three.module.js",
@@ -350,6 +481,49 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 THREE.Object3D.DEFAULT_UP.set(0,0,1);
 const D = Math.PI/180;
+
+// --- client log shipping --------------------------------------------------
+// Quest browser console is unreachable from the dev machine, so mirror
+// console.* (+ explicit xrLog events) to the server as JSONL. Batched +
+// flushed on a timer and on pagehide so a VR session can be analyzed after.
+const _clog = {
+  buf: [],
+  t0: performance.now(),
+  push(level, args, tag) {
+    let msg;
+    try {
+      msg = args.map(a =>
+        (typeof a === 'object' && a !== null) ? JSON.stringify(a) : String(a)
+      ).join(' ');
+    } catch (_) { msg = '[unserializable]'; }
+    this.buf.push({ t: Math.round(performance.now() - this.t0), level, tag: tag || null, msg });
+    if (this.buf.length > 400) this.flush();  // bound memory if server is down
+  },
+  async flush(useBeacon) {
+    if (!this.buf.length) return;
+    const entries = this.buf.splice(0, this.buf.length);
+    const payload = JSON.stringify({ entries });
+    try {
+      if (useBeacon && navigator.sendBeacon) {
+        navigator.sendBeacon('/clientlog', new Blob([payload], { type: 'application/json' }));
+      } else {
+        await fetch('/clientlog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true });
+      }
+    } catch (_) { /* server down: drop this batch, keep running */ }
+  },
+};
+// xrLog(tag, ...args): explicit structured event (always shipped, also to console)
+window.xrLog = (tag, ...args) => { _clog.push('xr', args, tag); _orig.log('[xr:' + tag + ']', ...args); };
+const _orig = { log: console.log.bind(console), warn: console.warn.bind(console), error: console.error.bind(console) };
+console.log   = (...a) => { _clog.push('log',  a); _orig.log(...a); };
+console.warn  = (...a) => { _clog.push('warn', a); _orig.warn(...a); };
+console.error = (...a) => { _clog.push('error', a); _orig.error(...a); };
+window.addEventListener('error', e => _clog.push('error', ['uncaught: ' + e.message + ' @' + (e.filename||'') + ':' + (e.lineno||'')]));
+window.addEventListener('unhandledrejection', e => _clog.push('error', ['unhandledrejection: ' + (e.reason && e.reason.message || e.reason)]));
+setInterval(() => _clog.flush(), 3000);
+window.addEventListener('pagehide', () => _clog.flush(true));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') _clog.flush(true); });
+// --------------------------------------------------------------------------
 
 // --- kinematics + server constants (fetched from server at boot) ---
 let DH = null, URDF_LINKS = null, URDF_LINKS_VISUAL = null, LIMITS = null, TOOL = 0, TOOL_VISUAL = 0, FLOOR_Z = 40;
@@ -451,6 +625,240 @@ function endEffectorForRender(angles){
   return new THREE.Vector3(
     T6[0][3] + TOOL_VISUAL*T6[0][2], T6[1][3] + TOOL_VISUAL*T6[1][2], T6[2][3] + TOOL_VISUAL*T6[2][2]
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ローカル 6DOF 逆運動学（DLS）。src/arm/ik_numeric.py の solve() を忠実移植。
+//   目的: VR teleop で手の 6DOF pose → 関節角 を 90Hz・ゼロ遅延でブラウザ内解決し、
+//         ghost を即時描画。同じ解を /jog {angles} で実機へ流す（実機は遅れて追従）。
+//   規約: 位置 mm / 角度 deg。RPY は extrinsic XYZ (= Rz·Ry·Rx)、originTf と一致。
+//   seed=前フレーム解（warm start）なら数反復で収束 → 90Hz 余裕。
+// ─────────────────────────────────────────────────────────────────────────
+const _IK_DEG = Math.PI / 180;
+
+// FK: 関節角 → [x,y,z, rx,ry,rz]（mm, deg）。既存 linkFrames + TOOL を再利用。
+function _ikFkPose(angles){
+  const T = linkFrames(angles)[6];
+  const px = T[0][3] + TOOL*T[0][2];
+  const py = T[1][3] + TOOL*T[1][2];
+  const pz = T[2][3] + TOOL*T[2][2];
+  const rpy = _ikMatToRpy(T);  // 回転部のみ使用
+  return [px, py, pz, rpy[0], rpy[1], rpy[2]];
+}
+
+// 回転行列(4x4 or 3x3 の上3x3) → (roll,pitch,yaw) deg（extrinsic XYZ）
+function _ikMatToRpy(R){
+  let sy = -R[2][0]; sy = Math.max(-1, Math.min(1, sy));
+  const pitch = Math.asin(sy);
+  let roll, yaw;
+  if (Math.abs(sy) < 0.99999){
+    roll = Math.atan2(R[2][1], R[2][2]);
+    yaw  = Math.atan2(R[1][0], R[0][0]);
+  } else {
+    roll = 0;
+    yaw  = Math.atan2(-R[0][1], R[1][1]);
+  }
+  return [roll/_IK_DEG, pitch/_IK_DEG, yaw/_IK_DEG];
+}
+
+// (rx,ry,rz) deg → 3x3 回転行列（Rz·Ry·Rx）
+function _ikRpyToMat(rxd, ryd, rzd){
+  const rx=rxd*_IK_DEG, ry=ryd*_IK_DEG, rz=rzd*_IK_DEG;
+  const cx=Math.cos(rx), sx=Math.sin(rx);
+  const cy=Math.cos(ry), sy=Math.sin(ry);
+  const cz=Math.cos(rz), sz=Math.sin(rz);
+  return [
+    [cy*cz, sx*sy*cz-cx*sz, cx*sy*cz+sx*sz],
+    [cy*sz, sx*sy*sz+cx*cz, cx*sy*sz-sx*cz],
+    [  -sy,          sx*cy,          cx*cy],
+  ];
+}
+
+// 角速度誤差（3-vec, rad）: current → target へ回す log-map
+function _ikAngularError(Rt, Rc){
+  // R_err = Rt · Rcᵀ
+  const E = [[0,0,0],[0,0,0],[0,0,0]];
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++){
+    let s=0; for(let k=0;k<3;k++) s += Rt[i][k]*Rc[j][k];
+    E[i][j]=s;
+  }
+  let cos = (E[0][0]+E[1][1]+E[2][2]-1)*0.5;
+  cos = Math.max(-1, Math.min(1, cos));
+  const theta = Math.acos(cos);
+  if (Math.abs(theta) < 1e-9) return [0,0,0];
+  const sin = Math.sin(theta);
+  if (sin < 1e-9) return [0,0,0];
+  const k = theta/(2*sin);
+  return [k*(E[2][1]-E[1][2]), k*(E[0][2]-E[2][0]), k*(E[1][0]-E[0][1])];
+}
+
+// pose 誤差 6-vec [dx,dy,dz, ωx,ωy,ωz]（mm, rad）
+function _ikPoseError(tgt6, angles){
+  const T = linkFrames(angles)[6];
+  const px = T[0][3] + TOOL*T[0][2];
+  const py = T[1][3] + TOOL*T[1][2];
+  const pz = T[2][3] + TOOL*T[2][2];
+  const Rc = [[T[0][0],T[0][1],T[0][2]],[T[1][0],T[1][1],T[1][2]],[T[2][0],T[2][1],T[2][2]]];
+  const Rt = _ikRpyToMat(tgt6[3], tgt6[4], tgt6[5]);
+  const ang = _ikAngularError(Rt, Rc);
+  return [tgt6[0]-px, tgt6[1]-py, tgt6[2]-pz, ang[0], ang[1], ang[2]];
+}
+
+// 6x6 数値ヤコビアン（中心差分）。向き列は deg→rad へ。
+function _ikJacobian(angles){
+  const eps = 1e-4;
+  const J = [[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0]];
+  for(let i=0;i<6;i++){
+    const ap = angles.slice(); ap[i]+=eps; const plus = _ikFkPose(ap);
+    const am = angles.slice(); am[i]-=eps; const minus = _ikFkPose(am);
+    for(let r=0;r<6;r++){
+      let d = (plus[r]-minus[r])/(2*eps);
+      if (r>=3) d *= _IK_DEG;   // 向き行 deg→rad
+      J[r][i] = d;
+    }
+  }
+  return J;
+}
+
+// 6x6 線形ソルバ（部分ピボット付きガウス消去）。A x = b を解く。
+function _ikLinSolve(A, b){
+  const n=6;
+  const M = A.map((row,i)=> row.slice().concat([b[i]]));  // 拡大係数行列
+  for(let col=0; col<n; col++){
+    let piv=col, best=Math.abs(M[col][col]);
+    for(let r=col+1;r<n;r++){ const v=Math.abs(M[r][col]); if(v>best){best=v;piv=r;} }
+    if (best < 1e-12) return null;  // 特異
+    if (piv!==col){ const t=M[piv]; M[piv]=M[col]; M[col]=t; }
+    const d = M[col][col];
+    for(let r=0;r<n;r++){
+      if(r===col) continue;
+      const f = M[r][col]/d;
+      if(f===0) continue;
+      for(let c=col;c<=n;c++) M[r][c] -= f*M[col][c];
+    }
+  }
+  const x = new Array(n);
+  for(let i=0;i<n;i++) x[i] = M[i][n]/M[i][i];
+  return x;
+}
+
+// DLS IK 本体。ik_numeric.solve() 移植。target6=[x,y,z,rx,ry,rz]（向きは positionOnly 時無視）。
+// 戻り値: 関節角[6]（成功）or null。seed から warm start。
+function solveIKLocal(target6, seed, opts){
+  opts = opts || {};
+  const maxIter = opts.maxIter ?? 30;
+  const posTol  = opts.posTol  ?? 2.0;       // mm
+  const rotTolR = (opts.rotTolDeg ?? 5.0)*_IK_DEG;
+  const rotW    = opts.positionOnly ? 0.0 : (opts.rotWeight ?? 50.0);
+  const maxStep = opts.maxStepDeg ?? 5.0;    // deg / 反復
+  const q = seed.slice();
+  let damping = 1.0, lastTotal = Infinity, noImprove = 0;
+  let bestQ = null, bestPos = Infinity;
+  const Wd = [1,1,1,rotW,rotW,rotW];
+
+  for(let it=0; it<maxIter; it++){
+    const err = _ikPoseError(target6, q);
+    const posN = Math.hypot(err[0],err[1],err[2]);
+    const rotN = Math.hypot(err[3],err[4],err[5]);
+    if (posN < bestPos){ bestPos = posN; bestQ = q.slice(); }
+    if (posN < posTol && (opts.positionOnly || rotN < rotTolR)){
+      return _ikClamp(q);
+    }
+    const total = posN + rotW*rotN;
+    if (total < lastTotal){ damping = Math.max(0.1, damping*0.7); noImprove=0; }
+    else { damping = Math.min(500, damping*2.0); if(++noImprove > 20) break; }
+    lastTotal = Math.min(lastTotal, total);
+
+    const J = _ikJacobian(q);
+    // Werr = W·err, WJ = W·J（W は対角なので行スケール）
+    const Werr = [0,0,0,0,0,0];
+    const WJ = [[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0]];
+    for(let r=0;r<6;r++){ Werr[r]=Wd[r]*err[r]; for(let c=0;c<6;c++) WJ[r][c]=Wd[r]*J[r][c]; }
+    // A = WJ·WJᵀ + λ²I
+    const A = [[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0]];
+    for(let i=0;i<6;i++) for(let j=0;j<6;j++){
+      let s=0; for(let k=0;k<6;k++) s += WJ[i][k]*WJ[j][k];
+      A[i][j] = s + (i===j ? damping*damping : 0);
+    }
+    const y = _ikLinSolve(A, Werr);
+    if (!y) break;  // 特異 → 中断
+    // dq = WJᵀ·y（rad）→ deg
+    const dqDeg = [0,0,0,0,0,0];
+    for(let c=0;c<6;c++){ let s=0; for(let r=0;r<6;r++) s += WJ[r][c]*y[r]; dqDeg[c]=s/_IK_DEG; }
+    let nrm=0; for(let c=0;c<6;c++) nrm += dqDeg[c]*dqDeg[c]; nrm=Math.sqrt(nrm);
+    if (nrm > maxStep){ const f=maxStep/nrm; for(let c=0;c<6;c++) dqDeg[c]*=f; }
+    for(let c=0;c<6;c++){
+      q[c] += dqDeg[c];
+      const lo=LIMITS[c][0], hi=LIMITS[c][1];
+      if(q[c]<lo) q[c]=lo; else if(q[c]>hi) q[c]=hi;
+    }
+  }
+  // 位置だけ収束していれば best-effort 採用
+  if (bestQ && bestPos < posTol) return _ikClamp(bestQ);
+  return null;
+}
+function _ikClamp(q){
+  return q.map((a,i)=> Math.max(LIMITS[i][0], Math.min(LIMITS[i][1], a)));
+}
+
+// 向きを tool z 軸まわりに roll_off_deg 回す（roll 緩和用）。ik_numeric の移植。
+function _ikRotateAroundToolZ(rpy, rollOffDeg){
+  const R = _ikRpyToMat(rpy[0], rpy[1], rpy[2]);
+  const tz = [R[0][2], R[1][2], R[2][2]];  // tool z
+  const a = rollOffDeg*_IK_DEG, c=Math.cos(a), s=Math.sin(a);
+  const ux=tz[0], uy=tz[1], uz=tz[2];
+  const Rr = [
+    [c+ux*ux*(1-c),    ux*uy*(1-c)-uz*s, ux*uz*(1-c)+uy*s],
+    [uy*ux*(1-c)+uz*s, c+uy*uy*(1-c),    uy*uz*(1-c)-ux*s],
+    [uz*ux*(1-c)-uy*s, uz*uy*(1-c)+ux*s, c+uz*uz*(1-c)],
+  ];
+  const Rn = [[0,0,0],[0,0,0],[0,0,0]];
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++){ let sm=0; for(let k=0;k<3;k++) sm += Rr[i][k]*R[k][j]; Rn[i][j]=sm; }
+  return _ikMatToRpy(Rn);
+}
+
+// teleop 用 6DOF 解決（緩和フォールバック付き）。
+//   full → roll緩和(±20,±45) → position-only。戻り値 {angles, mode}。
+//   mode ∈ {'full','relaxed','position','failed'}。seed は前フレーム解。
+const _IK_ROLL_RELAX = [20, -20, 45, -45];
+// seed 摂動（teleop で前フレーム解が局所最小に嵌った時の脱出用）。最小限の3つ。
+function _ikSeedAlts(s){
+  return [
+    s,
+    [s[0], s[1], s[2], s[3], s[4]+90, s[5]],   // J5 +90
+    [s[0], s[1], s[2], s[3], s[4]-90, s[5]],   // J5 -90
+    [s[0], s[1], -s[2], s[3], s[4], s[5]],     // elbow flip
+  ].map(a => a.map((v,i)=> Math.max(LIMITS[i][0], Math.min(LIMITS[i][1], v))));
+}
+function solveIKTeleop(pos, rpy, seed){
+  // fast-fail: 明らかに到達外
+  const rxy = Math.hypot(pos[0], pos[1]);
+  if (rxy > 395 || pos[2] > 555 || pos[2] < 30) return {angles:null, mode:'failed'};
+  // full 6DOF: まず前フレーム解 seed、ダメなら摂動 seed
+  if (rpy){
+    const t6 = [pos[0],pos[1],pos[2],rpy[0],rpy[1],rpy[2]];
+    let sol = solveIKLocal(t6, seed, {maxIter:40});
+    if (sol) return {angles:sol, mode:'full'};
+    for (const alt of _ikSeedAlts(seed)){
+      sol = solveIKLocal(t6, alt, {maxIter:40});
+      if (sol) return {angles:sol, mode:'full'};
+    }
+    // roll 緩和（向きを tool z 周りに回して妥協）
+    for (const off of _IK_ROLL_RELAX){
+      const rr = _ikRotateAroundToolZ(rpy, off);
+      sol = solveIKLocal([pos[0],pos[1],pos[2],rr[0],rr[1],rr[2]], seed, {maxIter:40});
+      if (sol) return {angles:sol, mode:'relaxed'};
+    }
+  }
+  // position-only（向き諦め。位置は死守）。摂動 seed も試す。
+  const pt = [pos[0],pos[1],pos[2],0,0,0];
+  let sol = solveIKLocal(pt, seed, {positionOnly:true, maxIter:50});
+  if (sol) return {angles:sol, mode:'position'};
+  for (const alt of _ikSeedAlts(seed)){
+    sol = solveIKLocal(pt, alt, {positionOnly:true, maxIter:50});
+    if (sol) return {angles:sol, mode:'position'};
+  }
+  return {angles:null, mode:'failed'};
 }
 
 // --- scene ---
@@ -1006,6 +1414,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // info while the arm is in an unsafe pose.)
   let _safetyConnLost = false;
   setInterval(async () => {
+    if (xr.session) return;  // VR 中は /safety_status ポーリング停止（io_lock 競合回避）
     const banner = document.getElementById('safetyAlert');
     const msgEl = document.getElementById('safetyAlertMsg');
     if (!banner) return;
@@ -1478,6 +1887,7 @@ function setConnState(ok){
   }
 }
 async function pollCurrent(){
+  if(xr.session) return;  // VR 中は /angles ポーリング停止（io_lock 競合でワーカーが詰まる）。current は open-loop 維持
   try{
     const j = await fetch('/angles').then(r=>r.json());
     setConnState(true);
@@ -1521,6 +1931,7 @@ async function pollCurrent(){
   }catch(e){ setConnState(false); setStatusOnce('接続切', 'err'); }
 }
 async function pollPower(){
+  if(xr.session) return;  // VR 中は /power ポーリング停止（is_power_on の io_lock 競合回避）
   try{
     const j = await fetch('/power').then(r=>r.json());
     setConnState(true);
@@ -1591,7 +2002,17 @@ document.getElementById('btnHome').onclick = async ()=>{
   try{
     const r = await fetch('/home',{method:'POST'}).then(r=>r.json());
     if(r.error) setStatus('HOME NG: '+r.error,'err');
-    else setStatus(`HOME 到着 / ${r.elapsed}s`, 'ok');
+    else {
+      setStatus(`HOME 到着 / ${r.elapsed}s`, 'ok');
+      // 到着姿勢でモデル両方（不透明=実機, 半透明=ゴースト）を同期。さもないとゴーストが旧目標のまま残る。
+      if(Array.isArray(r.angles) && r.angles.length === 6){
+        state.current = r.angles.slice();
+        state.target  = r.angles.slice();
+        updateArm(armCurrent, state.current);
+        updateArm(armTarget, state.target);
+        setSlidersFrom(state.target);
+      }
+    }
   }catch(e){ setStatus('HOME 失敗: '+e,'err'); }
   finally { setBusy(false); }
 };
@@ -2069,6 +2490,7 @@ async function refreshSlowDiag(){
 }
 
 async function pollCurrents(){
+  if(xr.session) return;  // VR 中は不可視の診断ポーリングを停止（jank 低減）
   try{
     const j = await fetch('/servo_diagnostics').then(r=>r.json());
     // merge slow cache for display
@@ -2184,10 +2606,10 @@ window.addEventListener('keydown', e => {
 }, true);  // CAPTURE
 window.addEventListener('keyup', e => {
   if(_jogKeys.has(e.key)) _heldJogKeys.delete(e.key);
-  if(_heldJogKeys.size === 0) _jogLastSentAngles = null;  // reset dedup so re-press always re-sends
+  if(_heldJogKeys.size === 0) { _cmdAngles = null; _jogFreePos = null; }  // reset stream baseline + accumulator on full release
   if(e.key === 'Shift') _jogShiftHeld = false;
 }, true);
-window.addEventListener('blur', () => { _heldJogKeys.clear(); _jogShiftHeld = false; _jogLastSentAngles = null; });
+window.addEventListener('blur', () => { _heldJogKeys.clear(); _jogShiftHeld = false; _cmdAngles = null; _jogFreePos = null; });
 
 // === Realtime jog: TPS-style teleop (camera-relative arrow keys) ===
 // Design:
@@ -2205,7 +2627,11 @@ let _jogLastSent = 0;
 let _jogSeq = 0;                         // monotonic request id
 let _jogAckSeq = -1;                     // highest ack seq received
 let _jogLastValid = null;
-let _jogLastSentAngles = null;            // last baked angles sent — dedupe
+let _jogFreePos = null;                   // unsnapped accumulator (THREE.Vector3) — advances continuously while held
+let _cmdAngles = null;                    // open-loop streamed command pose (deg) — eased toward goal, velocity-bounded
+const JOG_MAX_STEP_DEG = 1.8;             // max per-send joint move → bounds velocity (≈54°/s @30Hz)
+const JOG_MAX_STEP_SHIFT = 3.5;           // looser bound with Shift held
+const JOG_STREAM_SPEED = 30;              // firmware speed per small step (server clamps to MAX_SPEED_RUNTIME)
 
 // Local fast-fail: cylindrical bounds match ik_numeric._MAX_REACH_*.
 // Rejecting here avoids a round-trip + visual flicker for most out-of-envelope moves.
@@ -2257,7 +2683,11 @@ function _jogTick() {
     }
   }
   const speed = _jogShiftHeld ? JOG_SPEED_SHIFT : JOG_SPEED_MM_S;
-  const p = goalSphere.position;
+  // Advance the UNsnapped accumulator, not the (snapped) sphere position.
+  // Otherwise snapping resets us to the grid point each tick and a ~2mm/tick
+  // step never crosses to the next grid cell — motion stalls after one jump.
+  if (!_jogFreePos) _jogFreePos = goalSphere.position.clone();
+  const p = _jogFreePos;
   const newX = p.x + dx * speed * dt;
   const newY = p.y + dy * speed * dt;
   const newZ = p.z + dz * speed * dt;
@@ -2266,6 +2696,7 @@ function _jogTick() {
     setStatusOnce('範囲外で停止', 'warn');
     return;
   }
+  _jogFreePos.set(newX, newY, newZ);
 
   // 1. Snap to nearest baked reach point (eliminates runtime IK entirely).
   //    Falls back to raw x/y/z if grid not loaded or no baked angles available.
@@ -2304,40 +2735,58 @@ function _jogTick() {
     return;
   }
 
-  // ── realtime mode: drive the real arm via /jog ──
-  // Throttle to ~30Hz. If snapped to the same grid point as last sent, skip.
+  // ── realtime mode: drive the real arm via /jog ── (~30Hz cadence)
   if (now - _jogLastSent < 33) return;
-  if (snapPt && _jogLastSentAngles
-      && snapPt.angles[0] === _jogLastSentAngles[0]
-      && snapPt.angles[1] === _jogLastSentAngles[1]
-      && snapPt.angles[2] === _jogLastSentAngles[2]
-      && snapPt.angles[3] === _jogLastSentAngles[3]) {
-    return;  // same grid point, nothing to do
+
+  // No baked grid (rare): legacy per-point IK send, no velocity bound.
+  if (!snapPt || !Array.isArray(snapPt.angles)) {
+    _jogLastSent = now;
+    const seq = ++_jogSeq;
+    fetch('/jog', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({x: newX, y: newY, z: newZ}),
+    }).then(r => r.json()).then(j => {
+      if (seq <= _jogAckSeq) return;
+      _jogAckSeq = seq;
+      if (j.ok) { _jogLastValid = {x:newX, y:newY, z:newZ}; setGoalColor('ok'); }
+      else if (j.code === 'THROTTLED' || j.code === 'MOVING') { /* ignore */ }
+      else {
+        if (_jogLastValid) goalSphere.position.set(_jogLastValid.x, _jogLastValid.y, _jogLastValid.z);
+        setStatusOnce(j.code === 'SAFETY' ? '自己干渉で停止' : 'IK 不可で停止', 'warn');
+      }
+    }).catch(_ => {});
+    return;
   }
+
+  // Velocity-bounded streaming: advance an open-loop command pose toward the
+  // goal grid point by at most maxStep° per send. The arm chases a steady,
+  // small-step stream instead of sprinting to each coarse (~50mm) grid point —
+  // constant joint velocity, smooth follow, lagging the ghost slightly.
+  const goalAngles = snapPt.angles;
+  if (!_cmdAngles) _cmdAngles = state.current.slice();   // baseline = real arm pose
+  const maxStep = _jogShiftHeld ? JOG_MAX_STEP_SHIFT : JOG_MAX_STEP_DEG;
+  let maxRemain = 0;
+  const next = _cmdAngles.slice();
+  for (let i = 0; i < 6; i++) {
+    const d = goalAngles[i] - _cmdAngles[i];
+    if (Math.abs(d) > maxRemain) maxRemain = Math.abs(d);
+    next[i] = _cmdAngles[i] + Math.max(-maxStep, Math.min(maxStep, d));
+  }
+  if (maxRemain < 0.05) return;            // command pose reached goal → stop spamming
+  _cmdAngles = next;
   _jogLastSent = now;
   const seq = ++_jogSeq;
-  const body = snapPt
-    ? {angles: snapPt.angles}                          // zero-IK path
-    : {x: newX, y: newY, z: newZ};                     // legacy IK path (no grid)
-  if (snapPt) _jogLastSentAngles = snapPt.angles;
   fetch('/jog', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(body),
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({angles: _cmdAngles, speed: JOG_STREAM_SPEED}),
   }).then(r => r.json()).then(j => {
     if (seq <= _jogAckSeq) return;  // stale response, ignore
     _jogAckSeq = seq;
-    if (j.ok) {
-      if (j.angles) { state.target = j.angles; updateArm(armTarget, j.angles); setSlidersFrom(j.angles); }
-      _jogLastValid = {x:newX, y:newY, z:newZ};
-      setGoalColor('ok');
-    } else if (j.code === 'THROTTLED' || j.code === 'MOVING') {
-      // ignore
-    } else {
-      // SAFETY or IK_FAIL — snap back
-      if (_jogLastValid) {
-        goalSphere.position.set(_jogLastValid.x, _jogLastValid.y, _jogLastValid.z);
-      }
+    if (j.ok) { _jogLastValid = {x:newX, y:newY, z:newZ}; setGoalColor('ok'); }
+    else if (j.code === 'THROTTLED' || j.code === 'MOVING') { /* ignore */ }
+    else {
+      // SAFETY/IK fail on this step — halt the stream, snap ghost back
+      if (_jogLastValid) goalSphere.position.set(_jogLastValid.x, _jogLastValid.y, _jogLastValid.z);
       setStatusOnce(j.code === 'SAFETY' ? '自己干渉で停止' : 'IK 不可で停止', 'warn');
     }
   }).catch(_ => {});
@@ -2367,9 +2816,7 @@ function _applyOpMode(m) {
                           : '関節モード（リアルタイム反映なし）';
   }
   // Mode-specific behavior
-  const wasFollowing = _camFollowTip;
   _camFollowTip = (m === 'tps');
-  if (_camFollowTip && !wasFollowing) _tipPrevValid = false;  // re-baseline so re-enable doesn't snap
   if (m !== 'joint') focusJoint = -1;  // exit joint focus when leaving joint mode
   // World モード時のみ、goalSphere に position 矢印 gizmo を attach（最寄り reach 点へスナップ）
   if (m === 'world') {
@@ -2385,25 +2832,26 @@ document.addEventListener('DOMContentLoaded', () => {
   _applyOpMode('tps');
 });
 
-// === TPS camera: rigid follow (camera + target move together by same delta) ===
-// Preserves the user's chosen view angle/distance while the tip moves.
-// No lerp — when the arm moves, the camera shifts the same amount instantly.
-const _tipPrev = new THREE.Vector3();
-let _tipPrevValid = false;
+// === TPS camera: smooth centering follow ===
+// Each frame the orbit target eases toward the goal point, carrying the camera
+// by the same delta so the view angle/distance is preserved. The goal point
+// thus glides to screen center; any pan/orbit offset the user introduces decays
+// smoothly rather than being hard-locked. Frame-rate independent (exp easing).
+const CAM_FOLLOW_K = 8.0;   // higher = snappier centering
+let _camLastT = performance.now();
 function _updateCamTracking() {
+  const now = performance.now();
+  const dt = Math.min((now - _camLastT) / 1000, 0.05);
+  _camLastT = now;
   if (!_camFollowTip || !DH) return;
-  const tip = endEffector(state.current);
-  if (!_tipPrevValid) { _tipPrev.copy(tip); _tipPrevValid = true; return; }
-  const dx = tip.x - _tipPrev.x;
-  const dy = tip.y - _tipPrev.y;
-  const dz = tip.z - _tipPrev.z;
-  if (dx*dx + dy*dy + dz*dz < 1e-6) return;  // idle → don't touch orbit (lets right-drag pan / left-drag orbit work freely)
-  // Translate BOTH camera and target by the tip's motion. The tip stays
-  // centered as it moves, but the user's own pan/orbit offset is preserved
-  // (we add a delta rather than hard-locking target onto the tip).
+  const goal = goalSphere.position;
+  const a = 1 - Math.exp(-CAM_FOLLOW_K * dt);
+  const dx = (goal.x - orbit.target.x) * a;
+  const dy = (goal.y - orbit.target.y) * a;
+  const dz = (goal.z - orbit.target.z) * a;
+  if (dx*dx + dy*dy + dz*dz < 1e-8) return;  // already centered → leave orbit alone
   orbit.target.x += dx;  orbit.target.y += dy;  orbit.target.z += dz;
   camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
-  _tipPrev.copy(tip);
 }
 
 // 'C' = recenter camera to a comfortable TPS angle behind the arm; 'V' = toggle tip-tracking
@@ -2412,7 +2860,6 @@ function _recenterCamera() {
   const tip = endEffector(state.current);
   camera.position.set(tip.x + 0, tip.y - 500, tip.z + 350);
   orbit.target.copy(tip);
-  _tipPrev.copy(tip); _tipPrevValid = true;
   orbit.update();
   setStatus('カメラ recenter');
 }
@@ -2421,7 +2868,6 @@ document.addEventListener('keydown', e => {
   if (e.key === 'c' || e.key === 'C') { _recenterCamera(); e.preventDefault(); }
   else if (e.key === 'v' || e.key === 'V') {
     _camFollowTip = !_camFollowTip;
-    if (_camFollowTip) _tipPrevValid = false;  // re-baseline next frame
     setStatus(`カメラ追従 ${_camFollowTip ? 'ON' : 'OFF'}`);
     e.preventDefault();
   }
@@ -2486,6 +2932,7 @@ let currentsTimer;
 function startTimers(){
   // Camera: skip refresh when errors are sustained (backoff to avoid network spam)
   camTimer = setInterval(()=>{
+    if(xr.session) return;  // VR 中はカメラ不可視 + adb 越しの JPEG 取得が jank 源 → 停止
     if(camErrCount > 5 && camErrCount % 20 !== 0) return;  // retry every 20th tick after backoff
     camImg.src = '/frame.jpg?t='+Date.now();
   }, state.busy ? 150 : 250);
@@ -2532,6 +2979,11 @@ function savePrefs(){
       posingMode: posingMode,
       vrGain: xr.gain,
       vrCalibYaw: xr.calibYaw,
+      vrCtrlMode: xr.ctrlMode,
+      vrHeightScale: xr.heightScale,
+      vrSigns: xr.signs.slice(),
+      vrSignsVer: VR_SIGNS_VER,
+      vrSpeed: xr.sendSpeed,
     }));
   } catch {}
 }
@@ -2575,22 +3027,84 @@ window.addEventListener('pointercancel', ()=>{
 
 const PINCH_ENTER_M = 0.025;  // 25mm
 const PINCH_EXIT_M  = 0.035;  // 35mm hysteresis
+// VR 表示: scene は Z-up（アーム base 座標）。WebXR world は Y-up なので、VR 中だけ
+// scene を -90°(X) 回して上向きを合わせ、前方・適切な高さに置く。制御は wrist の
+// refSpace 姿勢を直接使うため、この scene 変換の影響を受けない（見た目専用）。
+const XR_VIEW_HEIGHT_M = 1.1;   // 仮置き高さ（初フレームで HMD 基準に上書き）
+const XR_VIEW_FWD_M    = 0.6;   // HMD から前方へ置く距離
+const XR_VIEW_DROP_M   = 0.45;  // 目線からの下げ量（小=目線高い位置, 大=見下ろす）
+const XR_VIEW_YAW_RAD  = Math.PI / 2;  // アーム模型の垂直軸まわり回転（+ = 左90°）。現実と見え方を合わせる
+// VR 開始姿勢。旧 [90,0,-90,0,0,0] は「手首特異点(J5≈0)＋水平到達限界(r_xy=380/max400)」で、
+//   engage 直後に +x へ動かすと ~13mm で IK 破綻し赤固まり（ログ trial1 で実証）。
+//   新姿勢は J5=-50 で非特異・先端 r_xy=313/z=468 と中央寄り、±60mm 全方向 IK 到達可（/solve_ik 実測）。
+const XR_START_POSE = [90, 15, -100, -15, -50, 0];
+const XR_START_SPEED = 30;             // 開始姿勢への移動速度（中速）
+const _xrTmpVec = new THREE.Vector3();  // 手位置の world→scene-local 変換用バッファ
 const XR_IK_INTERVAL_MS = 50;  // 20Hz
 const XR_SMOOTH_ALPHA = 0.3;
 const XR_REACH_CLAMP_THRESHOLD_MM = 25;  // 最寄り点までこれ以上ならクランプ判定
+// ⚠ baked 到達グリッドへのスナップクランプ。疎なグリッド点間で目標がノコギリ波に跳ね回り、
+//   手を動かしても先端が進まない原因だった（trial1: 手220mm移動→先端57mmのみ）。
+//   床/limit 安全は /jog 側で担保（到達外は IK 失敗で自然停止）するので、既定 OFF にして
+//   目標を素直に積分させる。再び有効化したい時だけ true に。
+const XR_REACH_CLAMP_ENABLED = false;
+
+// ─────────────────────────────────────────────────────────────────────────
+// レート制御（スペースマウス型）の定数。IK追従モードの新思想。
+//   手をクラッチ中立点からズラした量を「先端の移動/回転"速度"」にする。
+//   中立に戻せば停止。デッドゾーンで手ブレ死滅、狭い手の動きで広範囲カバー。
+//   目標 pose を連続積分するので IK の枝飛びが起きない。
+// ─────────────────────────────────────────────────────────────────────────
+const XR_RATE_DEADZONE_M   = 0.05;   // 中立から 5cm 以内は無視（手の無意識ブレを完全に殺す）
+const XR_RATE_DEADZONE_RAD = 0.35;   // 中立から ~20° 以内の手首回転は無視（平行移動の巻き込み回転を無視）
+const XR_RATE_MAX_POS_MMS  = 140;    // フルにズラした時の最大速度 mm/s
+const XR_RATE_FULL_POS_M   = 0.20;   // この変位で最大速度（20cm。常時フル張り付きを防ぐ）
+const XR_RATE_MAX_ROT_DPS  = 70;     // 最大角速度 deg/s
+const XR_RATE_FULL_ROT_RAD = 1.0;    // この手首回転で最大角速度（~57°）
+const XR_RATE_EXPO         = 2.5;    // 入力カーブ指数（>1 で中央が緩く端が速い→精密＋速い両立）
+// 位置/向きの排他: あるフレームで位置レートが大きい時は向きを止める（逆も）。
+//   人間の手は平行移動と回転が分離できないので、片方を動かしてる時もう片方を凍結する。
+const XR_RATE_LOCK_POS_THRESH = 0.30;  // 位置 speedCoef がこれ未満なら向きレート許可
+const XR_RATE_LOCK_ROT_THRESH = 0.30;  // 向き rotCoef がこれ未満なら位置レート許可
+const XR_RATE_ORIENT_ENABLED  = false; // 向きレートはデフォルトOFF（まず位置を完璧に）
+// 速度倍率は既存 xr.gain（UI スライダ 0.3〜2.0）を流用
 
 const xr = {
   session: null,
   // hand viz: 25 joints × 2 hands as small spheres
   handViz: { left: [], right: [] },
   pinching: { left: false, right: false },
-  // Phase 2: clutch anchor
+  // control scheme: 'joint' = 手の姿勢を J1/J2/J5/J6 に直接マップ, 'follow' = レート制御IK
+  ctrlMode: 'follow',   // デフォルト = レート制御（デバッグ対象）
+  engaged: false,  // joint トグル式追従の ON/OFF
+  _lastToggle: 0,
+  sendSpeed: 60,   // VR 送信時の firmware speed（サーバ --max-speed でクランプ）。UI スライダ可変
+  smoothQuat: new THREE.Quaternion(),  // follow: 目標先端の向き（積分される）
+  _ikSeed: null,   // follow: ローカル IK の warm-start seed（前フレーム解）
+  ikMode: 'full',  // follow: 直近の IK モード（full/relaxed/position/failed）
+  // ── テレメトリ（trial 単位の診断記録）──
+  //   1 engage = 1 trial。入力(手)→中間(マップ)→指令(目標)→出力(実機) の全鎖を ~15Hz で記録し
+  //   サーバへ送る。事後に方向正誤・実効ゲイン・遅延・デッドゾーン滞留・IK失敗率を算出する。
+  tele: { trial: 0, n: 0, lastT: 0, sumDisp: 0, dwell: 0, ikFail: 0, oor: 0,
+          handMin: null, handMax: null, tipStart: null, tipLast: null, tipPath: 0 },
+  // レート制御（follow モード）の状態
+  rateCenterPos: null,   // クラッチ中立点（手の位置, refSpace m）{x,y,z}
+  rateCenterQuat: null,  // クラッチ中立点（手の向き, refSpace quat）
+  rateTargetPos: new THREE.Vector3(),  // 積分される目標先端位置（arm base mm）
+  _rateLastT: 0,         // 前回積分時刻
+  // Phase 2 (follow): clutch anchor
   anchor: null,    // { handPos:{x,y,z}, anchorTargetPos: THREE.Vector3, anchorTargetQuat: THREE.Quaternion }
   smoothTarget: new THREE.Vector3(),
   lastIKAt: 0,
+  // direct-joint clutch
+  jointAnchor: null,   // { quat: THREE.Quaternion (wrist, refSpace), y: number (wrist height m), base: number[6] }
+  cmdAngles: null,     // open-loop streamed command pose (deg), velocity-bounded toward target
+  lastJogAt: 0,
+  signs: [-1, 1, 1, 1, -1, -1],   // per-joint mapping sign (J1/J2/J5/J6 使用; 実機で確定した向き)
+  heightScale: 150,            // ΔJ2 deg per meter of hand vertical travel
   // calibration
   calibYaw: 0,     // radians; rotate hand delta around viewer +Y by this before mapping to arm base
-  gain: 1.0,
+  gain: 1.0,       // rotation gain (arm-deg per hand-deg) for direct-joint; position gain for follow
   // viewer ref space for hand pose lookup (set on session start)
   refSpace: null,
   // diagnostic
@@ -2616,6 +3130,7 @@ function _xrBuildHandViz() {
 function _xrSetStatus(msg) {
   const el = document.getElementById('vrStatus');
   if (el) el.textContent = msg;
+  if (window.xrLog) xrLog('status', msg);
 }
 function _xrBadge(text, cls = 'gray') {
   const b = document.getElementById('vrBadge');
@@ -2639,16 +3154,75 @@ async function _xrStart() {
       requiredFeatures: ['hand-tracking', 'local-floor'],
     });
     xr.session = session;
+    if (window.xrLog) xrLog('session', { event: 'start', ua: navigator.userAgent });
     await renderer.xr.setSession(session);
     xr.refSpace = renderer.xr.getReferenceSpace();
     session.addEventListener('end', _xrOnEnd);
     _xrBuildHandViz();
     // scene scale: mm → m (so 1 scene unit = 1mm and physical-meter aligns at scale 0.001)
+    // + Z-up(scene) → Y-up(world) 回転、前方・高さオフセットで見やすい位置へ。
     scene.scale.setScalar(0.001);
+    // アーム自身の Z軸（垂直）周りに回してから Y-up へチルト → 現実と見え方を一致。
+    //   q = q_x(-90°) * q_z(yaw): 局所点に対し先に Z 回転、その後 X チルト。
+    {
+      const qx = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+      const qz = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), XR_VIEW_YAW_RAD);
+      scene.quaternion.copy(qx.multiply(qz));
+    }
+    scene.position.set(0, XR_VIEW_HEIGHT_M, -XR_VIEW_FWD_M);  // 仮置き。初フレームで HMD 基準に再配置
+    // ①近距離の物がクリップされないよう near plane を下げる（デフォルト 1mm? → ここでは 1cm）
+    xr._prevCamNear = camera.near;
+    camera.near = 0.01;
+    camera.updateProjectionMatrix();
+    // ② 重い緑可視化（reach 点群・ドーム・グリッド・ラベル）を「await の前に」即・非表示。
+    //   そうしないと下の fetch を待つ数十ms の間に緑が描画されて起動時にチラつく。
+    xr._heavyList = [reachSphere, reachShellGroup, reachSelectGroup, reachPointsGroup, memoryGroup, grid, hoverPoint].filter(Boolean);
+    xr._heavyPrevVis = xr._heavyList.map(o => o.visible);
+    for (const o of xr._heavyList) o.visible = false;  // 即時 hide（フレーム待ちにしない）
+    // ✋ ハンドモード = アーム完全非関与。アームの移動も表示も実機ポーリングもしない。
+    //   手の骨スフィアだけ表示し、右手の指で実ハンドを常時追従する（クラッチ無し）。
+    const _handOnly = (xr.ctrlMode === 'hand');
+    if (_handOnly) {
+      // armCurrent/armTarget は {group,...} ラッパ。実体の group を隠す。
+      armCurrent.group.visible = false;
+      armTarget.group.visible  = false;
+      xr._needPlace = false;       // アーム配置は不要（手 viz は scene 変換に非依存）
+      if (xr._realTimer) { clearInterval(xr._realTimer); xr._realTimer = null; }
+      hand.engaged = false;
+    } else {
+      // VR 開始姿勢 = HOME を J1 左90°回転。モデルをこの姿勢にし、実機を物理的にここへ動かして一致させる。
+      //   配置 yaw も開始姿勢の FK から計算するので、最初からモデル＝実機＝HMD前方が揃う。
+      const startPose = XR_START_POSE.slice();
+      state.current = startPose.slice();
+      state.target  = startPose.slice();
+      armCurrent.group.visible = true; armTarget.group.visible = true;
+      updateArm(armCurrent, state.current);
+      updateArm(armTarget, state.target);
+      // 実機を開始姿勢へ（検証付き /move, 中速）。完了は待たない（数秒, opaque cyan が追従表示）。
+      fetch('/move', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({angles: startPose, speed: XR_START_SPEED}),
+      }).then(r => r.json()).then(j => {
+        if (j.error) _xrSetStatus('開始姿勢へ移動できず: ' + j.error);
+      }).catch(() => {});
+      xr._needPlace = true;  // 開始姿勢を確定させた後に配置をトリガ
+      // 実機現在位置（不透明シアン）を /real_angles から 10Hz で描画継続
+      if (xr._realTimer) clearInterval(xr._realTimer);
+      xr._realTimer = setInterval(_xrRealArmPoll, 100);
+    }
+    xr.engaged = false; xr._pinchArmed = false;  // 開始時のピンチ／押しっぱなしで即追従しないようアーミング解除
+    // cue ステップ protocol は既定 OFF（ピンチ＝素直な追従 ON/OFF トグルに戻す）。
+    //   診断は engage 毎の自動テレメトリ(_teleStartTrial)が担う。方向別の誘導が要る時だけ手動で再有効化。
+    xr._dbgOn = false;
+    _xrHudShow();   // 進行状況 HUD を表示（trial 番号・engage・ライブ入出力）
     setStatus('VR session 開始', 'ok');
     _xrBadge('on', 'ok');
-    _xrSetStatus('hand-tracking 有効。右手 pinch で goalSphere 駆動（手首追従モード必須）');
+    _xrSetStatus(_handOnly
+      ? '✋ ハンドモード: 右手の指を曲げると実ハンドが追従（キャリブ不要・常時）'
+      : 'hand-tracking 有効。右手ピンチで 追従ON/OFF をトグル');
     document.getElementById('btnVR').textContent = 'VR 終了';
+    const _bf1 = document.getElementById('btnVRFloat');
+    if (_bf1) { _bf1.textContent = 'VR 終了'; _bf1.classList.add('active'); }
     document.getElementById('btnVRCalib').disabled = false;
   } catch (e) {
     setStatus('VR 開始失敗: ' + e.message, 'err');
@@ -2657,13 +3231,28 @@ async function _xrStart() {
 }
 
 function _xrOnEnd() {
+  if (window.xrLog) { xrLog('session', { event: 'end' }); _clog.flush(true); }
+  _xrHudHide();
   xr.session = null;
   xr.refSpace = null;
   xr.anchor = null;
+  xr.rateCenterPos = null;
+  _xrDebugStop();
+  xr.engaged = false;
+  xr.jointAnchor = null;
+  if (typeof tintArm === 'function') tintArm(armTarget, 0xff00ff);
   ['left', 'right'].forEach(s => xr.handViz[s].forEach(m => m.visible = false));
   xr.pinching = { left: false, right: false };
+  if (xr._heavyList) { xr._heavyList.forEach((o, i) => { o.visible = xr._heavyPrevVis[i]; }); xr._heavyList = null; }
+  armCurrent.group.visible = true; armTarget.group.visible = true;  // ハンドモードで隠した分を戻す
+  if (xr._realTimer) { clearInterval(xr._realTimer); xr._realTimer = null; }
   scene.scale.setScalar(1);  // restore non-VR rendering scale
+  scene.rotation.set(0, 0, 0);
+  scene.position.set(0, 0, 0);
+  if (xr._prevCamNear != null) { camera.near = xr._prevCamNear; camera.updateProjectionMatrix(); xr._prevCamNear = null; }
   document.getElementById('btnVR').textContent = 'VR 開始';
+  const _bf2 = document.getElementById('btnVRFloat');
+  if (_bf2) { _bf2.textContent = 'VR 開始'; _bf2.classList.remove('active'); }
   document.getElementById('btnVRCalib').disabled = true;
   _xrBadge('off');
   _xrSetStatus('—');
@@ -2675,6 +3264,33 @@ function _updateXR(frame) {
   if (!frame || !xr.session) return;
   const refSpace = renderer.xr.getReferenceSpace();
   if (!refSpace) return;
+
+  // 毎フレーム重い可視化を強制非表示（非同期ロード/復帰タイミングに依存せず確実に jank を抑える）
+  if (xr._heavyList) { for (const o of xr._heavyList) o.visible = false; }
+  _xrCuePlace();   // 動作 cue テキストを視界前方に固定
+  _xrHudPlace();   // 進行状況 HUD を視界下に固定
+  _xrHudUpdate();  // HUD のライブ値を更新（内部でスロットル）
+
+  // 初フレームで HMD 基準にアーム基部を再配置 + 向きを HMD 前方＝アーム先端方向に合わせる
+  if (xr._needPlace) {
+    const vp = frame.getViewerPose(refSpace);
+    if (vp) {
+      const m = vp.transform.matrix;            // 4x4 column-major
+      const p = vp.transform.position;
+      let fx = -m[8], fz = -m[10];              // HMD 水平前方
+      const fl = Math.hypot(fx, fz) || 1; fx /= fl; fz /= fl;
+      // ③ 床の基準方向 = VR開始時の HMD の向き。アーム base +Y(奥) を HMD 前方(fx,fz) に合わせ、
+      //    さらに固定オフセット XR_VIEW_YAW_RAD を足す（先端の向き微調整用）。FK には依存しない＝安定。
+      //    q=q_x(-90)*q_z(yaw) で (0,1,0)→world(fx,_,fz) を満たすのは yaw=atan2(-fx,-fz)。
+      const yaw = Math.atan2(-fx, -fz) + XR_VIEW_YAW_RAD;
+      const qx = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+      const qz = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), yaw);
+      scene.quaternion.copy(qx.multiply(qz));
+      // 基部 = 目線の 0.45m 下・0.6m 前方（見下ろし軽め、腕は上に伸びて目線付近に来る）
+      scene.position.set(p.x + fx * XR_VIEW_FWD_M, p.y - XR_VIEW_DROP_M, p.z + fz * XR_VIEW_FWD_M);
+      xr._needPlace = false;
+    }
+  }
 
   let rightHand = null;
   for (const source of frame.session.inputSources) {
@@ -2689,10 +3305,11 @@ function _updateXR(frame) {
       const pose = frame.getJointPose(joint, refSpace);
       if (pose && i < viz.length) {
         const p = pose.transform.position;
-        // refSpace は meters。scene 単位は mm (scene.scale=0.001 でVR rendering)
-        // hand viz は scene 内オブジェクト、scene.scale=0.001 で 1 scene unit = 1mm = 0.001m なので
-        // m → scene unit は ×1000
-        viz[i].position.set(p.x * 1000, p.y * 1000, p.z * 1000);
+        // refSpace は meters の世界座標。scene は VR 中 rot+trans+scale されてるので、
+        // scene.worldToLocal で「世界座標 → scene-local」に変換。これで viz は実世界の手と同じ位置に描かれる。
+        _xrTmpVec.set(p.x, p.y, p.z);
+        scene.worldToLocal(_xrTmpVec);
+        viz[i].position.copy(_xrTmpVec);
         viz[i].visible = true;
       }
       i++;
@@ -2713,48 +3330,157 @@ function _updateXR(frame) {
         const was = xr.pinching[side];
         if (!was && dist < PINCH_ENTER_M) {
           xr.pinching[side] = true;
-          if (side === 'right') _xrOnPinchStart(rightHand, frame, refSpace);
-          console.log(`[XR] pinch START ${side} dist=${(dist*1000).toFixed(1)}mm`);
+          if (side === 'right') _xrOnRightPinchRise(rightHand, frame, refSpace);
         } else if (was && dist > PINCH_EXIT_M) {
           xr.pinching[side] = false;
-          if (side === 'right') _xrOnPinchEnd();
-          console.log(`[XR] pinch END ${side} dist=${(dist*1000).toFixed(1)}mm`);
+          if (side === 'right') { _xrOnRightPinchFall(); xr._pinchArmed = true; }  // 離した → 次のピンチからトグル有効
         }
       }
     }
   }
 
-  // Phase 2: 右手 pinch 中の goalSphere 駆動 (follow モード時のみ)
-  if (xr.pinching.right && xr.anchor && rightHand && posingMode === 'follow') {
-    _xrUpdateGoalFromHand(rightHand, frame, refSpace);
+  // 両モードともトグル式追従（engaged 中は手に追従、ピンチ保持不要）
+  //   joint  = 手の姿勢 → J1/J2/J5/J6
+  //   follow = 手の移動 → goalSphere → IK（worker thread 経由で送信）
+  if (rightHand) xr._rightSeenAt = performance.now();
+  if (rightHand && xr.engaged) {
+    if (xr.ctrlMode === 'joint' && xr.jointAnchor) {
+      _xrUpdateJointsFromHand(rightHand, frame, refSpace);
+    } else if (xr.ctrlMode === 'follow' && xr.rateCenterPos) {
+      _xrUpdateGoalFromHand(rightHand, frame, refSpace);
+    }
+  }
+
+  // 安全: engaged 中に右手トラッキングが「一定時間」消えたら自動フリーズ（両モード）。
+  //   1フレームの瞬断では切らない（hand-tracking は頻繁にちらつくため）。
+  if (xr.engaged &&
+      performance.now() - (xr._rightSeenAt || 0) > XR_TRACK_LOST_MS) {
+    _xrSetEngaged(false, 'トラッキング消失 → 自動フリーズ');
   }
 }
 
-function _xrOnPinchStart(hand, frame, refSpace) {
-  if (posingMode !== 'follow') {
-    _xrSetStatus('pinch 検出したが手首追従モードでないので無視');
+// VR 中の実機現在位置（不透明シアン armCurrent）を /real_angles（ワーカーキャッシュ）から描画。
+//   io_lock を叩かないので追従ワーカーと競合しない。state.current も更新 → 次クラッチの base に使う。
+async function _xrRealArmPoll() {
+  if (!xr.session) return;
+  try {
+    const j = await fetch('/real_angles').then(r => r.json());
+    if (j.angles && Array.isArray(j.angles) && j.angles.length === 6) {
+      state.current = j.angles.slice();
+      updateArm(armCurrent, state.current);
+    }
+  } catch (_) {}
+}
+
+// HMD → 手 のベクトルから「肩関節」相当の水平方位角・垂直角を計算。
+// WebXR Y-up world: +Y=上, -Z=前。yaw=0 は -Z(前)、+ は右回り。pitch=0 は水平、+ は上。
+function _xrShoulderAngles(hp, vp) {
+  const dx = hp.x - vp.x, dy = hp.y - vp.y, dz = hp.z - vp.z;
+  const yaw = Math.atan2(dx, -dz);            // 水平方位
+  const horiz = Math.hypot(dx, dz);
+  const pitch = Math.atan2(dy, horiz);        // 垂直角
+  return { yaw, pitch };
+}
+
+// 右手ピンチ立ち上がり:
+//   joint モード = トグル（ON⇄OFF を切替、保持不要）
+//   follow モード = ホールド開始（従来通り）
+// 右手ピンチ立ち上がり: 両モードともトグル（ON⇄OFF, 保持不要）。
+function _xrOnRightPinchRise(hand, frame, refSpace) {
+  // アーミング: VR 開始時に既にピンチしてた／開始直後の押しっぱなしは無視。
+  if (!xr._pinchArmed) { _xrSetStatus('一度指を離してからピンチで開始'); return; }
+  const now = performance.now();
+  if (now - (xr._lastToggle || 0) < 600) return;  // デバウンス（誤爆防止）
+  xr._lastToggle = now;
+  // デバッグ中: ピンチ＝ステップ送り（追従は切らない）。最終ステップで停止。
+  if (xr._dbgOn) {
+    if (!xr.engaged) {
+      // 最初のピンチ: 追従開始（中立点を取り、ステップ1へ）
+      _xrSetEngaged(true, null, hand, frame, refSpace);
+      _xrDebugNextStep();
+      return;
+    }
+    if (_xrDebugNextStep()) return;        // 次ステップへ
+    // 最終ステップでさらにピンチ → フリーズ＆デバッグ終了
+    _xrDebugStop();
+    _xrSetEngaged(false, '計測完了');
     return;
   }
-  const wrist = hand.get('wrist');
-  if (!wrist) return;
-  const pose = frame.getJointPose(wrist, refSpace);
-  if (!pose) return;
-  xr.anchor = {
-    handPos: {
-      x: pose.transform.position.x,
-      y: pose.transform.position.y,
-      z: pose.transform.position.z,
-    },
-    anchorTargetPos: goalSphere.position.clone(),
-    anchorTargetQuat: goalSphere.quaternion.clone(),
-  };
-  xr.smoothTarget.copy(goalSphere.position);
-  _xrSetStatus(`pinch start at hand=(${xr.anchor.handPos.x.toFixed(2)}, ${xr.anchor.handPos.y.toFixed(2)}, ${xr.anchor.handPos.z.toFixed(2)})m`);
+  _xrSetEngaged(!xr.engaged, null, hand, frame, refSpace);
 }
 
-function _xrOnPinchEnd() {
-  xr.anchor = null;
-  _xrSetStatus('pinch release — freeze');
+function _xrOnRightPinchFall() {
+  // 両モードとも toggle なのでリリースでは何もしない（armed フラグは呼び出し側で立てる）。
+}
+
+// follow モード = レート制御。engage / 再アンカー時に「中立点」を取り直す。
+//   中立点 = 今の手の pose。目標先端 = 実機の現在先端（位置・向き）から積分開始。
+function _xrCaptureFollowAnchor(hand, frame, refSpace) {
+  const wrist = hand.get('wrist');
+  const pose = wrist && frame.getJointPose(wrist, refSpace);
+  if (!pose) return false;
+  const p = pose.transform.position, o = pose.transform.orientation;
+  xr.rateCenterPos  = { x: p.x, y: p.y, z: p.z };
+  xr.rateCenterQuat = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+  // 目標先端 = 実機の現在 FK（位置 + 向き）。ここから速度を積分。
+  const tip = endEffector(state.current);
+  xr.rateTargetPos.set(tip.x, tip.y, tip.z);
+  xr.smoothQuat = tipQuat(state.current);
+  xr._ikSeed = state.current.slice();
+  xr._rateLastT = performance.now();
+  // 表示も先端に合わせる
+  goalSphere.position.copy(xr.rateTargetPos);
+  goalSphere.quaternion.copy(xr.smoothQuat);
+  return true;
+}
+
+// 肩起点アンカーを現在の手姿勢から取得（engage 時）
+function _xrCaptureJointAnchor(hand, frame, refSpace) {
+  const wrist = hand.get('wrist');
+  const pose = wrist && frame.getJointPose(wrist, refSpace);
+  if (!pose) return false;
+  const viewerPose = frame.getViewerPose(refSpace);
+  if (!viewerPose) return false;
+  const sh = _xrShoulderAngles(pose.transform.position, viewerPose.transform.position);
+  const o = pose.transform.orientation;
+  xr.jointAnchor = {
+    quat: new THREE.Quaternion(o.x, o.y, o.z, o.w),
+    shoulderYaw: sh.yaw,
+    shoulderPitch: sh.pitch,
+    base: state.current.slice(),
+  };
+  xr.cmdAngles = state.current.slice();
+  xr._smoothJoint = state.current.slice();
+  return true;
+}
+
+// engaged 状態の切替（joint モード）。視覚（ゴースト色）＋ステータス更新。
+function _xrSetEngaged(on, reasonMsg, hand, frame, refSpace) {
+  if (window.xrLog) xrLog('engage', { on, mode: xr.ctrlMode, reason: reasonMsg || null });
+  if (on) {
+    const ok = xr.ctrlMode === 'follow'
+      ? (hand && _xrCaptureFollowAnchor(hand, frame, refSpace))
+      : (hand && _xrCaptureJointAnchor(hand, frame, refSpace));
+    if (!ok) { _xrSetStatus('engage 失敗 — 手を見せて再ピンチ'); return; }
+    xr.engaged = true;
+    _teleStartTrial();   // この engage を 1 trial として記録開始
+    if (typeof tintArm === 'function') tintArm(armTarget, 0x39ff14);  // 緑 = 追従中
+    _xrSetStatus(xr.ctrlMode === 'follow'
+      ? '🟢 追従ON（IK）— 先端を掴んで動かす。もう一度ピンチで停止'
+      : '🟢 追従ON — 手を動かすと追従。もう一度ピンチで停止');
+    _xrBadge('追従', 'ok');
+  } else {
+    _teleEndTrial();   // trial 終了 → 要約を記録 + flush
+    xr.engaged = false;
+    xr.jointAnchor = null;
+    xr.anchor = null;
+    xr.rateCenterPos = null;   // レート制御の中立点クリア（フリーズで停止）
+    xr.cmdAngles = null;
+    if (typeof tintArm === 'function') tintArm(armTarget, 0xff00ff);  // マゼンタ = 停止
+    setSlidersFrom(state.target);
+    _xrSetStatus('⏸ フリーズ' + (reasonMsg ? '（' + reasonMsg + '）' : ' — ピンチで再開'));
+    _xrBadge('on', 'ok');
+  }
 }
 
 // Hand delta (viewer space, m) → arm base delta (scene mm)
@@ -2774,25 +3500,304 @@ function _xrViewerDeltaToArm(dx, dy, dz) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// デバッグ計装 + 動作 cue（遠隔の人に「今やる動作」を VR 内テキストで指示し、
+//   レート制御の内部状態を時系列記録。CDP から window.__xr._dbg を回収して挙動を読む）。
+// ─────────────────────────────────────────────────────────────────────────
+// ステップ制: 各動作の終わりにピンチ → 次へ。自分のペースで確実に。
+const _XR_CUES = [
+  { txt: '手を中心に止めて ピンチで開始', key: 'idle' },
+  { txt: '手を 右へ → 終わったらピンチ',  key: 'right' },
+  { txt: '手を 左へ ← 終わったらピンチ',  key: 'left' },
+  { txt: '手を 上へ ↑ 終わったらピンチ',  key: 'up' },
+  { txt: '手を 下へ ↓ 終わったらピンチ',  key: 'down' },
+  { txt: '中立に戻して ピンチで完了',     key: 'done' },
+];
+function _xrCueSprite(){
+  if (xr._cueSprite) return xr._cueSprite;
+  const c = document.createElement('canvas'); c.width = 512; c.height = 96;
+  xr._cueCanvas = c; xr._cueCtx = c.getContext('2d');
+  xr._cueTex = new THREE.CanvasTexture(c);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map: xr._cueTex, transparent: true, depthTest: false}));
+  sp.scale.set(360, 68, 1); sp.renderOrder = 1000;
+  scene.add(sp);
+  xr._cueSprite = sp;
+  return sp;
+}
+function _xrCueDraw(txt){
+  const ctx = xr._cueCtx; if (!ctx) return;
+  ctx.clearRect(0,0,512,96);
+  ctx.fillStyle = 'rgba(0,0,0,0.78)'; ctx.fillRect(0,0,512,96);
+  ctx.fillStyle = '#39ff14'; ctx.font = 'bold 34px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(txt, 256, 48);
+  xr._cueTex.needsUpdate = true;
+}
+function _xrDebugStart(){
+  xr._dbg = [];
+  xr._dbgOn = true;
+  xr._dbgT0 = performance.now();
+  xr._cueStep = 0;
+  xr._cueText = _XR_CUES[0].key;
+  _xrCueSprite();
+  _xrCueShow();
+}
+// 現在ステップの cue を描画
+function _xrCueShow(){
+  const cue = _XR_CUES[xr._cueStep] || _XR_CUES[_XR_CUES.length-1];
+  xr._cueText = cue.key;
+  _xrCueDraw(`[${xr._cueStep}/${_XR_CUES.length-1}] ${cue.txt}`);
+}
+// ピンチで次ステップへ（デバッグ進行）。最後まで行ったら何もしない。
+function _xrDebugNextStep(){
+  if (!xr._dbgOn) return false;
+  if (xr._cueStep < _XR_CUES.length - 1) {
+    xr._cueStep++;
+    _xrCueShow();
+    return true;
+  }
+  return false;
+}
+function _xrDebugStop(){
+  xr._dbgOn = false;
+  if (xr._cueSprite) { xr._cueSprite.visible = false; }
+}
+function _xrCuePlace(){
+  // cue を視界の少し下・前方に固定（HMD 前方）。_updateXR から毎フレーム。
+  if (!xr._cueSprite || !xr.session) return;
+  const cam = renderer.xr.getCamera ? renderer.xr.getCamera() : camera;
+  const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(cam.quaternion);
+  const up  = new THREE.Vector3(0,1,0).applyQuaternion(cam.quaternion);
+  xr._cueSprite.position.copy(cam.position).addScaledVector(fwd, 1.2).addScaledVector(up, -0.35);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// テレメトリ: 1 engage = 1 trial。全チューニング値 + 入力→出力の時系列を記録し
+//   サーバ(/clientlog, level=tele)へ送る。短いテストを繰り返し、ログから挙動を分析する。
+// ─────────────────────────────────────────────────────────────────────────
+const TELE_HZ_MS = 66;  // サンプル間隔（~15Hz）。実機送信(40Hz)より粗くてよい
+function _teleHeader() {
+  return {
+    trial: xr.tele.trial, mode: xr.ctrlMode, gain: xr.gain, speed: xr.sendSpeed,
+    calibYaw_deg: +(xr.calibYaw * 180 / Math.PI).toFixed(1), heightScale: xr.heightScale,
+    signs: xr.signs ? xr.signs.slice() : null,
+    // follow(レート) パラメータ
+    rate: { deadzone_m: XR_RATE_DEADZONE_M, full_m: XR_RATE_FULL_POS_M, maxpos_mms: XR_RATE_MAX_POS_MMS,
+            expo: XR_RATE_EXPO, orient: XR_RATE_ORIENT_ENABLED, deadzone_rad: XR_RATE_DEADZONE_RAD },
+    // joint(直接関節) パラメータ
+    joint: { shoulderGain: XR_SHOULDER_GAIN, wristYawGain: XR_WRIST_YAW_GAIN,
+             smoothAlpha: XR_JOINT_SMOOTH_ALPHA, maxStepDeg: XR_JOINT_MAX_STEP_DEG },
+    startPose: XR_START_POSE.slice(),
+  };
+}
+function _teleStartTrial() {
+  const t = xr.tele;
+  t.trial++; t.n = 0; t.lastT = 0; t.sumDisp = 0; t.dwell = 0; t.ikFail = 0; t.oor = 0;
+  t.handMin = null; t.handMax = null; t.tipStart = null; t.tipLast = null; t.tipPath = 0;
+  t._t0 = performance.now();
+  if (window.xrLog) xrLog('trial_start', _teleHeader());
+}
+function _teleEndTrial() {
+  const t = xr.tele;
+  if (!t._t0) return;
+  const durMs = Math.round(performance.now() - t._t0);
+  const handSpan = (t.handMin && t.handMax)
+    ? [Math.round(t.handMax[0]-t.handMin[0]), Math.round(t.handMax[1]-t.handMin[1]), Math.round(t.handMax[2]-t.handMin[2])]
+    : null;
+  const summary = {
+    trial: t.trial, mode: xr.ctrlMode, durMs, samples: t.n,
+    hz: t.n > 1 && durMs > 0 ? +(t.n / (durMs/1000)).toFixed(1) : 0,
+    dwellPct: t.n ? Math.round(100 * t.dwell / t.n) : 0,      // 手は動いたが arm 速度0だった割合
+    ikFailPct: t.n ? Math.round(100 * t.ikFail / t.n) : 0,
+    oorPct: t.n ? Math.round(100 * t.oor / t.n) : 0,
+    meanDispMm: t.n ? Math.round(t.sumDisp / t.n) : 0,         // 平均の手ズレ量
+    handSpanMm: handSpan,                                      // 手の移動範囲 bbox（viewer rel）
+    tipPathMm: Math.round(t.tipPath),                          // 実機先端の総移動距離
+  };
+  if (window.xrLog) { xrLog('trial_end', summary); _clog.flush(); }
+  t._t0 = 0;
+}
+// sample: { kind:'follow'|'joint', hv:[mm,mm,mm], disp, spd, ik, oor, cur:[6], extra... }
+function _teleSample(s) {
+  const t = xr.tele, now = performance.now();
+  if (now - t.lastT < TELE_HZ_MS) return;   // ~15Hz スロットル
+  const dt = t.lastT ? Math.round(now - t.lastT) : 0;
+  t.lastT = now;
+  t.n++;
+  // 集計
+  if (typeof s.disp === 'number') {
+    t.sumDisp += s.disp;
+    if (s.disp > 10 && (s.spd === 0 || s.spd == null)) t.dwell++;  // 手は >1cm 動いたが速度0
+  }
+  if (s.ik === 'failed' || s.ik === 3) t.ikFail++;
+  if (s.oor) t.oor++;
+  if (s.hv) {
+    if (!t.handMin) { t.handMin = s.hv.slice(); t.handMax = s.hv.slice(); }
+    else for (let i=0;i<3;i++){ t.handMin[i]=Math.min(t.handMin[i],s.hv[i]); t.handMax[i]=Math.max(t.handMax[i],s.hv[i]); }
+  }
+  // 実機先端の軌跡長（state.current の FK から）
+  if (s.cur && typeof endEffector === 'function') {
+    const tip = endEffector(s.cur);
+    if (t.tipLast) t.tipPath += Math.hypot(tip.x-t.tipLast.x, tip.y-t.tipLast.y, tip.z-t.tipLast.z);
+    t.tipLast = tip;
+    s.tip = [Math.round(tip.x), Math.round(tip.y), Math.round(tip.z)];
+  }
+  s.t = Math.round(now - (t._t0 || now));
+  s.dt = dt;
+  s.tr = t.trial;
+  xr._lastTele = s;   // VR内 HUD のライブ表示用
+  _clog.push('tele', [s], s.kind);   // _clog.push expects args array; single-element → JSON 化
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// VR内 進行状況 HUD: trial 番号・engage 状態・ライブ入力/出力を視界下に常時表示。
+//   「手は動いてる(disp)のに速度0(spd)」等の失敗を被ったままリアルタイムで見られる。
+// ─────────────────────────────────────────────────────────────────────────
+const _XR_HUD_UPDATE_MS = 150;  // テキスト再描画間隔（~7Hz）。位置更新は毎フレーム
+function _xrHudSprite() {
+  if (xr._hudSprite) return xr._hudSprite;
+  const c = document.createElement('canvas'); c.width = 512; c.height = 224;
+  xr._hudCanvas = c; xr._hudCtx = c.getContext('2d');
+  xr._hudTex = new THREE.CanvasTexture(c);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: xr._hudTex, transparent: true, depthTest: false }));
+  sp.scale.set(300, 131, 1); sp.renderOrder = 1001;
+  scene.add(sp);
+  xr._hudSprite = sp;
+  return sp;
+}
+function _xrHudDraw(lines, engaged) {
+  const ctx = xr._hudCtx; if (!ctx) return;
+  ctx.clearRect(0, 0, 512, 224);
+  ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, 0, 512, 224);
+  ctx.strokeStyle = engaged ? '#39ff14' : '#666'; ctx.lineWidth = 4;
+  ctx.strokeRect(2, 2, 508, 220);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  let y = 16;
+  for (const ln of lines) {
+    ctx.fillStyle = ln.c || '#e0e0e0';
+    ctx.font = (ln.b ? 'bold ' : '') + (ln.s || 28) + 'px Consolas, monospace';
+    ctx.fillText(ln.t, 18, y);
+    y += (ln.s || 28) + 8;
+  }
+  xr._hudTex.needsUpdate = true;
+}
+function _xrHudUpdate() {
+  if (!xr._hudSprite) return;
+  const now = performance.now();
+  if (now - (xr._hudLastT || 0) < _XR_HUD_UPDATE_MS) return;
+  xr._hudLastT = now;
+  const t = xr.tele, s = xr._lastTele;
+  const lines = [];
+  // 1行目: trial 番号・モード・engage 状態
+  if (xr.engaged) {
+    lines.push({ t: `Trial ${t.trial} · ${xr.ctrlMode} · ●追従中`, c: '#39ff14', b: true, s: 30 });
+  } else {
+    lines.push({ t: `Trial ${t.trial} 完了 · ${xr.ctrlMode} · ○待機`, c: '#aaaaaa', b: true, s: 30 });
+    lines.push({ t: 'ピンチで次の trial を開始', c: '#888', s: 24 });
+  }
+  if (xr.engaged && s) {
+    if (s.kind === 'follow') {
+      // 手の入力 disp と速度係数 spd を対比 → 0 のままなら「効いてない」が一目でわかる
+      const dead = s.spd === 0 || s.spd == null;
+      lines.push({ t: `手ズレ ${Math.round(s.disp)}mm`, c: '#7fd0ff', s: 28 });
+      lines.push({ t: `速度 ${(s.spd ?? 0).toFixed(2)}  ${dead ? '⚠デッドゾーン' : s.m}`, c: dead ? '#ff5050' : '#39ff14', b: true, s: 28 });
+      lines.push({ t: `IK ${s.ik}${s.oor ? ' ⚠到達外' : ''}  先端移動 ${Math.round(t.tipPath)}mm`, c: s.ik === 'failed' ? '#ff5050' : '#cfcfcf', s: 24 });
+    } else if (s.kind === 'joint') {
+      lines.push({ t: `肩 yaw ${s.shYaw} pitch ${s.shPitch}`, c: '#7fd0ff', s: 26 });
+      lines.push({ t: `手首 yaw ${s.hYaw} pitch ${s.hPitch}`, c: '#7fd0ff', s: 26 });
+      lines.push({ t: `先端移動 ${Math.round(t.tipPath)}mm`, c: '#cfcfcf', s: 24 });
+    }
+  }
+  _xrHudDraw(lines, xr.engaged);
+}
+function _xrHudPlace() {
+  if (!xr._hudSprite || !xr.session) return;
+  const cam = renderer.xr.getCamera ? renderer.xr.getCamera() : camera;
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
+  const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+  // 視界の下・やや右に固定（中央の作業視界を塞がない）。Sprite はビルボードなので向きは自動。
+  xr._hudSprite.position.copy(cam.position)
+    .addScaledVector(fwd, 1.0).addScaledVector(up, -0.42).addScaledVector(right, 0.30);
+}
+function _xrHudShow() { _xrHudSprite().visible = true; xr._hudLastT = 0; _xrHudUpdate(); }
+function _xrHudHide() { if (xr._hudSprite) xr._hudSprite.visible = false; }
+
+// レート制御 follow: 手の「中立からのズレ」→ 先端の移動/回転"速度" → 目標 pose を積分 → IK。
+//   - デッドゾーンで手ブレ死滅、中立に戻せば停止
+//   - 狭い手の動きで広範囲（可動域無限）、expo カーブで精密＋速い両立
+//   - 目標を連続積分するので IK の枝飛びが起きない
+const _xrQuatTmp = new THREE.Quaternion();
+const _xrMatTmp = new THREE.Matrix4();
+const _xrVecTmp = new THREE.Vector3();
+// 入力 →[0..1] にデッドゾーン＋expo を適用した「速度係数」を返す。
+function _rateCurve(mag, deadzone, full){
+  if (mag <= deadzone) return 0;
+  let u = (mag - deadzone) / Math.max(1e-6, full - deadzone);
+  u = Math.min(1, u);
+  return Math.pow(u, XR_RATE_EXPO);   // expo: 中央緩く端速い
+}
 function _xrUpdateGoalFromHand(hand, frame, refSpace) {
+  if (!xr.rateCenterPos) return;
   const wrist = hand.get('wrist');
   if (!wrist) return;
   const pose = frame.getJointPose(wrist, refSpace);
   if (!pose) return;
-  const a = xr.anchor.handPos;
-  const dx = pose.transform.position.x - a.x;
-  const dy = pose.transform.position.y - a.y;
-  const dz = pose.transform.position.z - a.z;
-  const armDelta = _xrViewerDeltaToArm(dx, dy, dz);
 
-  // Target world position (no smoothing yet)
-  const t = xr.anchor.anchorTargetPos;
-  let tx = t.x + armDelta.x * xr.gain;
-  let ty = t.y + armDelta.y * xr.gain;
-  let tz = t.z + armDelta.z * xr.gain;
+  // dt（積分用）
+  const now = performance.now();
+  let dt = (now - (xr._rateLastT || now)) / 1000;
+  xr._rateLastT = now;
+  if (dt <= 0 || dt > 0.1) dt = 0.016;   // 異常値ガード
 
-  // Reachable clamp via nearest-grid-point
-  if (_reachSelectPts.length) {
+  // ── 位置レート: 手の中立からのズレ → arm base 速度。係数だけ先に計算 ──
+  const c = xr.rateCenterPos, pp = pose.transform.position;
+  const arm = _xrViewerDeltaToArm(pp.x - c.x, pp.y - c.y, pp.z - c.z);  // mm
+  const dispMm = Math.hypot(arm.x, arm.y, arm.z);
+  const dispM = dispMm / 1000;
+  const speedCoef = _rateCurve(dispM, XR_RATE_DEADZONE_M, XR_RATE_FULL_POS_M);  // 0..1
+
+  // ── 向き係数も先に計算 ──
+  const o = pose.transform.orientation;
+  _xrQuatTmp.set(o.x, o.y, o.z, o.w);
+  const relWorld = _xrQuatTmp.clone().multiply(xr.rateCenterQuat.clone().invert());
+  const angle = 2 * Math.acos(Math.min(1, Math.abs(relWorld.w)));
+  const rotCoef = XR_RATE_ORIENT_ENABLED
+    ? _rateCurve(angle, XR_RATE_DEADZONE_RAD, XR_RATE_FULL_ROT_RAD) : 0;
+
+  // ── 排他: 位置と向きは同時に動かさない（人間の手は平行移動と回転が分離不能）──
+  //   どちらか優勢な方だけを通す。これが「平行移動で向きが暴れる」の特効薬。
+  const doPos = speedCoef > 0 && (rotCoef < XR_RATE_LOCK_ROT_THRESH || speedCoef >= rotCoef);
+  const doRot = rotCoef > 0 && !doPos && (speedCoef < XR_RATE_LOCK_POS_THRESH || rotCoef > speedCoef);
+
+  // IK 失敗時にここへ巻き戻す（目標が可動域外へ暴走するのを防ぐソフト境界）
+  const _prevTx = xr.rateTargetPos.x, _prevTy = xr.rateTargetPos.y, _prevTz = xr.rateTargetPos.z;
+
+  if (doPos && dispMm > 1e-3) {
+    const vmm = XR_RATE_MAX_POS_MMS * xr.gain * speedCoef;  // mm/s
+    const step = vmm * dt;
+    const k = step / dispMm;                                // 方向維持
+    xr.rateTargetPos.x += arm.x * k;
+    xr.rateTargetPos.y += arm.y * k;
+    xr.rateTargetPos.z += arm.z * k;
+  }
+  if (doRot) {
+    const wdps = XR_RATE_MAX_ROT_DPS * xr.gain * rotCoef;   // deg/s
+    const stepDeg = wdps * dt;
+    const sceneQ = scene.quaternion;
+    const relArm = sceneQ.clone().invert().multiply(relWorld).multiply(sceneQ);
+    const full = relArm; full.normalize();
+    const fAngle = 2 * Math.acos(Math.min(1, Math.abs(full.w)));
+    if (fAngle > 1e-4) {
+      const frac = Math.min(1, (stepDeg * Math.PI/180) / fAngle);
+      const inc = new THREE.Quaternion().slerpQuaternions(new THREE.Quaternion(), full, frac);
+      xr.smoothQuat.premultiply(inc).normalize();
+    }
+  }
+
+  // ── reach 範囲外 clamp（位置のみ。最寄り baked 点へ）── 既定 OFF（ノコギリ波の原因）
+  let tx = xr.rateTargetPos.x, ty = xr.rateTargetPos.y, tz = xr.rateTargetPos.z;
+  if (XR_REACH_CLAMP_ENABLED && _reachSelectPts.length) {
     let bestD2 = Infinity, bestIdx = -1;
     for (let i = 0; i < _reachSelectPts.length; i++) {
       const q = _reachSelectPts[i];
@@ -2800,33 +3805,207 @@ function _xrUpdateGoalFromHand(hand, frame, refSpace) {
       const d2 = ex*ex + ey*ey + ez*ez;
       if (d2 < bestD2) { bestD2 = d2; bestIdx = i; }
     }
-    if (bestIdx >= 0) {
-      const minD = Math.sqrt(bestD2);
-      // If raw target is "noticeably" outside the reach point set, snap and mark out-of-reach
-      if (minD > XR_REACH_CLAMP_THRESHOLD_MM) {
-        const q = _reachSelectPts[bestIdx];
-        tx = q.x; ty = q.y; tz = q.z;
-        xr.outOfReach = true;
-      } else {
-        xr.outOfReach = false;
-      }
+    if (bestIdx >= 0 && Math.sqrt(bestD2) > XR_REACH_CLAMP_THRESHOLD_MM) {
+      const q = _reachSelectPts[bestIdx];
+      tx = q.x; ty = q.y; tz = q.z;
+      xr.rateTargetPos.set(tx, ty, tz);   // 範囲外はクランプ点で積分継続（暴走防止）
+      xr.outOfReach = true;
+    } else xr.outOfReach = false;
+  } else {
+    xr.outOfReach = false;   // クランプ無効時は IK 失敗(ik=failed)が到達外の指標
+  }
+
+  // quaternion → rpy(extrinsic XYZ)
+  _xrMatTmp.makeRotationFromQuaternion(xr.smoothQuat);
+  const e = _xrMatTmp.elements;
+  const R = [[e[0],e[4],e[8]],[e[1],e[5],e[9]],[e[2],e[6],e[10]]];
+  const rpy = _ikMatToRpy(R);
+
+  // ── ローカル IK（warm start = 前フレーム解）──
+  const sol = solveIKTeleop([tx, ty, tz], rpy, xr._ikSeed || state.current);
+  if (sol.angles) {
+    xr._ikSeed = sol.angles;
+    state.target = sol.angles.slice();
+    updateArm(armTarget, state.target);
+    goalSphere.position.set(tx, ty, tz);
+    goalSphere.quaternion.copy(xr.smoothQuat);
+    xr.ikMode = sol.mode;
+    if (typeof tintArm === 'function') {
+      tintArm(armTarget, sol.mode === 'full' ? 0x39ff14 : sol.mode === 'relaxed' ? 0xffd000 : 0xff9000);
     }
+    if (!state.busy) {
+      if (xr._jogInflight) xr._pendingTgt = sol.angles.slice();
+      else _xrSendJog(sol.angles.slice());
+    }
+    setGoalColor(xr.outOfReach ? 'fail' : 'ok');
+  } else {
+    // IK 解けず: 目標を前フレームの到達可能値へ巻き戻す（可動域外への暴走を止めるソフト境界）。
+    //   これをしないと失敗中も毎フレーム外へ積分し続け、手を大きく戻すまで復帰できない。
+    xr.rateTargetPos.set(_prevTx, _prevTy, _prevTz);
+    xr.ikMode = 'failed';
+    setGoalColor('fail');
+    if (typeof tintArm === 'function') tintArm(armTarget, 0xff2040);
+  }
+  // IK モード遷移をサーバへ記録（毎フレームではなく変化時のみ）。後解析用。
+  if (window.xrLog && xr.ikMode !== xr._lastIkMode) {
+    xr._lastIkMode = xr.ikMode;
+    xrLog('ik', { mode: xr.ikMode, tgt: [Math.round(tx), Math.round(ty), Math.round(tz)] });
   }
 
-  // EMA smoothing
-  xr.smoothTarget.lerp(new THREE.Vector3(tx, ty, tz), XR_SMOOTH_ALPHA);
-  goalSphere.position.copy(xr.smoothTarget);
-  // For Phase 2 MVP: keep orientation locked at anchor (rotation tracking deferred)
-  goalSphere.quaternion.copy(xr.anchor.anchorTargetQuat);
+  // テレメトリ（~15Hz）: 手入力(生 viewer 差分 + マップ後 arm 差分) → 速度係数 → 目標 → IK。
+  _teleSample({
+    kind: 'follow',
+    hv: [Math.round((pp.x-c.x)*1000), Math.round((pp.y-c.y)*1000), Math.round((pp.z-c.z)*1000)],  // 中立点からの相対変位 mm
+    hw: [Math.round(pp.x*1000), Math.round(pp.y*1000), Math.round(pp.z*1000)],  // 生の絶対手座標（refSpace 系 mm）→ ジッタ/ドロップ検出用
+    arm: [Math.round(arm.x), Math.round(arm.y), Math.round(arm.z)],  // マップ後・arm base mm
+    disp: +dispMm.toFixed(1), spd: +speedCoef.toFixed(2), rc: +rotCoef.toFixed(2),
+    m: doPos ? 'pos' : (doRot ? 'rot' : 'none'),
+    tgt: [Math.round(tx), Math.round(ty), Math.round(tz)],
+    ik: xr.ikMode, oor: !!xr.outOfReach,
+    cur: state.current.map(v => +v.toFixed(1)),
+  });
 
-  // 20Hz IK throttle
-  const now = performance.now();
-  if (now - xr.lastIKAt > XR_IK_INTERVAL_MS) {
-    xr.lastIKAt = now;
-    if (!state.busy) onGoalDragEnd();
+  // ── デバッグ記録: レート制御の内部状態を時系列で残す（CDP から読む）──
+  if (xr._dbgOn) {
+    const t = Math.round(now - (xr._dbgT0 || now));
+    xr._dbg.push({
+      t,
+      step: xr._cueStep || 0,
+      cue: xr._cueText || '',
+      dispMm: +dispMm.toFixed(1),          // 手の中立からのズレ（mm相当）
+      spd: +speedCoef.toFixed(2),          // 位置速度係数 0..1
+      dP: doPos?1:0, dR: doRot?1:0,         // 排他: この frame で位置/向きどちらを動かしたか
+      rotDeg: +(angle*180/Math.PI).toFixed(1),  // 手首の中立からの回転角
+      rotC: +rotCoef.toFixed(2),           // 回転速度係数 0..1
+      tgt: [Math.round(tx), Math.round(ty), Math.round(tz)],  // 目標先端 mm
+      ik: xr.ikMode,                       // full/relaxed/position/failed
+      ang: sol.angles ? sol.angles.map(v=>+v.toFixed(1)) : null,  // IK 解
+      cur: state.current.map(v=>+v.toFixed(1)),                    // 実機現在角
+    });
+    if (xr._dbg.length > 4000) xr._dbg.shift();
+  }
+}
+
+// follow モードの position 送信（worker thread, 単一 in-flight）。
+function _xrSendJogPos(pos) {
+  xr._jogInflight = true;
+  fetch('/jog', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({x: pos.x, y: pos.y, z: pos.z, speed: xr.sendSpeed}),
+  }).then(r => r.json()).then(j => {
+    if (j.ok && Array.isArray(j.angles)) { state.target = j.angles.slice(); }
+    else if (j.code !== 'THROTTLED' && j.code !== 'MOVING') {
+      setStatusOnce(j.code === 'IK_FAIL' ? 'IK 解けず' : (j.code === 'SAFETY' ? '床/limit で停止' : '停止'), 'warn');
+      if (window.xrLog) xrLog('jog_reject', { mode: 'pos', code: j.code || 'unknown', msg: j.msg || null });
+    }
+  }).catch(_ => {}).finally(() => {
+    xr._jogInflight = false;
+    if (xr._pendingPos) { const next = xr._pendingPos; xr._pendingPos = null; _xrSendJogPos(next); }
+  });
+}
+
+// 直接関節クラッチ（肩起点モデル）:
+//   J1 ← HMD→手 の水平方位角 delta（肩の水平回転）
+//   J2 ← HMD→手 の垂直角 delta（肩の垂直回転）
+//   J5 ← 手首の anchor-local pitch（手の向き）
+//   J6 ← 手首の anchor-local yaw（手首ひねり）
+//   J3/J4 は anchor 固定。手のロールは未使用。符号/ゲインは UI で実機調整。
+const XR_JOINT_INTERVAL_MS = 33;    // ~30Hz 送信
+const XR_JOINT_MAX_STEP_DEG = 4.0;  // 1 送信あたり最大関節移動（速度上限）
+const XR_JOINT_SMOOTH_ALPHA = 0.35; // EMA係数: 大=機敏/ぶれ残る, 小=滑らか/遅延増
+const VR_SIGNS_VER = 4;             // 符号デフォルトの世代。意味を変えたら +1 → 旧 localStorage を無効化
+const XR_SHOULDER_GAIN = 2.8;       // 肩起点(手の位置)→J1/J2 の倍率。位置の方位角はレンジが狭いので増幅
+const XR_WRIST_YAW_GAIN = 2.2;      // 手ヨー→J6 の倍率。もっと回るように増幅
+const XR_TRACK_LOST_MS = 600;       // 右手トラッキングがこの時間消えたら自動フリーズ（瞬断は無視）
+
+function _xrUpdateJointsFromHand(hand, frame, refSpace) {
+  const wrist = hand.get('wrist');
+  if (!wrist) return;
+  const pose = frame.getJointPose(wrist, refSpace);
+  if (!pose) return;
+  const viewerPose = frame.getViewerPose(refSpace);
+  if (!viewerPose) return;
+  const a = xr.jointAnchor;
+
+  // 肩起点（HMD→手 ベクトル）の水平/垂直角 → ΔJ1, ΔJ2
+  const sh = _xrShoulderAngles(pose.transform.position, viewerPose.transform.position);
+  const dShYawDeg   = THREE.MathUtils.radToDeg(sh.yaw   - a.shoulderYaw);
+  const dShPitchDeg = THREE.MathUtils.radToDeg(sh.pitch - a.shoulderPitch);
+
+  // 手首の anchor-local 姿勢 → J5（ピッチ）, J6（ヨー）
+  const o = pose.transform.orientation;
+  const cur = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+  const rel = a.quat.clone().invert().multiply(cur);
+  const e = new THREE.Euler().setFromQuaternion(rel, 'YXZ');
+  const handYawDeg   = THREE.MathUtils.radToDeg(e.y);
+  const handPitchDeg = THREE.MathUtils.radToDeg(e.x);
+
+  const raw = a.base.slice();
+  raw[0] = a.base[0] + xr.signs[0] * xr.gain * XR_SHOULDER_GAIN * dShYawDeg;   // J1 ← 肩水平
+  raw[1] = a.base[1] + xr.signs[1] * xr.gain * XR_SHOULDER_GAIN * dShPitchDeg; // J2 ← 肩垂直
+  raw[4] = a.base[4] + xr.signs[4] * xr.gain * handPitchDeg;  // J5 ← 手ピッチ
+  raw[5] = a.base[5] + xr.signs[5] * xr.gain * XR_WRIST_YAW_GAIN * handYawDeg;  // J6 ← 手ヨー（増幅）
+
+  // 360° アンラップ: atan2 / euler 分解は ±180° 境界で急ジャンプする。前フレーム目標に
+  //   最も近い等価角へ正規化して、突発的な暴れ（J6 が 360° 飛ぶ等）を消す。
+  if (!xr._smoothJoint) xr._smoothJoint = raw.slice();
+  for (const i of [0, 1, 4, 5]) {
+    let d = raw[i] - xr._smoothJoint[i];
+    while (d > 180) { raw[i] -= 360; d -= 360; }
+    while (d < -180) { raw[i] += 360; d += 360; }
+  }
+  // EMA スムージング: 手ぶれ（p95 5〜8°/frame）をならして実機のカクつきを抑える。
+  const tgt = a.base.slice();
+  for (const i of [0, 1, 4, 5]) {
+    xr._smoothJoint[i] += (raw[i] - xr._smoothJoint[i]) * XR_JOINT_SMOOTH_ALPHA;
+    tgt[i] = Math.max(LIMITS[i][0], Math.min(LIMITS[i][1], xr._smoothJoint[i]));
   }
 
-  setGoalColor(xr.outOfReach ? 'fail' : 'ok');
+  // 半透明マゼンタ ゴースト = 手追従の目標（ヌルヌル動く）。DOM スライダは VR 中不可視なので更新しない。
+  state.target = tgt.slice();
+  updateArm(armTarget, state.target);
+  state.userTouched = true;
+
+  // テレメトリ（~15Hz）: HMD→手ベクトル + 肩/手首角 → J1/J2/J5/J6 目標。
+  const _vp = viewerPose.transform.position, _hp = pose.transform.position;
+  _teleSample({
+    kind: 'joint',
+    hv: [Math.round((_hp.x-_vp.x)*1000), Math.round((_hp.y-_vp.y)*1000), Math.round((_hp.z-_vp.z)*1000)],  // HMD→手 mm
+    hw: [Math.round(_hp.x*1000), Math.round(_hp.y*1000), Math.round(_hp.z*1000)],  // 生の絶対手座標（refSpace 系 mm）
+    shYaw: +dShYawDeg.toFixed(1), shPitch: +dShPitchDeg.toFixed(1),     // 肩角 delta（→J1/J2 入力）
+    hYaw: +handYawDeg.toFixed(1), hPitch: +handPitchDeg.toFixed(1),     // 手首角（→J6/J5 入力）
+    raw: [raw[0],raw[1],raw[4],raw[5]].map(v=>+v.toFixed(1)),           // スムージング前の生目標
+    tgt: [tgt[0],tgt[1],tgt[4],tgt[5]].map(v=>+v.toFixed(1)),           // 送る目標（J1,J2,J5,J6）
+    cur: state.current.map(v => +v.toFixed(1)),
+  });
+  // 不透明シアン（armCurrent）は実機の現在位置 → _xrRealArmPoll が /real_angles から駆動。
+
+  // 同時 1 リクエスト制限 + 保留枠 1（latest wins）。
+  if (state.busy) return;
+  if (xr._jogInflight) {
+    xr._pendingTgt = tgt.slice();   // 上書き：最新のみ保持
+    return;
+  }
+  _xrSendJog(tgt.slice());
+}
+
+function _xrSendJog(sendTgt) {
+  xr._jogInflight = true;
+  fetch('/jog', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({angles: sendTgt, speed: xr.sendSpeed}),
+  }).then(r => r.json()).then(j => {
+    if (!j.ok && j.code !== 'THROTTLED' && j.code !== 'MOVING') {
+      setStatusOnce(j.code === 'SAFETY' ? '自己干渉で停止' : 'limit/IK で停止', 'warn');
+      if (window.xrLog) xrLog('jog_reject', { mode: 'joint', code: j.code || 'unknown', msg: j.msg || null });
+    }
+  }).catch(_ => {}).finally(() => {
+    xr._jogInflight = false;
+    if (xr._pendingTgt) {
+      const next = xr._pendingTgt; xr._pendingTgt = null;
+      _xrSendJog(next);  // 保留があれば直ちに次へ（次の在 flight）
+    }
+  });
 }
 
 // Yaw calibration: align HMD-forward with arm +Y
@@ -2864,6 +4043,10 @@ document.getElementById('btnVR').addEventListener('click', () => {
     _xrStart();
   }
 });
+// Floating ボタンは既存ボタンと同じ動作 + 状態を同期
+document.getElementById('btnVRFloat').addEventListener('click', () => {
+  document.getElementById('btnVR').click();
+});
 document.getElementById('btnVRCalib').addEventListener('click', () => {
   xr._pendingCalib = true;
   _xrSetStatus('calib 予約 — 次の XR frame で実行');
@@ -2873,8 +4056,196 @@ document.getElementById('vrGain').addEventListener('input', (e) => {
   document.getElementById('vrGainVal').textContent = xr.gain.toFixed(2);
   savePrefs();
 });
+document.getElementById('vrSpeed').addEventListener('input', (e) => {
+  xr.sendSpeed = parseInt(e.target.value, 10) || 60;
+  document.getElementById('vrSpeedVal').textContent = xr.sendSpeed;
+  savePrefs();
+});
+function _applyVrCtrlMode(m) {
+  xr.ctrlMode = m;
+  document.querySelectorAll('.vrModeBtn').forEach(b => b.classList.toggle('active', b.dataset.vrmode === m));
+  const isHand = (m === 'hand');
+  // 高さスケール／符号は直接関節モードでのみ意味を持つ（回転GAINは両モード共用）
+  document.querySelectorAll('#vrJointTuning .vrSign, #vrHeightScale').forEach(el => {
+    el.disabled = (m !== 'joint');
+  });
+  // ✋ハンドモードのときだけキャリブ説明を出し、🦾アーム用 joint tuning を隠す
+  const jt = document.getElementById('vrJointTuning'); if (jt) jt.style.display = isHand ? 'none' : '';
+  const ht = document.getElementById('vrHandTuning');  if (ht) ht.style.display = isHand ? 'block' : 'none';
+  savePrefs();
+}
+document.querySelectorAll('.vrModeBtn').forEach(b => {
+  b.addEventListener('click', () => _applyVrCtrlMode(b.dataset.vrmode));
+});
+document.getElementById('vrHeightScale').addEventListener('input', (e) => {
+  xr.heightScale = parseFloat(e.target.value) || 0;
+  document.getElementById('vrHeightScaleVal').textContent = xr.heightScale.toFixed(0);
+  savePrefs();
+});
+document.querySelectorAll('.vrSign').forEach(cb => {
+  cb.addEventListener('change', () => {
+    const j = parseInt(cb.dataset.j, 10);
+    xr.signs[j] = cb.checked ? -1 : 1;
+    savePrefs();
+  });
+});
 
-// Wrap _updateXR to handle deferred calibration
+// ===================== ✋ HAND (5-finger robot) =====================
+// SEPARATE robot from the 🦾 arm: Arduino, /hand/* endpoints. Manual sliders +
+// WebXR finger-curl teleop (ctrlMode==='hand'). Engage = LEFT-hand pinch (the
+// RIGHT hand's finger bends are the control signal, so right pinch can't toggle).
+const HAND_FINGERS_JP = ['親指','人差し','中指','薬指','小指'];
+// [base, mid, tip] joint names per finger — angle between (mid-base) and (tip-mid)
+// is the curl: ~0 rad straight, larger when the finger folds toward the palm.
+const HAND_JOINT_TRIPLES = [
+  ['thumb-metacarpal','thumb-phalanx-proximal','thumb-tip'],
+  ['index-finger-metacarpal','index-finger-phalanx-proximal','index-finger-tip'],
+  ['middle-finger-metacarpal','middle-finger-phalanx-proximal','middle-finger-tip'],
+  ['ring-finger-metacarpal','ring-finger-phalanx-proximal','ring-finger-tip'],
+  ['pinky-finger-metacarpal','pinky-finger-phalanx-proximal','pinky-finger-tip'],
+];
+const hand = {
+  present:false, connected:false, offline:true, port:null,
+  curUs:[1500,1500,1500,1500,1500],
+  sliders:[0,0,0,0,0],
+  // 固定の curl 閾値（rad）: bend 0 = calibOpen, bend 1 = calibClosed。キャリブ廃止。
+  // 大体これで自然な開き〜握りが 0..1 に収まる（範囲外は clamp）。親指は可動が小さいので閾値低め。
+  calibOpen:  [0.30,0.25,0.25,0.25,0.25],
+  calibClosed:[1.30,1.80,1.80,1.80,1.80],
+  invert:[true,false,false,false,false],   // 親指だけ curl 方向が逆 → 反転（VR curl→bend のみ）
+  engaged:false, _seenAt:0,
+  _inflight:false, _pending:null,
+};
+
+// --- networking (throttled, single in-flight + latest-wins, like _xrSendJog) ---
+function _handPostBends(bends){
+  if(bends.some(b=>b==null)) return;       // lost joints this frame → skip
+  hand._pending = bends;
+  if(!hand._inflight) _handFlush();
+}
+function _handFlush(){
+  if(hand._pending==null || hand._inflight) return;
+  const bends = hand._pending; hand._pending = null;
+  hand._inflight = true;
+  fetch('/hand/fingers',{method:'POST',headers:{'Content-Type':'application/json'},
+                         body:JSON.stringify({bends})})
+    .then(r=>r.json()).then(j=>{ if(j&&j.cur_us){ hand.curUs=j.cur_us; hand.offline=!!j.offline; } })
+    .catch(()=>{})
+    .finally(()=>{ hand._inflight=false; if(hand._pending) _handFlush(); });
+}
+function _handPreset(p){
+  fetch('/hand/preset',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({preset:p})})
+    .then(r=>r.json()).then(j=>{ if(j&&j.cur_us) hand.curUs=j.cur_us; })
+    .catch(()=>{});
+  const sv = p==='open'?0 : p==='close'?1 : 0.5;
+  hand.sliders=[sv,sv,sv,sv,sv]; _handReflectSliders(hand.sliders);
+}
+
+// --- manual sliders ---
+function _handBuildSliders(){
+  const c=document.getElementById('handSliders'); if(!c||c._built) return; c._built=true;
+  HAND_FINGERS_JP.forEach((nm,i)=>{
+    const row=document.createElement('div'); row.className='hand-row';
+    row.innerHTML=`<label>${nm}</label>`+
+      `<input type="range" min="0" max="1" step="0.01" value="0" data-fi="${i}" class="handSlider">`+
+      `<span class="handVal" data-fi="${i}">0.00</span>`;
+    c.appendChild(row);
+  });
+  c.querySelectorAll('.handSlider').forEach(s=>{
+    s.addEventListener('input',()=>{
+      const i=+s.dataset.fi, v=parseFloat(s.value)||0;
+      hand.sliders[i]=v;
+      const vv=c.querySelector(`.handVal[data-fi="${i}"]`); if(vv) vv.textContent=v.toFixed(2);
+      _handPostBends(hand.sliders.slice());
+    });
+  });
+}
+function _handReflectSliders(bends){
+  const c=document.getElementById('handSliders'); if(!c) return;
+  bends.forEach((b,i)=>{ if(b==null) return; hand.sliders[i]=b;
+    const s=c.querySelector(`.handSlider[data-fi="${i}"]`); if(s) s.value=b;
+    const v=c.querySelector(`.handVal[data-fi="${i}"]`); if(v) v.textContent=b.toFixed(2); });
+}
+
+// --- status poll ---
+async function _handPoll(){
+  try{
+    const j=await fetch('/hand/status').then(r=>r.json());
+    hand.present=!!j.present; hand.connected=!!j.connected; hand.offline=!!j.offline; hand.port=j.port||null;
+    if(j.cur_us) hand.curUs=j.cur_us;
+    const b=document.getElementById('handBadge');
+    if(b){ if(!j.present){ b.textContent='なし'; b.className='badge gray'; }
+           else if(j.connected){ b.textContent='接続'; b.className='badge teal'; }
+           else { b.textContent='仮想'; b.className='badge gray'; } }
+    const s=document.getElementById('handStatus');
+    if(s) s.textContent = `us=[${(j.cur_us||[]).join(', ')}]  ${j.connected?('@'+(j.port||'?')):'(virtual)'}`;
+  }catch(_){}
+}
+
+// --- WebXR finger-curl extraction ---
+function _handPinchDist(h,frame,refSpace){
+  const t=h.get('thumb-tip'), x=h.get('index-finger-tip'); if(!t||!x) return null;
+  const tp=frame.getJointPose(t,refSpace), ip=frame.getJointPose(x,refSpace); if(!tp||!ip) return null;
+  const a=tp.transform.position, b=ip.transform.position;
+  return Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z);
+}
+function _handFingerCurl(h,frame,refSpace,fi){
+  const [n0,n1,n2]=HAND_JOINT_TRIPLES[fi];
+  const j0=h.get(n0), j1=h.get(n1), j2=h.get(n2); if(!j0||!j1||!j2) return null;
+  const p0=frame.getJointPose(j0,refSpace), p1=frame.getJointPose(j1,refSpace), p2=frame.getJointPose(j2,refSpace);
+  if(!p0||!p1||!p2) return null;
+  const a=p0.transform.position, b=p1.transform.position, c=p2.transform.position;
+  const v1={x:b.x-a.x,y:b.y-a.y,z:b.z-a.z}, v2={x:c.x-b.x,y:c.y-b.y,z:c.z-b.z};
+  const l1=Math.hypot(v1.x,v1.y,v1.z)||1, l2=Math.hypot(v2.x,v2.y,v2.z)||1;
+  let dot=(v1.x*v2.x+v1.y*v2.y+v1.z*v2.z)/(l1*l2);
+  return Math.acos(Math.max(-1,Math.min(1,dot)));   // radians, 0=straight
+}
+function _handCurlsToBends(curls){
+  return curls.map((c,i)=>{
+    if(c==null) return null;
+    const o=hand.calibOpen[i], cl=hand.calibClosed[i], span=(cl-o)||1;
+    let b=Math.max(0,Math.min(1,(c-o)/span));
+    if(hand.invert[i]) b=1-b;   // 親指は curl の向きが他指と逆なので反転
+    return b;
+  });
+}
+
+// --- per-frame hand teleop (called from the wrapped _updateXR) ---
+//   ✋ 運用: キャリブ無し。固定の curl 閾値（HAND_CURL_OPEN/CLOSED）で 0..1 に正規化し、
+//   右手が見えてる間ずっと右手の各指の曲げを実ハンドへ常時流す（各指独立、クラッチ無し）。
+function _handXRFrame(frame){
+  if(!frame||!xr.session || xr.ctrlMode!=='hand') return;
+  const refSpace=renderer.xr.getReferenceSpace(); if(!refSpace) return;
+  let right=null;
+  for(const src of frame.session.inputSources){
+    if(src.hand && src.handedness==='right'){ right=src.hand; break; }
+  }
+  if(!right){
+    if(hand.engaged){ hand.engaged=false; _xrBadge('✋hand','gray');
+      _xrSetStatus('✋ 右手ロスト → 停止（手を見せると再開）'); }
+    return;
+  }
+  hand._seenAt=performance.now();
+  const curls=HAND_JOINT_TRIPLES.map((_,i)=>_handFingerCurl(right,frame,refSpace,i));
+  if(!hand.engaged){ hand.engaged=true; _xrBadge('✋追従中','green');
+    _xrSetStatus('✋ 追従中。右手の指を動かすとハンドが追従'); }
+  const bends=_handCurlsToBends(curls);
+  _handReflectSliders(bends);
+  _handPostBends(bends);
+}
+
+// --- wiring (手動パネルのボタンのみ) ---
+(function _handInit(){
+  _handBuildSliders();
+  const byId=id=>document.getElementById(id);
+  byId('btnHandOpen')   && byId('btnHandOpen').addEventListener('click',()=>_handPreset('open'));
+  byId('btnHandClose')  && byId('btnHandClose').addEventListener('click',()=>_handPreset('close'));
+  byId('btnHandNeutral')&& byId('btnHandNeutral').addEventListener('click',()=>_handPreset('neutral'));
+  setInterval(_handPoll, 1500); _handPoll();
+})();
+
+// Wrap _updateXR to handle deferred calibration + hand teleop
 const _xrOrigUpdate = _updateXR;
 _updateXR = function(frame) {
   if (xr._pendingCalib) {
@@ -2882,6 +4253,7 @@ _updateXR = function(frame) {
     _xrCalibrate(frame);
   }
   _xrOrigUpdate(frame);
+  _handXRFrame(frame);   // ✋ stream right-hand finger bends to the robot hand
 };
 
 // --- boot ---
@@ -2915,14 +4287,225 @@ _updateXR = function(frame) {
     if(typeof p.vrCalibYaw === 'number' && isFinite(p.vrCalibYaw)){
       xr.calibYaw = p.vrCalibYaw;
     }
+    if(typeof p.vrHeightScale === 'number' && isFinite(p.vrHeightScale)){
+      xr.heightScale = Math.max(0, Math.min(400, p.vrHeightScale));
+      const sl = document.getElementById('vrHeightScale');
+      if(sl){ sl.value = xr.heightScale; document.getElementById('vrHeightScaleVal').textContent = xr.heightScale.toFixed(0); }
+    }
+    if(typeof p.vrSpeed === 'number' && isFinite(p.vrSpeed)){
+      xr.sendSpeed = Math.max(5, Math.min(100, p.vrSpeed));
+      const sl = document.getElementById('vrSpeed');
+      if(sl){ sl.value = xr.sendSpeed; document.getElementById('vrSpeedVal').textContent = xr.sendSpeed; }
+    }
+    // vrSigns の復元はバージョンガード付き。デフォルト符号の意味を変えたら VR_SIGNS_VER を上げ、
+    // 旧 localStorage の値で上書きされないようにする（さもないと古い符号が恒久的に残る）。
+    if(p.vrSignsVer === VR_SIGNS_VER && Array.isArray(p.vrSigns) && p.vrSigns.length === 6){
+      xr.signs = p.vrSigns.map(s => s === -1 ? -1 : 1);
+    }
+    // チェックボックス UI は最終的な xr.signs に同期（保存値・デフォルトどちらでも）
+    document.querySelectorAll('.vrSign').forEach(cb => {
+      const j = parseInt(cb.dataset.j, 10);
+      cb.checked = (xr.signs[j] === -1);
+    });
+    const _vm = (p.vrCtrlMode==='joint'||p.vrCtrlMode==='hand') ? p.vrCtrlMode : 'follow';
+    _applyVrCtrlMode(_vm);  // デフォルト follow（レート制御）/ joint / hand
     startTimers();
     await pollCurrent();
     await pollPower();
   }catch(e){ setStatus('boot 失敗: '+e,'err'); }
 })();
 
-// expose for tests
+// ── ポーズモード: 登録ポーズ(pose graph) + 向き(J1)/高さ(J2) オフセット ──────
+// 設計思想: 「目的なく 6DoF を連続操作」(=従来モード) と切り分け、登録済みの安全な
+// ポーズ間を遷移する運用系。ポーズ選択 → state.target に反映 → 既存 onTargetChange の
+// /check 安全ゲートを通す → APPLY で /move。J1 は回しても自己干渉/床干渉が不変なので
+// クランプのみ、J2 は高さが変わるため適用後に /check で再判定（既存パイプが自動でやる）。
+(function(){
+  const side = document.getElementById('side');
+  let uiMode = 'classic';
+  function setUiMode(m){
+    if(m !== 'classic' && m !== 'pose') return;
+    uiMode = m;
+    side.classList.toggle('mode-classic', m === 'classic');
+    side.classList.toggle('mode-pose', m === 'pose');
+    document.querySelectorAll('.topModeBtn').forEach(b => b.classList.toggle('active', b.dataset.uimode === m));
+    try{ localStorage.setItem('uiMode', m); }catch(e){}
+  }
+  document.querySelectorAll('.topModeBtn').forEach(btn =>
+    btn.addEventListener('click', () => setUiMode(btn.dataset.uimode)));
+
+  let selectedPose = null;  // {name, angles}
+  const j1El = document.getElementById('poseJ1'), j2El = document.getElementById('poseJ2');
+  const j1Val = document.getElementById('poseJ1Val'), j2Val = document.getElementById('poseJ2Val');
+  const selLbl = document.getElementById('poseSel'), resetBtn = document.getElementById('btnPoseReset');
+
+  const clampLim = (i, v) => Math.max(LIMITS[i][0], Math.min(LIMITS[i][1], v));
+  const fmtOff = v => (v >= 0 ? '+' : '') + v.toFixed(0) + '°';
+
+  function applyPoseToTarget(){
+    if(!selectedPose) return;
+    const a = selectedPose.angles.slice();
+    a[0] = clampLim(0, a[0] + parseFloat(j1El.value));   // 向き J1
+    a[1] = clampLim(1, a[1] + parseFloat(j2El.value));   // 高さ J2
+    state.target = a;
+    setSlidersFrom(state.target);
+    state.userTouched = true;
+    onTargetChange();  // /check 安全ゲート（NG なら APPLY 無効）
+  }
+  [j1El, j2El].forEach(el => el.addEventListener('input', () => {
+    j1Val.textContent = fmtOff(parseFloat(j1El.value));
+    j2Val.textContent = fmtOff(parseFloat(j2El.value));
+    applyPoseToTarget();
+  }));
+  resetBtn.addEventListener('click', () => {
+    j1El.value = 0; j2El.value = 0;
+    j1Val.textContent = '+0°'; j2Val.textContent = '+0°';
+    applyPoseToTarget();
+  });
+
+  function selectPose(p, btn){
+    selectedPose = p;
+    document.querySelectorAll('.poseLibBtn').forEach(b => b.classList.remove('active'));
+    if(btn) btn.classList.add('active');
+    selLbl.textContent = p.name;
+    j1El.disabled = j2El.disabled = resetBtn.disabled = false;
+    applyPoseToTarget();
+  }
+
+  // 非表示にした組込ポーズ名（localStorage、非破壊。poses.py は消さない）
+  function getHidden(){ try{ return new Set(JSON.parse(localStorage.getItem('poseHidden')||'[]')); }catch(e){ return new Set(); } }
+  function saveHidden(set){ try{ localStorage.setItem('poseHidden', JSON.stringify([...set])); }catch(e){} }
+
+  async function loadPoses(){
+    const lib = document.getElementById('poseLib');
+    try{
+      const j = await fetch('/poses').then(r => r.json());
+      const all = j.poses || [];
+      if(!all.length){ lib.innerHTML = '<span class="poseEmpty">登録ポーズなし</span>'; return; }
+      const hidden = getHidden();
+      // 組込ポーズは非表示にできる（非破壊）。登録ポーズは削除可で、ここでは非表示にしない。
+      const isHidden = p => !p.editable && hidden.has(p.name);
+      const hiddenPresent = all.filter(isHidden);
+      const visible = all.filter(p => !isHidden(p));
+      const order = ['待機','指差し','観測','その他'];
+      const groups = {};
+      visible.forEach(p => { (groups[p.group] = groups[p.group] || []).push(p); });
+      lib.innerHTML = '';
+      order.filter(g => groups[g]).forEach(g => {
+        const wrap = document.createElement('div'); wrap.className = 'poseGroup';
+        const lbl = document.createElement('div'); lbl.className = 'grpLbl'; lbl.textContent = g;
+        const btns = document.createElement('div'); btns.className = 'grpBtns';
+        groups[g].forEach(p => {
+          const b = document.createElement('button'); b.className = 'poseLibBtn'; b.textContent = p.name;
+          b.title = `J=[${p.angles.join(', ')}]` + (p.editable ? ' (登録ポーズ)' : ' (組込)');
+          b.addEventListener('click', () => selectPose(p, b));
+          btns.appendChild(b);
+          const aux = document.createElement('button'); aux.className = 'poseLibBtn';
+          if(p.editable){
+            // 登録ポーズ: 実削除（×）
+            aux.textContent = '×'; aux.title = `${p.name} を削除（登録ポーズ）`;
+            aux.style.cssText = 'padding:5px 7px;color:#e07a7a;border-color:#6a4a4a';
+            aux.addEventListener('click', async (ev) => {
+              ev.stopPropagation();
+              if(!confirm(`登録ポーズ「${p.name}」を削除しますか？`)) return;
+              try{
+                const r = await fetch('/poses/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+                  body:JSON.stringify({name:p.name})}).then(r=>r.json());
+                if(r.error) setStatus('削除 NG: '+r.error,'err'); else { setStatus(`ポーズ「${p.name}」削除`,'ok'); loadPoses(); }
+              }catch(e){ setStatus('削除失敗: '+e,'err'); }
+            });
+          } else {
+            // 組込ポーズ: 一覧から非表示（非破壊・後で復元可）
+            aux.textContent = '⊘'; aux.title = `${p.name} を一覧から非表示（組込・削除はされません）`;
+            aux.style.cssText = 'padding:5px 7px;color:#9d9d9d;border-color:#4a4a4a';
+            aux.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              const s = getHidden(); s.add(p.name); saveHidden(s);
+              setStatus(`「${p.name}」を一覧から非表示`,'ok'); loadPoses();
+            });
+          }
+          btns.appendChild(aux);
+        });
+        wrap.appendChild(lbl); wrap.appendChild(btns); lib.appendChild(wrap);
+      });
+      if(!groups['指差し']){
+        const note = document.createElement('div'); note.className = 'poseEmpty';
+        note.textContent = '指差しポーズは未登録（下の登録UIで追加）';
+        lib.appendChild(note);
+      }
+      // 非表示中の組込ポーズを復元する UI
+      if(hiddenPresent.length){
+        const det = document.createElement('details'); det.style.marginTop = '8px';
+        const sum = document.createElement('summary');
+        sum.style.cssText = 'cursor:pointer;color:#888;font-size:11px';
+        sum.textContent = `非表示中の組込ポーズ ${hiddenPresent.length}件（クリックで復元）`;
+        det.appendChild(sum);
+        const row = document.createElement('div'); row.className = 'grpBtns'; row.style.marginTop = '4px';
+        hiddenPresent.forEach(p => {
+          const rb = document.createElement('button'); rb.className = 'poseLibBtn';
+          rb.textContent = p.name + ' ↩'; rb.title = `${p.name} を再表示`;
+          rb.style.cssText = 'color:#9cdcfe;border-color:#3a5068';
+          rb.addEventListener('click', () => { const s = getHidden(); s.delete(p.name); saveHidden(s); loadPoses(); });
+          row.appendChild(rb);
+        });
+        det.appendChild(row); lib.appendChild(det);
+      }
+    }catch(e){ lib.innerHTML = '<span class="poseEmpty">/poses 取得失敗</span>'; }
+  }
+  loadPoses();
+
+  // ── teach flow: 脱力 → 手で姿勢 → 確定（登録）──────────────────────────
+  const teachBadge = document.getElementById('teachBadge');
+  const teachStatus = document.getElementById('teachStatus');
+  const teachCur = document.getElementById('teachCurAngles');
+  function setTeachBadge(text, cls){ teachBadge.textContent = text; teachBadge.className = 'badge ' + cls; }
+  function setTeachStatus(msg, color){ teachStatus.textContent = msg; teachStatus.style.color = color || '#aaa'; }
+
+  // live current-angle readout while teaching (uses globally-polled state.current)
+  setInterval(() => {
+    if(side.classList.contains('mode-pose') && Array.isArray(state.current)){
+      teachCur.textContent = '現在 J=[' + state.current.map(v => v.toFixed(1)).join(', ') + ']';
+    }
+  }, 400);
+
+  document.getElementById('btnTeachRelease').addEventListener('click', async () => {
+    if(!confirm('サーボを脱力します。アームを手で支えていないと自重で落下します。脱力しますか？')) return;
+    try{
+      const res = await fetch('/release',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      const j = await res.json();
+      if(res.status === 409){ setTeachStatus('動作中。先に ABORT(Esc) してから脱力', '#f48771'); return; }
+      setTeachBadge('脱力中', 'warn');
+      setTeachStatus('脱力した。手で姿勢を作って「③ 確定」を押す', '#dcc66a');
+    }catch(e){ setTeachStatus('脱力失敗: ' + e, '#f48771'); }
+  });
+
+  document.getElementById('btnTeachConfirm').addEventListener('click', async () => {
+    const name = document.getElementById('teachName').value.trim();
+    const group = document.getElementById('teachGroup').value;
+    if(!name){ setTeachStatus('ポーズ名を入力してください', '#f48771'); return; }
+    setTeachStatus('登録中…（安全判定 → 保持）', '#aaa');
+    try{
+      // ③-a: register current pose (server reads current angles, runs safety check)
+      const reg = await fetch('/poses/register',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name, group})}).then(r=>r.json());
+      if(reg.error){ setTeachStatus('登録 NG: ' + reg.error, '#f48771'); return; }
+      // ③-b: re-energize at this pose so it holds (no longer limp)
+      await fetch('/power_on',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});
+      setTeachBadge('保持', 'ok');
+      const a = reg.pose.angles;
+      setTeachStatus(`登録「${reg.pose.name}」J=[${a.join(', ')}] / 通電保持`, '#6a9955');
+      document.getElementById('teachName').value = '';
+      loadPoses();  // new pose appears in the library
+    }catch(e){ setTeachStatus('登録失敗: ' + e, '#f48771'); }
+  });
+
+  try{ if(localStorage.getItem('uiMode') === 'pose') setUiMode('pose'); }catch(e){}
+})();
+
+// expose for tests / Quest devtools 経由のリモートデバッグ
 window.__state = state;
 window.__fk = { jointPositions, endEffector };
+window.__xr = xr;
+window.__ik = { solveIKLocal, solveIKTeleop, fkPose: _ikFkPose };  // offline 検証用
 </script>
 </body></html>

@@ -204,6 +204,30 @@ def go_home() -> list:
     return [{"label": "home", "angles": [0, 0, -90, 0, 0, 0], "speed": 30}]
 
 
+def gripper(state="open", *, speed=None) -> list:
+    """Actuate the adaptive electric gripper. Not a joint move — emits a step
+    with a "gripper" flag that the /gesture executor routes to HUB.set_gripper.
+
+    state: "open" | "close" | "release" (or the raw int flag 0/1/10).
+    """
+    from .constants import (
+        GRIPPER_FLAG_OPEN, GRIPPER_FLAG_CLOSE, GRIPPER_FLAG_RELEASE,
+        GRIPPER_SPEED_DEFAULT,
+    )
+    flagmap = {"open": GRIPPER_FLAG_OPEN, "close": GRIPPER_FLAG_CLOSE, "release": GRIPPER_FLAG_RELEASE}
+    if isinstance(state, (int, float)):
+        flag = int(state)
+        name = {0: "open", 1: "close", 10: "release"}.get(flag, str(flag))
+    else:
+        name = str(state).lower()
+        if name not in flagmap:
+            raise ValueError(f"gripper state must be open/close/release, got {state!r}")
+        flag = flagmap[name]
+    label = {"open": "先端を開く", "close": "先端を閉じる", "release": "先端を脱力"}.get(name, f"gripper {flag}")
+    spd = GRIPPER_SPEED_DEFAULT if speed is None else max(1, min(100, int(speed)))
+    return [{"label": label, "gripper": flag, "speed": spd, "pause_s": 0.5}]
+
+
 def nod(direction, *, times: int = 2) -> list:
     """Yes-nod: small repeated bow. Faster + smaller than bow()."""
     j1 = _dir_to_j1(direction)
@@ -271,4 +295,6 @@ def build(spec: dict, from_angles=None) -> list:
         return point_at_extending(spec["target_xyz"], label=spec.get("label"))
     if kind == "home":
         return go_home()
+    if kind == "gripper":
+        return gripper(spec.get("state", "open"), speed=spec.get("speed"))
     raise ValueError(f"unknown gesture kind: {kind}")
