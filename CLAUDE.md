@@ -115,6 +115,7 @@ LAN 公開する場合は `--bind 0.0.0.0 --token <secret>` 必須。
 ## 共有ハーネス (.agent/)
 
 - [安全規約](.agent/rules/safety.md) — **モーション追加前に必読**
+- [UIデザイン規約](.agent/rules/design.md) — **ui.html / CSS を触る前に必読**（VSCode トークン体系・フラット規律）
 - [接続トラブルシュート](.agent/rules/connection-troubleshooting.md) — **接続できない時はまずこれ**。初回セットアップで詰まった全パターンと正解の対応付け
 - [プロトコルメモ](.agent/rules/mycobot-protocol.md) — シリアルプロトコルと既知事象
 - [計画](.agent/plans/) — `YYYY-MM-DD_<slug>.md`
