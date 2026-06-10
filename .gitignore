@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-so101/
 venv/
 .env
 .env.local
@@ -38,3 +39,12 @@ data/client_logs/
 src/robots/so101/meshes_glb/
 src/robots/so101/sim/*.png
 src/robots/so101/sim/*.gif
+
+# SO-101 3D プリント STL（upstream: TheRobotStudio SO-ARM100 の同梱物。~65MB なので track しない。
+# 入手元と発注手順は hardware/so101_print/3DPRINT.md 参照）
+hardware/so101_print/Follower/
+hardware/so101_print/Leader/
+hardware/so101_print/Individual/
+
+# セッション中の一時プレビュー画像
+src/so101_preview_shubie.png

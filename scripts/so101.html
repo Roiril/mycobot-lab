@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SO-101 — Offline Control</title>
+<style>
+:root{
+  --bg:#1e1e1e; --surface:#252526; --surface-2:#2d2d30; --surface-3:#333334;
+  --border:#3c3c3c; --border-strong:#525257; --divider:#2b2b2c;
+  --text:#d4d4d4; --text-muted:#9d9d9d; --text-faint:#6e6e72; --text-inv:#ffffff;
+  --accent:#4ec9ff; --accent-bg:#0e639c; --accent-bg-hover:#1177bb;
+  --accent-soft:rgba(78,201,255,.13); --accent-line:rgba(78,201,255,.30);
+  --ok:#388a5a; --ok-text:#4ec99a;
+  --warn:#9a7d12; --warn-text:#dcdcaa;
+  --danger:#a1260d; --danger-hover:#c5341a; --danger-text:#f14c4c; --danger-soft:rgba(161,38,13,.16);
+  --data-num:#9cdcfe; --data-tgt:#ce9178; --data-ok:#6a9955;
+  --mono:"Cascadia Code",Consolas,"Courier New",monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font-family:"Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.5}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;
+  background:var(--surface);border-bottom:1px solid var(--border)}
+header h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.3px}
+header .sub{color:var(--text-faint);font-size:12px}
+.badge{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:3px;
+  background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-line)}
+.spacer{flex:1}
+#status{font-family:var(--mono);font-size:12px;padding:3px 10px;border-radius:3px;
+  background:var(--surface-3);color:var(--text-muted);border:1px solid var(--border)}
+#status.ok{color:var(--ok-text);border-color:var(--ok)}
+#status.err{color:var(--danger-text);border-color:var(--danger);background:var(--danger-soft)}
+main{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;padding:16px;align-items:start}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:5px;overflow:hidden}
+.panel h2{font-size:12px;font-weight:600;margin:0;padding:9px 12px;color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--divider);background:var(--surface-2)}
+.panel .body{padding:12px}
+/* 3D view */
+#view{display:block;width:100%;height:auto;background:#0f0f10;border-radius:4px;
+  border:1px solid var(--border)}
+.noview{padding:48px 12px;text-align:center;color:var(--text-faint);font-family:var(--mono)}
+.tip{margin-top:10px;font-family:var(--mono);font-size:12px;color:var(--text-muted)}
+.tip b{color:var(--data-num);font-weight:500}
+/* joint rows */
+.jrow{display:grid;grid-template-columns:96px 1fr 64px;align-items:center;gap:10px;margin-bottom:11px}
+.jrow .name{font-size:12px;color:var(--text)}
+.jrow .name small{display:block;color:var(--text-faint);font-size:10px;font-family:var(--mono)}
+.jrow .val{font-family:var(--mono);font-size:13px;color:var(--data-num);text-align:right}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;
+  background:var(--surface-3);outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+  background:var(--accent);border:2px solid var(--bg);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
+  background:var(--accent);border:2px solid var(--bg);cursor:pointer}
+.row{display:flex;gap:8px;margin-top:10px}
+button{font-family:inherit;font-size:12px;padding:7px 14px;border-radius:4px;cursor:pointer;
+  background:var(--surface-3);color:var(--text);border:1px solid var(--border);transition:.12s}
+button:hover{border-color:var(--border-strong)}
+button.primary{background:var(--accent-bg);border-color:var(--accent-bg);color:var(--text-inv)}
+button.primary:hover{background:var(--accent-bg-hover)}
+button.warn{background:var(--danger);border-color:var(--danger);color:var(--text-inv)}
+button.warn:hover{background:var(--danger-hover)}
+.ik{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.ik label{font-size:11px;color:var(--text-faint);font-family:var(--mono);display:block;margin-bottom:3px}
+.ik input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;
+  color:var(--data-tgt);font-family:var(--mono);font-size:13px;padding:6px 8px}
+.ik input:focus{outline:none;border-color:var(--accent)}
+.hint{color:var(--text-faint);font-size:11px;margin-top:8px;font-family:var(--mono)}
+.stack{display:flex;flex-direction:column;gap:16px}
+</style>
+</head>
+<body>
+<header>
+  <h1>SO-101 <span class="sub">Offline Control</span></h1>
+  <a id="backMain" href="#" style="color:var(--text-muted);text-decoration:none;font-size:12px">← 🦾 myCobot UI (:8000)</a>
+  <span class="badge" id="drvBadge">…</span>
+  <div class="spacer"></div>
+  <span id="status">connecting…</span>
+</header>
+
+<main>
+  <div class="panel">
+    <h2>3D View — real geometry (MuJoCo)</h2>
+    <div class="body">
+      <img id="view" alt="SO-101" />
+      <div id="noview" class="noview" style="display:none">この driver はレンダリング非対応（--driver sim で起動）</div>
+      <div class="tip" id="tip">tip: —</div>
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="panel">
+      <h2>関節ジョグ</h2>
+      <div class="body" id="joints"></div>
+    </div>
+
+    <div class="panel">
+      <h2>グリッパ</h2>
+      <div class="body">
+        <div class="jrow">
+          <div class="name">gripper<small>0–100</small></div>
+          <input type="range" id="grip" min="0" max="100" step="1" value="50">
+          <div class="val" id="gripVal">50</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>位置 IK（mm）</h2>
+      <div class="body">
+        <div class="ik">
+          <div><label>X</label><input id="ikx" type="number" step="5" value="200"></div>
+          <div><label>Y</label><input id="iky" type="number" step="5" value="0"></div>
+          <div><label>Z</label><input id="ikz" type="number" step="5" value="200"></div>
+        </div>
+        <button class="primary" id="ikBtn">この座標へ移動</button>
+        <div class="hint">現在姿勢をシードに position-only IK。到達不可なら no solution。</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>動作</h2>
+      <div class="body">
+        <div class="row">
+          <button class="primary" id="homeBtn">HOME</button>
+          <button class="warn" id="relBtn">脱力 (release)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+// main myCobot UI lives on a different server (server.py, port 8000)
+$("#backMain").href = location.protocol + "//" + location.hostname + ":8000/";
+let S = null;            // last state
+let inflight = false;    // jog throttle guard
+let pending = false;
+
+function setStatus(msg, kind){
+  const el = $("#status");
+  el.textContent = msg;
+  el.className = kind || "";
+}
+
+function fmt(n){ return (n>=0?" ":"") + n.toFixed(1); }
+
+async function getState(){
+  const r = await fetch("/state");
+  return r.json();
+}
+
+function buildJoints(st){
+  const box = $("#joints");
+  box.innerHTML = "";
+  st.joint_names.forEach((name, i) => {
+    const [lo, hi] = st.limits[i];
+    const row = document.createElement("div");
+    row.className = "jrow";
+    row.innerHTML =
+      `<div class="name">${name}<small>${lo}…${hi}°</small></div>`+
+      `<input type="range" data-j="${i}" min="${lo}" max="${hi}" step="0.5" value="${st.angles[i]}">`+
+      `<div class="val" id="jv${i}">${fmt(st.angles[i])}</div>`;
+    box.appendChild(row);
+  });
+  box.querySelectorAll("input[type=range]").forEach(inp => {
+    inp.addEventListener("input", () => {
+      $("#jv"+inp.dataset.j).textContent = fmt(parseFloat(inp.value));
+      scheduleJog();
+    });
+  });
+}
+
+function currentAngles(){
+  return Array.from($("#joints").querySelectorAll("input[type=range]"))
+    .map(i => parseFloat(i.value));
+}
+function currentGrip(){ return parseFloat($("#grip").value); }
+
+function applyState(st){
+  S = st;
+  $("#drvBadge").textContent = st.renders ? "driver: sim (MuJoCo)" : "driver: mock";
+  $("#tip").innerHTML = `tip: <b>x ${st.tip_mm[0]}</b>  <b>y ${st.tip_mm[1]}</b>  <b>z ${st.tip_mm[2]}</b> mm`;
+  if(!st.renders){ $("#view").style.display="none"; $("#noview").style.display="block"; }
+  else refreshView();
+}
+
+function refreshView(){
+  if(S && !S.renders) return;
+  $("#view").src = "/frame.png?t=" + Date.now();
+}
+
+function scheduleJog(){
+  if(inflight){ pending = true; return; }
+  doJog();
+}
+
+async function doJog(){
+  inflight = true; pending = false;
+  try{
+    const r = await fetch("/jog", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({angles: currentAngles(), gripper: currentGrip()})});
+    const st = await r.json();
+    if(st.ok === false){ setStatus(st.msg || "unsafe", "err"); }
+    else { setStatus("ok", "ok"); }
+    applyState(st);
+  }catch(e){ setStatus("err: "+e, "err"); }
+  inflight = false;
+  if(pending) doJog();
+}
+
+async function post(path, body){
+  setStatus("…", "");
+  const r = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body||{})});
+  const st = await r.json();
+  setStatus(st.ok===false ? (st.msg||"failed") : (st.msg||"ok"), st.ok===false?"err":"ok");
+  // sync sliders to resulting pose
+  if(st.angles){
+    const inps = $("#joints").querySelectorAll("input[type=range]");
+    st.angles.forEach((a,i)=>{ if(inps[i]){ inps[i].value=a; $("#jv"+i).textContent=fmt(a);} });
+    if(st.gripper!=null){ $("#grip").value=st.gripper; $("#gripVal").textContent=Math.round(st.gripper); }
+  }
+  applyState(st);
+}
+
+$("#grip").addEventListener("input", () => {
+  $("#gripVal").textContent = Math.round(currentGrip());
+  scheduleJog();
+});
+$("#homeBtn").addEventListener("click", () => post("/home"));
+$("#relBtn").addEventListener("click", () => post("/release"));
+$("#ikBtn").addEventListener("click", () => post("/ik",
+  {xyz:[parseFloat($("#ikx").value), parseFloat($("#iky").value), parseFloat($("#ikz").value)],
+   gripper: currentGrip()}));
+
+(async function init(){
+  try{
+    const st = await getState();
+    buildJoints(st);
+    applyState(st);
+    setStatus("ready", "ok");
+  }catch(e){ setStatus("connect failed: "+e, "err"); }
+})();
+</script>
+</body>
+</html>
