@@ -68,8 +68,11 @@ src/arm/
 └── poses.py              # 名前付き姿勢（HOME 等）
 
 scripts/
-├── server.py             # HTTP サーバ（HTTP only、ロジックは arm/ に委譲）
-├── ui.html               # three.js + vanilla JS、単一ファイル
+├── server.py             # HTTP サーバ（HTTP only、ロジックは arm/ に委譲）。/hand/* で✋ハンドも配信
+├── ui.html               # メイン UI（🦾アーム + ✋ハンド統合）。three.js + vanilla JS、単一ファイル
+├── hand.html             # ✋ハンド単体ページ（/hand で server.py が配信。three.js 無し、Quest 軽量版）
+├── so101_server.py       # SO-101 用の独立ミニサーバ（port 8011。Phase 2 で server.py へ統合予定）
+├── so101.html            # SO-101 UI（so101_server.py が配信）
 ├── check.py / move.py    # 古い手動 CLI（保守）
 └── sweep.py              # 接続診断
 
@@ -77,6 +80,16 @@ tests/
 └── test_*.py             # safety, kinematics, planner, ik_*, pose_resolver, grasp
                           # 全 pure function + offline E2E（実機不要で 56 件 pass）
 ```
+
+### 2.1b UI / サーバの全体像（3 UI・2 サーバ）
+
+| UI | サーバ / ポート | 対象ロボット | 役割 |
+|---|---|---|---|
+| `ui.html`（`/`） | `server.py` :8000（Quest 開発時は :8001） | 🦾 myCobot + ✋ ハンド | メイン。5 ワークスペースタブ |
+| `hand.html`（`/hand`） | 同上（同一サーバ） | ✋ ハンドのみ | Quest 用軽量 teleop（three.js 無し） |
+| `so101.html`（`/`） | `so101_server.py` :8011 | SO-101 | bring-up 用に意図的に分離（[memory/so101_bringup](../.claude/memory/so101_bringup.md)）。Phase 2 で server.py へ統合予定 |
+
+導線: ui.html の status bar から `/hand`・`:8011` へリンク、各サブ UI からメイン UI へ戻りリンクあり。**新しいロボット UI を足す時は、この表 + 相互リンク + [design.md](../.agent/rules/design.md) のトークン追従を必ず揃えること。**
 
 ### 2.2 依存方向（重要）
 

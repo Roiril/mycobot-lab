@@ -1,6 +1,8 @@
 # UI デザイン規約（mycobot-lab control UI）
 
-`scripts/ui.html` の視覚言語。**VSCode dark テーマ × フラット × デザイントークン駆動**。couple-sync の規律（単一アクセント・装飾最小・トークン一元管理）を VSCode 配色で適用したもの。UI/CSS を変更する前に必ず読む。
+プロジェクト全 UI（`scripts/ui.html` / `scripts/hand.html` / `scripts/so101.html`）の視覚言語。**VSCode dark テーマ × フラット × デザイントークン駆動**。couple-sync の規律（単一アクセント・装飾最小・トークン一元管理）を VSCode 配色で適用したもの。UI/CSS を変更する前に必ず読む。
+
+> **マルチ UI 注意**: トークンの正本は ui.html の `:root`。hand.html / so101.html は同じ値の**手動コピー**を持つ（単一ファイル運用のため）。トークン値を変える時は 3 ファイルすべてを更新する。新 UI を作る時は ui.html の `:root` をコピーし、メイン UI への戻りリンクを付け、`docs/ARCHITECTURE.md` §2.1b の表に追記する。
 
 ## 原則
 

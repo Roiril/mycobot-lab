@@ -216,6 +216,10 @@
  #statusBar .sb-grp{display:flex;align-items:center;gap:6px}
  #statusBar .sb-spacer{flex:1}
  #statusBar .sb-brand{color:var(--text-faint);letter-spacing:.5px}
+ /* cross-UI links — the other robots' pages (✋ standalone / SO-101 server) */
+ #statusBar .sb-link{color:var(--text-muted);text-decoration:none;font-size:var(--fs-2xs);
+   padding:3px 7px;border:var(--bw) solid var(--border);border-radius:var(--radius-sm)}
+ #statusBar .sb-link:hover{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
  /* persistent mini-ABORT — reachable from any workspace (mirrors Esc) */
  #sbAbort{padding:3px 10px;margin:0;font-size:var(--fs-2xs);font-weight:var(--fw-bold);letter-spacing:.5px;
    background:var(--danger);color:var(--text-inv);border:var(--bw) solid transparent;border-radius:var(--radius-sm)}
@@ -260,6 +264,10 @@
       </span>
       <span class="sb-spacer"></span>
       <button id="sbAbort" disabled title="動作中止（Esc と同じ。どのタブからでも有効）">ABORT</button>
+      <span class="sb-grp">
+        <a class="sb-link" href="/hand" title="✋ ハンド単体ページ（three.js 無しの軽量版 — Quest 向け）">✋</a>
+        <a class="sb-link" id="sbSo101" href="#" title="SO-101 UI（別サーバ :8011 — python scripts/so101_server.py で起動）">SO-101</a>
+      </span>
       <span class="sb-brand">myCobot 320</span>
     </div>
 
@@ -4462,6 +4470,10 @@ _updateXR = function(frame) {
   }
   document.querySelectorAll('.wsTab').forEach(btn =>
     btn.addEventListener('click', () => setWorkspace(btn.dataset.tab)));
+
+  // SO-101 は別サーバ（so101_server.py、port 8011）— 同一ホストの 8011 へ飛ばす
+  const so101Link = document.getElementById('sbSo101');
+  if(so101Link) so101Link.href = location.protocol + '//' + location.hostname + ':8011/';
 
   let selectedPose = null;  // {name, angles}
   const j1El = document.getElementById('poseJ1'), j2El = document.getElementById('poseJ2');
