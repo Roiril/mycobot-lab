@@ -21,7 +21,8 @@ Run:
 """
 from __future__ import annotations
 import sys, io, json, argparse, pathlib, threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from concurrent.futures import ThreadPoolExecutor
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -34,13 +35,18 @@ from robots.so101.kinematics import end_effector  # noqa: E402
 
 UI_HTML = HERE / "so101.html"
 
-# Process-wide state. The server is single-threaded (one user, dev tool), so a
-# single lock around the driver + MuJoCo GL context is sufficient and avoids
-# per-thread GL affinity problems.
+# Process-wide state. The server is multi-threaded (ThreadingHTTPServer) —
+# a single-threaded HTTPServer deadlocks the moment any client opens a
+# connection without sending a request (browser preconnect, port health
+# checks), because the lone thread blocks in readline with no timeout.
+# LOCK serializes driver/sim mutation; GL rendering additionally runs on
+# RENDER_EXEC (one dedicated thread) because the MuJoCo offscreen GL context
+# is thread-affine — it must be created and used on the same thread.
 CTRL: So101Controller | None = None
 DRIVER = None
 RENDERS = False           # True when the driver can render() PNGs (sim)
 LOCK = threading.Lock()
+RENDER_EXEC = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mjgl")
 
 
 def make_driver(kind: str, robot_port: str | None):
@@ -78,16 +84,22 @@ def state_dict() -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # HTTP/1.1 だが keep-alive は使わない（下で Connection: close を強制）。
+    # アイドル keep-alive 接続にスレッドを貼り付けたままにしない（dev tool
+    # なのでスレッドは使い捨てで良い）。1 接続 = 1 リクエスト。
     protocol_version = "HTTP/1.1"
+    timeout = 30  # readline 待ちの放置接続（preconnect 等）を自動解放
 
     def log_message(self, *a):  # quiet
         pass
 
     def _send(self, code, body: bytes, ctype="application/json"):
+        self.close_connection = True
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -119,7 +131,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             with LOCK:
-                arr = DRIVER.render(width=560, height=420)
+                # GL is thread-affine — always render on the dedicated thread
+                arr = RENDER_EXEC.submit(DRIVER.render, width=560, height=420).result(timeout=10)
             from PIL import Image
             buf = io.BytesIO()
             Image.fromarray(arr).save(buf, format="PNG")
@@ -190,9 +203,12 @@ def main():
     except Exception as e:
         print(f"[warn] initial home failed: {e}")
 
-    srv = HTTPServer((args.bind, args.port), Handler)
-    print(f"[SO-101] driver={args.driver} renders={RENDERS}  ->  http://{args.bind}:{args.port}/")
-    print("  Ctrl-C to stop.")
+    srv = ThreadingHTTPServer((args.bind, args.port), Handler)
+    srv.daemon_threads = True
+    # flush: 親プロセスにパイプされると stdout がブロックバッファになり、
+    # 起動ログが見えず「無言でハング」と誤診される
+    print(f"[SO-101] driver={args.driver} renders={RENDERS}  ->  http://{args.bind}:{args.port}/", flush=True)
+    print("  Ctrl-C to stop.", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
