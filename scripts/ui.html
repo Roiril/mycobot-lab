@@ -104,6 +104,7 @@
  #side.ws-vr     [data-ws]:not([data-ws~="vr"]){display:none}
  #side.ws-watch  [data-ws]:not([data-ws~="watch"]){display:none}
  #side.ws-system [data-ws]:not([data-ws~="system"]){display:none}
+ #side.ws-so101  [data-ws]:not([data-ws~="so101"]){display:none}
 
  /* jog pad — monospace, accent on press */
  button.jogBtn{background:var(--surface-3);color:var(--text);padding:8px 4px;font-size:var(--fs-base);
@@ -266,7 +267,6 @@
       <button id="sbAbort" disabled title="動作中止（Esc と同じ。どのタブからでも有効）">ABORT</button>
       <span class="sb-grp">
         <a class="sb-link" href="/hand" title="✋ ハンド単体ページ（three.js 無しの軽量版 — Quest 向け）">✋</a>
-        <a class="sb-link" id="sbSo101" href="#" title="SO-101 UI（別サーバ :8011 — python scripts/so101_server.py で起動）">SO-101</a>
       </span>
       <span class="sb-brand">myCobot 320</span>
     </div>
@@ -277,6 +277,7 @@
       <button class="wsTab" data-tab="vr" title="WebXR 遠隔操作 + ✋ロボットハンド手動操作">VR·✋</button>
       <button class="wsTab" data-tab="watch" title="カメラライブ / 観測 / ジェスチャ / 空間記憶">観測</button>
       <button class="wsTab" data-tab="system" title="サーボ監視 / 3D凡例 / 緊急操作">システム</button>
+      <button class="wsTab" data-tab="so101" title="SO-101（第3のロボット: 5-DoF follower）。MuJoCo 仮想 or 実機を /so101/* API で操作">SO-101</button>
     </div>
 
     <div id="safetyZone">
@@ -503,6 +504,45 @@
       </div>
       <div id="handSliders"></div>
       <div id="handStatus" style="font-family:Consolas,monospace;font-size:10px;color:var(--text-muted);margin-top:6px">—</div>
+    </div>
+
+    <div class="sec" data-ws="so101">SO-101（第3のロボット / 5-DoF follower — アーム・ハンドとは別系統）</div>
+
+    <div class="panel" data-ws="so101" id="so101ViewPanel">
+      <h2>3D ビュー — 実ジオメトリ (MuJoCo) <span class="badge gray" id="so101Badge">未接続</span></h2>
+      <img id="so101View" alt="SO-101" style="display:block;width:100%;height:auto;border:var(--bw) solid var(--border);border-radius:var(--radius-sm);background:var(--bg)">
+      <div id="so101NoView" style="display:none;padding:32px 8px;text-align:center;color:var(--text-faint);font-family:var(--font-mono);font-size:11px">この driver はレンダリング非対応</div>
+      <div id="so101Tip" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-top:6px">tip: —</div>
+    </div>
+
+    <div class="panel" data-ws="so101">
+      <h2>関節ジョグ</h2>
+      <div id="so101Joints"><div style="color:var(--text-faint);font-size:11px">タブを開くと /so101/state から構築…</div></div>
+      <div class="hand-row" style="margin-top:8px">
+        <label style="color:var(--text-muted);font-size:12px">gripper</label>
+        <input type="range" id="so101Grip" min="0" max="100" step="1" value="50">
+        <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);text-align:right" id="so101GripVal">50</span>
+      </div>
+    </div>
+
+    <div class="panel" data-ws="so101">
+      <h2>位置 IK（mm）</h2>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">
+        <label style="font-size:11px;color:var(--text-faint)">X<input type="number" id="so101IkX" step="5" value="200" style="width:100%"></label>
+        <label style="font-size:11px;color:var(--text-faint)">Y<input type="number" id="so101IkY" step="5" value="0" style="width:100%"></label>
+        <label style="font-size:11px;color:var(--text-faint)">Z<input type="number" id="so101IkZ" step="5" value="200" style="width:100%"></label>
+      </div>
+      <button class="primary" id="so101IkBtn">この座標へ移動</button>
+      <div style="color:var(--text-faint);font-size:11px;margin-top:6px">現在姿勢をシードに position-only IK。到達不可なら no solution。</div>
+    </div>
+
+    <div class="panel" data-ws="so101">
+      <h2>動作</h2>
+      <div style="display:flex;gap:6px">
+        <button class="primary" id="so101HomeBtn">HOME</button>
+        <button class="abort" id="so101RelBtn" style="display:inline-block">脱力 (release)</button>
+      </div>
+      <div id="so101Status" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-top:6px">—</div>
     </div>
 
     <div class="sec" data-ws="watch">カメラ</div>
@@ -4459,7 +4499,7 @@ _updateXR = function(frame) {
 // クランプのみ、J2 は高さが変わるため適用後に /check で再判定（既存パイプが自動でやる）。
 (function(){
   const side = document.getElementById('side');
-  const WORKSPACES = ['drive','pose','vr','watch','system'];
+  const WORKSPACES = ['drive','pose','vr','watch','system','so101'];
   let workspace = 'drive';
   function setWorkspace(w){
     if(!WORKSPACES.includes(w)) return;
@@ -4467,13 +4507,10 @@ _updateXR = function(frame) {
     WORKSPACES.forEach(x => side.classList.toggle('ws-' + x, x === w));
     document.querySelectorAll('.wsTab').forEach(b => b.classList.toggle('active', b.dataset.tab === w));
     try{ localStorage.setItem('ui.ws', w); }catch(e){}
+    if(w === 'so101' && window.so101Activate) window.so101Activate();
   }
   document.querySelectorAll('.wsTab').forEach(btn =>
     btn.addEventListener('click', () => setWorkspace(btn.dataset.tab)));
-
-  // SO-101 は別サーバ（so101_server.py、port 8011）— 同一ホストの 8011 へ飛ばす
-  const so101Link = document.getElementById('sbSo101');
-  if(so101Link) so101Link.href = location.protocol + '//' + location.hostname + ':8011/';
 
   let selectedPose = null;  // {name, angles}
   const j1El = document.getElementById('poseJ1'), j2El = document.getElementById('poseJ2');
@@ -4652,6 +4689,117 @@ window.__state = state;
 window.__fk = { jointPositions, endEffector };
 window.__xr = xr;
 window.__ik = { solveIKLocal, solveIKTeleop, fkPose: _ikFkPose };  // offline 検証用
+</script>
+<script>
+// ── SO-101（第3のロボット）ワークスペース。/so101/* API（同一サーバ）を叩く。
+// サーバ側はタブ初回アクティブ時に lazy-init（MuJoCo ロードで初回 ~数秒かかる）。
+(function(){
+  const $ = id => document.getElementById(id);
+  let inited = false, inflight = false, pending = false, S = null;
+
+  function setStatus(msg, kind){
+    const el = $('so101Status');
+    el.textContent = msg;
+    el.style.color = kind === 'err' ? 'var(--danger-text)' : kind === 'ok' ? 'var(--ok-text)' : 'var(--text-muted)';
+  }
+  function fmt(n){ return (n >= 0 ? ' ' : '') + n.toFixed(1); }
+
+  function buildJoints(st){
+    const box = $('so101Joints');
+    box.innerHTML = '';
+    st.joint_names.forEach((name, i) => {
+      const [lo, hi] = st.limits[i];
+      const row = document.createElement('div');
+      row.className = 'hand-row';
+      row.innerHTML =
+        `<label style="color:var(--text-muted);font-size:11px" title="${lo}…${hi}°">${name}</label>`+
+        `<input type="range" data-j="${i}" min="${lo}" max="${hi}" step="0.5" value="${st.angles[i]}">`+
+        `<span style="font-family:var(--font-mono);font-size:11px;color:var(--data-num);text-align:right" id="so101jv${i}">${fmt(st.angles[i])}</span>`;
+      box.appendChild(row);
+    });
+    box.querySelectorAll('input[type=range]').forEach(inp => {
+      inp.addEventListener('input', () => {
+        $('so101jv' + inp.dataset.j).textContent = fmt(parseFloat(inp.value));
+        scheduleJog();
+      });
+    });
+  }
+  function currentAngles(){
+    return Array.from($('so101Joints').querySelectorAll('input[type=range]')).map(i => parseFloat(i.value));
+  }
+  function applyState(st){
+    S = st;
+    const badge = $('so101Badge');
+    badge.textContent = st.driver === 'sim' ? 'sim (MuJoCo)' : st.driver;
+    badge.className = 'badge ' + (st.driver === 'real' ? 'ok' : 'gray');
+    $('so101Tip').innerHTML = `tip: x ${st.tip_mm[0]}  y ${st.tip_mm[1]}  z ${st.tip_mm[2]} mm`;
+    if(!st.renders){ $('so101View').style.display = 'none'; $('so101NoView').style.display = 'block'; }
+    else $('so101View').src = '/so101/frame.png?t=' + Date.now();
+    if(st.angles){
+      const inps = $('so101Joints').querySelectorAll('input[type=range]');
+      if(inps.length) st.angles.forEach((a, i) => {
+        if(inps[i] && document.activeElement !== inps[i]){ inps[i].value = a; $('so101jv' + i).textContent = fmt(a); }
+      });
+      if(st.gripper != null && document.activeElement !== $('so101Grip')){
+        $('so101Grip').value = st.gripper; $('so101GripVal').textContent = Math.round(st.gripper);
+      }
+    }
+  }
+  function scheduleJog(){ if(inflight){ pending = true; return; } doJog(); }
+  async function doJog(){
+    inflight = true; pending = false;
+    try{
+      const r = await fetch('/so101/jog', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({angles: currentAngles(), gripper: parseFloat($('so101Grip').value)})});
+      const st = await r.json();
+      setStatus(st.ok === false ? (st.msg || 'unsafe') : 'ok', st.ok === false ? 'err' : 'ok');
+      applyState(st);
+    }catch(e){ setStatus('err: ' + e, 'err'); }
+    inflight = false;
+    if(pending) doJog();
+  }
+  async function post(path, body){
+    setStatus('…');
+    try{
+      const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body || {})});
+      const st = await r.json();
+      setStatus(st.ok === false ? (st.msg || 'failed') : (st.msg || 'ok'), st.ok === false ? 'err' : 'ok');
+      applyState(st);
+    }catch(e){ setStatus('err: ' + e, 'err'); }
+  }
+
+  window.so101Activate = async function(){
+    if(inited) return;
+    inited = true;
+    setStatus('SO-101 初期化中…（初回は MuJoCo ロードで数秒）');
+    try{
+      const st = await fetch('/so101/state').then(r => {
+        if(!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      });
+      buildJoints(st);
+      applyState(st);
+      setStatus('ready', 'ok');
+    }catch(e){
+      inited = false;  // 次のタブ選択で再試行
+      setStatus('接続失敗: ' + e + '（--so101-driver off の可能性）', 'err');
+    }
+  };
+
+  $('so101Grip').addEventListener('input', () => {
+    $('so101GripVal').textContent = Math.round(parseFloat($('so101Grip').value));
+    scheduleJog();
+  });
+  $('so101HomeBtn').addEventListener('click', () => post('/so101/home'));
+  $('so101RelBtn').addEventListener('click', () => post('/so101/release'));
+  $('so101IkBtn').addEventListener('click', () => post('/so101/ik',
+    {xyz: [parseFloat($('so101IkX').value), parseFloat($('so101IkY').value), parseFloat($('so101IkZ').value)],
+     gripper: parseFloat($('so101Grip').value)}));
+
+  // ページロード時に so101 タブが復元されていたら即初期化
+  if(document.getElementById('side').classList.contains('ws-so101')) window.so101Activate();
+})();
 </script>
 <script>
 // ── 折りたたみアコーディオン: 各パネルの h2 クリックで開閉、状態は localStorage 永続 ──

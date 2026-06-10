@@ -2,18 +2,6 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "so101-offline",
-      "runtimeExecutable": "python",
-      "runtimeArgs": [
-        "scripts/so101_server.py",
-        "--driver",
-        "sim",
-        "--port",
-        "8011"
-      ],
-      "port": 8011
-    },
-    {
       "name": "mycobot-server",
       "runtimeExecutable": "python",
       "runtimeArgs": [

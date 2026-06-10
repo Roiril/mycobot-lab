@@ -23,7 +23,7 @@ Endpoints:
   POST /capture_calib_frame {cam?} → save current frame into data/calib_images/<cam_id>/
 """
 from __future__ import annotations
-import sys, os, json, math, time, socket, pathlib, argparse, logging, datetime
+import sys, os, json, math, time, socket, pathlib, argparse, logging, datetime, threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
@@ -69,6 +69,99 @@ _LAST_HAND_MONO = 0.0  # last /hand/fingers timestamp — throttles hand serial 
 AUTH_TOKEN: str | None = None
 SHUTTING_DOWN = False
 MAX_SPEED_RUNTIME = MAX_SPEED  # CLI-overridable
+
+SO101 = None  # So101Subsystem | None — lazy-initialized on first /so101/* request
+
+
+class So101Subsystem:
+    """SO-101 (third robot: 5-DoF follower arm) mounted under /so101/*.
+
+    Lazy: constructed on the first /so101/* request so arm-only sessions pay
+    nothing (the MuJoCo sim takes ~2s + ~500MB to load). All driver/sim access
+    is serialized by self.lock; offscreen GL rendering additionally runs on a
+    dedicated single thread (self._gl) because the MuJoCo GL context is
+    thread-affine. Mirrors the (now removed) standalone so101_server.py.
+    """
+
+    def __init__(self, kind: str, robot_port: str | None):
+        from concurrent.futures import ThreadPoolExecutor
+        from robots.so101 import profile as so101_profile
+        from robots.so101.controller import So101Controller
+        from robots.so101.kinematics import end_effector as so101_ee
+        self.profile = so101_profile
+        self._ee = so101_ee
+        self.kind = kind
+        self.lock = threading.Lock()
+        self._gl = ThreadPoolExecutor(max_workers=1, thread_name_prefix="so101gl")
+        self.renders = False
+        if kind == "sim":
+            try:
+                from robots.so101.sim.mujoco_sim import MujocoSo101Driver
+                # construct on the GL thread so the (lazy) renderer context
+                # later lives on the same thread that built the model
+                self.driver = self._gl.submit(MujocoSo101Driver).result(timeout=60)
+                self.renders = True
+            except ImportError as e:
+                log.warning("so101: mujoco unavailable (%s) — falling back to mock", e)
+                from robots.so101.driver import MockSo101Driver
+                self.driver = MockSo101Driver()
+                self.kind = "mock"
+        elif kind == "mock":
+            from robots.so101.driver import MockSo101Driver
+            self.driver = MockSo101Driver()
+        elif kind == "real":
+            from robots.so101.driver import LerobotSo101Driver
+            self.driver = LerobotSo101Driver(port=robot_port)
+        else:
+            raise ValueError(f"unknown so101 driver {kind!r}")
+        self.driver.connect()
+        if hasattr(self.driver, "set_torque"):
+            self.driver.set_torque(True)
+        self.ctrl = So101Controller(self.driver)
+        try:
+            self.ctrl.move_to_angles(list(so101_profile.HOME_ANGLES), gripper=50.0)
+        except Exception as e:
+            log.warning("so101: initial home failed: %s", e)
+        log.info("so101: driver=%s renders=%s", self.kind, self.renders)
+
+    def state(self) -> dict:
+        p = self.profile
+        angles = self.ctrl.current_angles()
+        grip = self.driver.read_gripper()
+        return {
+            "joint_names": p.JOINT_NAMES, "gripper_name": p.GRIPPER_NAME,
+            "num_joints": p.NUM_JOINTS, "limits": p.JOINT_LIMITS,
+            "gripper_range": [0, 100], "home": p.HOME_ANGLES,
+            "angles": [round(a, 2) for a in angles],
+            "gripper": None if grip is None else round(grip, 1),
+            "tip_mm": [round(c, 1) for c in self._ee(angles)],
+            "renders": self.renders, "driver": self.kind,
+        }
+
+    def frame_png(self, width=560, height=420) -> bytes:
+        arr = self._gl.submit(self.driver.render, width=width, height=height).result(timeout=10)
+        import io as _io
+        from PIL import Image
+        buf = _io.BytesIO()
+        Image.fromarray(arr).save(buf, format="PNG")
+        return buf.getvalue()
+
+
+def _so101() -> "So101Subsystem":
+    """Lazy accessor (thread-safe double-checked via module import lock pattern)."""
+    global SO101
+    if SO101_DRIVER_KIND == "off":
+        raise RuntimeError("so101 subsystem disabled (--so101-driver off)")
+    if SO101 is None:
+        with _SO101_INIT_LOCK:
+            if SO101 is None:
+                SO101 = So101Subsystem(SO101_DRIVER_KIND, SO101_ROBOT_PORT)
+    return SO101
+
+
+_SO101_INIT_LOCK = threading.Lock()
+SO101_DRIVER_KIND = "sim"     # set from CLI in main()
+SO101_ROBOT_PORT: str | None = None
 
 
 def _preflight(body) -> tuple[Optional[dict], Optional[list[float]], Optional[int]]:
@@ -434,6 +527,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body); return
             if path == "/favicon.ico":
                 self.send_response(204); self.end_headers(); return
+            if path == "/so101/state":
+                s = _so101()
+                with s.lock:
+                    self._json(200, s.state())
+                return
+            if path == "/so101/frame.png":
+                s = _so101()
+                if not s.renders:
+                    self._json(404, {"error": "driver has no rendering"}); return
+                with s.lock:
+                    png = s.frame_png()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(png)))
+                self.end_headers()
+                self.wfile.write(png); return
             if path.startswith("/static/"):
                 # Local vendor assets (three.js etc.) — keeps UI working offline.
                 rel = path[len("/static/"):]
@@ -718,7 +828,8 @@ class Handler(BaseHTTPRequestHandler):
             # write endpoints require auth (if configured)
             if path in ("/move", "/home", "/release", "/abort",
                         "/power_on", "/poses/register", "/poses/delete",
-                        "/hand/fingers", "/hand/preset") and not self._auth_ok():
+                        "/hand/fingers", "/hand/preset",
+                        "/so101/jog", "/so101/ik", "/so101/home", "/so101/release") and not self._auth_ok():
                 self._json(401, {"error": "auth required"}); return
 
             body = self._read_body()
@@ -919,6 +1030,31 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     self._json(503, {"ok": False, "code": "HAND_IO", "error": str(e)}); return
                 self._json(200, {"ok": True, "preset": preset, "cur_us": cur, "offline": HAND.offline}); return
+
+            if path.startswith("/so101/"):
+                # SO-101 (third robot). All verbs return the full state + ok/msg
+                # so the UI can sync sliders in one round-trip.
+                s = _so101()
+                with s.lock:
+                    if path == "/so101/jog":
+                        angles = body.get("angles")
+                        if not isinstance(angles, list) or len(angles) != s.profile.NUM_JOINTS:
+                            self._json(400, {"ok": False, "msg": f"angles must be length {s.profile.NUM_JOINTS}"}); return
+                        ok, msg = s.ctrl.move_to_angles(angles, gripper=body.get("gripper"))
+                    elif path == "/so101/ik":
+                        xyz = body.get("xyz")
+                        if not isinstance(xyz, list) or len(xyz) != 3:
+                            self._json(400, {"ok": False, "msg": "xyz must be length 3"}); return
+                        ok, msg = s.ctrl.move_to_position(xyz, gripper=body.get("gripper"))
+                    elif path == "/so101/home":
+                        ok, msg = s.ctrl.home()
+                    elif path == "/so101/release":
+                        s.driver.release()
+                        ok, msg = True, "released"
+                    else:
+                        self._json(404, {"error": "not found"}); return
+                    out = s.state(); out["ok"] = ok; out["msg"] = msg
+                    self._json(200, out); return
 
             if path == "/solve_ik":
                 """Body: {x, y, z, pose?: {kind:..., ...}, rx?, ry?, rz?}
@@ -1926,6 +2062,7 @@ def lan_ip() -> str:
 
 def main():
     global HUB, VISION, INDEX_HTML, AUTH_TOKEN, SHUTTING_DOWN, MAX_SPEED_RUNTIME, MEMORY, HAND
+    global SO101_DRIVER_KIND, SO101_ROBOT_PORT
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser()
@@ -1938,6 +2075,10 @@ def main():
     # ✋ HAND (5-finger robot, separate from the arm)
     ap.add_argument("--hand-port", default=None, help="Arduino COM port for the hand (default: autodetect)")
     ap.add_argument("--no-hand", action="store_true", help="disable the hand subsystem entirely")
+    # SO-101 (third robot: 5-DoF follower arm), mounted under /so101/*
+    ap.add_argument("--so101-driver", choices=["sim", "mock", "real", "off"], default="sim",
+                    help="SO-101 driver (lazy-loaded on first /so101/* request). default: sim (MuJoCo)")
+    ap.add_argument("--so101-port", default=None, help="COM port for --so101-driver real")
     ap.add_argument("--real-hand", action="store_true",
                     help="use the REAL hand even in --offline (virtual arm + physical hand; "
                          "for driving only the hand from Quest without moving the arm)")
@@ -2011,6 +2152,12 @@ def main():
         HAND = make_hand(port=args.hand_port)
         log.info("hand: %s on %s", "connected" if not HAND.offline else "virtual", HAND.port)
 
+    # SO-101: store CLI choice; actual init is lazy (first /so101/* request)
+    SO101_DRIVER_KIND = args.so101_driver
+    SO101_ROBOT_PORT = args.so101_port
+    if SO101_DRIVER_KIND == "real" and not SO101_ROBOT_PORT:
+        ap.error("--so101-driver real requires --so101-port COMx")
+
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     mode = "OFFLINE" if args.offline else "live"
     print(f"\n  [{mode}] http://localhost:{args.port}/")
@@ -2046,6 +2193,11 @@ def main():
                 HAND.shutdown()
         except Exception as e:
             print(f"hand shutdown failed: {e}")
+        try:
+            if SO101 is not None:
+                SO101.driver.disconnect()
+        except Exception as e:
+            print(f"so101 shutdown failed: {e}")
         HUB.shutdown()
 
 

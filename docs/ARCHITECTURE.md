@@ -68,11 +68,10 @@ src/arm/
 └── poses.py              # 名前付き姿勢（HOME 等）
 
 scripts/
-├── server.py             # HTTP サーバ（HTTP only、ロジックは arm/ に委譲）。/hand/* で✋ハンドも配信
-├── ui.html               # メイン UI（🦾アーム + ✋ハンド統合）。three.js + vanilla JS、単一ファイル
+├── server.py             # 統一 HTTP サーバ（🦾アーム + ✋/hand/* + SO-101 /so101/*）
+├── ui.html               # 統一 UI（6 タブ: 操作/ポーズ/VR·✋/観測/システム/SO-101）。単一ファイル
 ├── hand.html             # ✋ハンド単体ページ（/hand で server.py が配信。three.js 無し、Quest 軽量版）
-├── so101_server.py       # SO-101 用の独立ミニサーバ（port 8011。Phase 2 で server.py へ統合予定）
-├── so101.html            # SO-101 UI（so101_server.py が配信）
+├── so101_rotate.py / so101_set_id.py  # SO-101 bring-up 用の単サーボ CLI
 ├── check.py / move.py    # 古い手動 CLI（保守）
 └── sweep.py              # 接続診断
 
@@ -81,15 +80,18 @@ tests/
                           # 全 pure function + offline E2E（実機不要で 56 件 pass）
 ```
 
-### 2.1b UI / サーバの全体像（3 UI・2 サーバ）
+### 2.1b UI / サーバの全体像（統一済み: 1 サーバ・1 メイン UI）
 
 | UI | サーバ / ポート | 対象ロボット | 役割 |
 |---|---|---|---|
-| `ui.html`（`/`） | `server.py` :8000（Quest 開発時は :8001） | 🦾 myCobot + ✋ ハンド | メイン。5 ワークスペースタブ |
+| `ui.html`（`/`） | `server.py` :8000（Quest 開発時は :8001） | 🦾 myCobot + ✋ ハンド + SO-101 | 統一 UI。6 ワークスペースタブ（SO-101 タブは `/so101/*` API） |
 | `hand.html`（`/hand`） | 同上（同一サーバ） | ✋ ハンドのみ | Quest 用軽量 teleop（three.js 無し） |
-| `so101.html`（`/`） | `so101_server.py` :8011 | SO-101 | bring-up 用に意図的に分離（[memory/so101_bringup](../.claude/memory/so101_bringup.md)）。Phase 2 で server.py へ統合予定 |
 
-導線: ui.html の status bar から `/hand`・`:8011` へリンク、各サブ UI からメイン UI へ戻りリンクあり。**新しいロボット UI を足す時は、この表 + 相互リンク + [design.md](../.agent/rules/design.md) のトークン追従を必ず揃えること。**
+- SO-101 は `server.py` の `So101Subsystem` として統合（`/so101/state|jog|ik|home|release|frame.png`）。
+  driver は `--so101-driver {sim,mock,real,off}`（default sim=MuJoCo、**lazy-init**: 初回 /so101/* リクエストでロード）。
+  旧 `so101_server.py` / `so101.html`（:8011 別サーバ）は 2026-06-10 に廃止・統合済み。
+- 導線: ui.html status bar から `/hand` へ、hand.html からメイン UI へ戻りリンク。
+  **新しいロボットは別サーバ/別ページを作らず、server.py のサブシステム + ui.html のタブとして足すこと**（[design.md](../.agent/rules/design.md)）。
 
 ### 2.2 依存方向（重要）
 

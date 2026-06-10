@@ -1,8 +1,8 @@
 # UI デザイン規約（mycobot-lab control UI）
 
-プロジェクト全 UI（`scripts/ui.html` / `scripts/hand.html` / `scripts/so101.html`）の視覚言語。**VSCode dark テーマ × フラット × デザイントークン駆動**。couple-sync の規律（単一アクセント・装飾最小・トークン一元管理）を VSCode 配色で適用したもの。UI/CSS を変更する前に必ず読む。
+プロジェクト全 UI（`scripts/ui.html` / `scripts/hand.html`）の視覚言語。**VSCode dark テーマ × フラット × デザイントークン駆動**。couple-sync の規律（単一アクセント・装飾最小・トークン一元管理）を VSCode 配色で適用したもの。UI/CSS を変更する前に必ず読む。
 
-> **マルチ UI 注意**: トークンの正本は ui.html の `:root`。hand.html / so101.html は同じ値の**手動コピー**を持つ（単一ファイル運用のため）。トークン値を変える時は 3 ファイルすべてを更新する。新 UI を作る時は ui.html の `:root` をコピーし、メイン UI への戻りリンクを付け、`docs/ARCHITECTURE.md` §2.1b の表に追記する。
+> **マルチ UI 注意**: トークンの正本は ui.html の `:root`。hand.html は同じ値の**手動コピー**を持つ（単一ファイル運用のため）。トークン値を変える時は両ファイルを更新する。**新しいロボットの UI は別ページを作らず ui.html のワークスペースタブとして足す**（SO-101 が前例。別ページ化は Quest 軽量化など明確な理由がある時だけで、その場合は戻りリンク + `docs/ARCHITECTURE.md` §2.1b の表更新を必須とする）。
 
 ## 原則
 
@@ -30,7 +30,7 @@
 - **button**: 既定=surface-3 塗り+border+muted。`.primary`/`.apply`=accent-bg 塗り。`.abort`/`.warn`=danger。トグル系(`modeBtn`/`vrModeBtn`/`wsTab`/`opModeBtn`/`poseBtn`/`poseLibBtn`)は active=`--accent-soft`地+`--accent`文字+`--accent-line`枠で**統一**（個別色を足さない）
 - **badge**: `.ok/.warn/.err/.gray/.teal`。teal=アクセントの別名（独立色ではない）
 - **panel**: `.panel` は折りたたみ対応（h2 クリック→`.collapsed`、localStorage 永続）。独自トグルを持つ h2 は accordion init で除外する
-- **navigation**: トップは `#wsTabs` の 5 ワークスペースタブ（操作/ポーズ/VR·✋/観測/システム）。`#side` に `ws-<name>` クラスを付け、CSS が `[data-ws~="<name>"]` 以外を隠す（要素は複数 ws を空白区切りで持てる）。選択は localStorage `ui.ws` に永続（旧 `uiMode` から移行）。タブを増やす時は data-ws と `.ws-*` 表示ルールの両方を足す
+- **navigation**: トップは `#wsTabs` の 6 ワークスペースタブ（操作/ポーズ/VR·✋/観測/システム/SO-101）。`#side` に `ws-<name>` クラスを付け、CSS が `[data-ws~="<name>"]` 以外を隠す（要素は複数 ws を空白区切りで持てる）。選択は localStorage `ui.ws` に永続（旧 `uiMode` から移行）。タブを増やす時は data-ws と `.ws-*` 表示ルールの両方を足す
 - **status bar**: `#statusBar` は sticky 常時表示。システム状態（接続/通電/オフライン）の一覧性 + 全タブから押せる常設 `#sbAbort`（Esc と等価）を担う
 - **safety zone**: `#safetyZone` はタブの外・ワークスペース上部に常時配置（release 警告 / 安全違反 alert）。どのタブでも見える
 - **入力**: bg=`--bg`、focus で border=`--accent`（glow 無し）

@@ -1,7 +1,7 @@
 # Project Memory Index
 
 - [two_systems_arm_vs_hand.md](two_systems_arm_vs_hand.md) — ⚠ アーム(myCobot)とハンド(Hiwonder 5指)は別系統。別MCU/COM/電源/プロトコル。混同禁止
-- [so101_bringup.md](so101_bringup.md) — SO-101 オフラインUI起動口(scripts/so101_server.py:8011)・env 二系統・Seeed XIAO ボードは CH343P 内蔵でファーム不要
+- [so101_bringup.md](so101_bringup.md) — SO-101 は server.py /so101/* + ui.html タブに統合済み・env 二系統・Seeed XIAO は CH343P 内蔵でファーム不要
 - [hand_teleop.md](hand_teleop.md) — ✋ハンドの Quest 指追従/Python ドライバ/server endpoint/UI 手動パネル構成
 - [hardware.md](hardware.md) — 機種・接続・動作確認済み構成・初回接続で詰まった事象
 - [mycobot_firmware_quirks.md](mycobot_firmware_quirks.md) — J5 latched lock（M5 再起動以外復旧不能）、get_servo_currents は torque を反映しない
@@ -16,6 +16,6 @@
 - [browser_ui_testing.md](browser_ui_testing.md) — UI 動作確認は MCP 合成イベント不可→Chrome computer の実 OS キー。状態は DOM/API 経由で観測
 - [dual_impl_single_source.md](dual_impl_single_source.md) — FK/IK が CPU/GPU/JS に重複。定数・seed・スコアは単一ソースから供給しドリフト防止
 - [gpu_ik_and_reach_grid.md](gpu_ik_and_reach_grid.md) — reach 点角度ベイク / GPU IK は FP64 必須 / J1 対称で激減 / 生成器使い分け・再生成手順
-- [ui_fragmentation_rule.md](ui_fragmentation_rule.md) — UI は 3 HTML + 2 サーバ構成。新 UI 追加時は相互リンク/トークンコピー/ARCHITECTURE §2.1b 更新を必須化
+- [ui_fragmentation_rule.md](ui_fragmentation_rule.md) — UI は統一済み（1サーバ+6タブ ui.html）。新ロボットはサブシステム+タブで足す。別ページ新設禁止
 - 接続トラブル時は [.agent/rules/connection-troubleshooting.md](../../.agent/rules/connection-troubleshooting.md) を参照
 - 安全規約は [.agent/rules/safety.md](../../.agent/rules/safety.md) を必読
