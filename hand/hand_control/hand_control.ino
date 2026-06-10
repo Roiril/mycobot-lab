@@ -27,7 +27,10 @@ const int PINS[NUM_FINGERS] = {3, 5, 6, 9, 10};
 // Validated at 6V (4xAA): thumb sweeps 1000-2000 with no strain; fingers 1-4
 // open/close at 600/2400 ran clean. Tighten any finger here if it ever stalls.
 //                          finger:   0(thumb) 1     2     3     4
-const int MIN_US[NUM_FINGERS] = {     1000,   600,  600,  600,  600 };
+// NOTE: thumb MIN temporarily opened to 500 (servo floor) to probe the true
+// mechanical curl limit below the previously-verified 1000. Set back to the
+// safe value once the stall point is found. 2026-06-05.
+const int MIN_US[NUM_FINGERS] = {      500,   600,  600,  600,  600 };
 const int MAX_US[NUM_FINGERS] = {     2000,  2400, 2400, 2400, 2400 };
 
 // "open" / "close" presets per finger (must stay within MIN/MAX above)

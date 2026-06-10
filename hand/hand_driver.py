@@ -40,7 +40,9 @@ FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"]  # 0..4
 # is the source of truth for the safe range; these are the same values so the
 # host clamps identically and the normalized bend maps to real travel.
 #                       finger:  0(thumb) 1     2     3     4
-MIN_US  = [1000, 600, 600, 600, 600]
+# thumb MIN temporarily 500 (servo floor) to probe the true curl limit; revert
+# to the safe value once found. Must match firmware MIN_US. 2026-06-05.
+MIN_US  = [500, 600, 600, 600, 600]
 MAX_US  = [2000, 2400, 2400, 2400, 2400]
 OPEN_US = [2000, 2400, 2400, 2400, 2400]   # bend = 0.0 (extended)
 CLOSE_US = [1000, 600, 600, 600, 600]      # bend = 1.0 (curled)
