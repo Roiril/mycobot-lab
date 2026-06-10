@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>✋ Hand — standalone</title>
+<style>
+ /* Minimal slice of the project's VSCode-dark design tokens (see .agent/rules/design.md).
+    Standalone so the Quest can drive the ✋ hand WITHOUT loading the arm's three.js scene. */
+ :root{
+   --bg:#1e1e1e; --surface:#252526; --surface-3:#333334; --border:#3c3c3c;
+   --text:#d4d4d4; --text-muted:#9d9d9d; --text-faint:#6e6e72;
+   --accent:#4ec9ff; --accent-bg:#0e639c; --accent-bg-hover:#1177bb;
+   --accent-soft:rgba(78,201,255,.13); --accent-line:rgba(78,201,255,.30);
+   --ok:#388a5a; --ok-text:#4ec99a; --warn:#9a7d12; --danger:#a1260d; --danger-hover:#c5341a;
+   --font-ui:system-ui,"Segoe UI",Roboto,sans-serif; --font-mono:ui-monospace,Consolas,monospace;
+   --radius:4px; --radius-sm:3px; --bw:1px;
+ }
+ *{box-sizing:border-box}
+ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-ui);font-size:13px;
+   padding:14px;max-width:560px;margin:0 auto}
+ h1{font-size:15px;margin:0 0 2px} .sub{color:var(--text-faint);font-size:11px;margin-bottom:12px}
+ .card{background:var(--surface);border:var(--bw) solid var(--border);border-radius:var(--radius);
+   padding:12px;margin-bottom:12px}
+ .row{display:flex;align-items:center;gap:8px}
+ .badge{font-family:var(--font-mono);font-size:11px;padding:2px 7px;border-radius:var(--radius-sm);
+   background:var(--surface-3);color:var(--text-muted)}
+ .badge.ok{background:rgba(56,138,90,.18);color:var(--ok-text)}
+ .badge.warn{background:rgba(154,125,18,.18);color:#dcdcaa}
+ .badge.accent{background:var(--accent-soft);color:var(--accent)}
+ button{font-family:var(--font-ui);font-size:13px;color:var(--text);background:var(--surface-3);
+   border:var(--bw) solid var(--border);border-radius:var(--radius);padding:8px 12px;cursor:pointer}
+ button:hover:not(:disabled){background:#3c3c3d}
+ button:disabled{opacity:.45;cursor:default}
+ button.primary{background:var(--accent-bg);border-color:transparent;color:#fff;font-weight:700}
+ button.primary:hover:not(:disabled){background:var(--accent-bg-hover)}
+ button.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+ .grp{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+ .hand-row{display:grid;grid-template-columns:54px 1fr 44px;align-items:center;gap:8px;margin:6px 0}
+ .hand-row label{color:var(--text-muted);font-size:12px}
+ input[type=range]{width:100%;accent-color:var(--accent)}
+ .handVal{font-family:var(--font-mono);font-size:11px;color:var(--text-muted);text-align:right}
+ .mono{font-family:var(--font-mono);font-size:11px;color:var(--text-muted)}
+ .hint{color:var(--text-faint);font-size:11px;margin-top:6px;line-height:1.5}
+ kbd{font-family:var(--font-mono);background:var(--surface-3);border:var(--bw) solid var(--border);
+   border-radius:var(--radius-sm);padding:0 4px}
+ h2{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin:0 0 8px}
+</style>
+</head>
+<body>
+  <h1>✋ ロボットハンド <span class="sub">single-hand teleop (Arduino / 9600)</span></h1>
+  <div class="sub">アームとは別系統。このページは three.js を積まない軽量版 — Quest で指トラッキングだけを実ハンドへ流す。
+    <a href="/" style="color:var(--accent);text-decoration:none">← 🦾 メイン UI へ戻る</a></div>
+
+  <div class="card">
+    <div class="row">
+      <span id="badge" class="badge">…</span>
+      <span id="statusLine" class="mono" style="flex:1">接続確認中…</span>
+    </div>
+    <div class="grp">
+      <button id="btnVR" class="primary">VR 開始</button>
+      <button id="btnOpen">開く</button>
+      <button id="btnClose">握る</button>
+      <button id="btnNeutral">中立</button>
+    </div>
+    <div id="vrStatus" class="hint">VR: 未開始</div>
+  </div>
+
+  <div class="card">
+    <h2>手動操作（指の曲げ 0=開き / 1=握り）</h2>
+    <div id="handSliders"></div>
+  </div>
+
+  <div class="card">
+    <h2>使い方</h2>
+    <div class="hint">
+      Quest Browser で開く。このページはメイン UI と同じ server.py が配信（パス <kbd>/hand</kbd>）。
+      Quest 開発時は慣習で <kbd>--port 8001</kbd> 起動 + <kbd>adb reverse tcp:8001 tcp:8001</kbd> → <kbd>http://localhost:8001/hand</kbd>（詳細は docs/QUEST_DEV.md）。
+      <b>VR 開始</b> → ハンドトラッキングで<b>右手</b>を見せる → 右手の各指の曲げがそのまま実ハンドに反映（クラッチ無し・各指独立）。
+      手を隠すと停止。VR を使わなければ上のスライダで直接動かせる。
+      <br>曲げの正規化は固定しきい値（curl rad → bend 0..1）。親指だけ curl 方向が逆なので反転。実機で握り具合を詰めたい時は
+      <span class="mono">calibOpen/calibClosed</span> を調整。
+    </div>
+  </div>
+
+<script>
+// ✋ standalone hand teleop. Talks ONLY to /hand/* (no arm endpoints). Raw WebXR
+// (no three.js) — an immersive-vr session with a minimal cleared GL layer just
+// so the frame loop runs; we read right-hand joint poses and stream finger
+// bends to the robot hand. Curl math + calib mirror scripts/ui.html.
+
+const FINGERS_JP = ['親指','人差し','中指','薬指','小指'];
+const JOINT_TRIPLES = [
+  ['thumb-metacarpal','thumb-phalanx-proximal','thumb-tip'],
+  ['index-finger-metacarpal','index-finger-phalanx-proximal','index-finger-tip'],
+  ['middle-finger-metacarpal','middle-finger-phalanx-proximal','middle-finger-tip'],
+  ['ring-finger-metacarpal','ring-finger-phalanx-proximal','ring-finger-tip'],
+  ['pinky-finger-metacarpal','pinky-finger-phalanx-proximal','pinky-finger-tip'],
+];
+const hand = {
+  sliders:[0,0,0,0,0],
+  // fixed curl thresholds (rad): bend 0 = calibOpen, bend 1 = calibClosed.
+  // thumb (0) widened 2026-06-05: full natural curl now reaches the servo's
+  // current max (us 1000). measured user thumb-curl range was ~0.08..1.50 rad.
+  calibOpen:  [0.50,0.25,0.25,0.25,0.25],
+  calibClosed:[1.40,1.80,1.80,1.80,1.80],
+  invert:[true,false,false,false,false],   // thumb curl direction is reversed
+  engaged:false, _inflight:false, _pending:null,
+};
+
+// --- networking: single in-flight + latest-wins (server throttles to 40Hz) ---
+function postBends(bends){
+  if(bends.some(b=>b==null)) return;        // lost joints this frame → skip
+  hand._pending = bends;
+  if(!hand._inflight) flush();
+}
+function flush(){
+  if(hand._pending==null || hand._inflight) return;
+  const bends = hand._pending; hand._pending = null; hand._inflight = true;
+  // Abort after 1s: a stalled adb-reverse tunnel would otherwise leave the
+  // fetch promise pending forever, never clearing _inflight → the whole hand
+  // stream deadlocks (the request just silently retries next frame instead).
+  const ctrl = new AbortController();
+  const to = setTimeout(()=>ctrl.abort(), 1000);
+  fetch('/hand/fingers',{method:'POST',headers:{'Content-Type':'application/json'},
+                         body:JSON.stringify({bends}), signal:ctrl.signal})
+    .then(r=>r.json()).then(j=>{ if(j&&j.cur_us) updateStatus(j); })
+    .catch(()=>{})
+    .finally(()=>{ clearTimeout(to); hand._inflight=false; if(hand._pending) flush(); });
+}
+function preset(p){
+  fetch('/hand/preset',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({preset:p})})
+    .then(r=>r.json()).then(j=>{ if(j&&j.cur_us) updateStatus(j); }).catch(()=>{});
+  const sv = p==='open'?0 : p==='close'?1 : 0.5;
+  reflectSliders([sv,sv,sv,sv,sv]);
+}
+
+// --- status ---
+function updateStatus(j){
+  const b=document.getElementById('badge'), s=document.getElementById('statusLine');
+  if(j.present===false || j.connected===false && j.offline===undefined){
+    b.textContent='なし'; b.className='badge warn';
+  } else if(j.connected){ b.textContent='接続'; b.className='badge ok'; }
+  else { b.textContent='仮想'; b.className='badge'; }
+  if(j.cur_us) s.textContent = `us=[${j.cur_us.join(', ')}]  ${j.connected?('@'+(j.port||'?')):'(virtual)'}`;
+}
+async function poll(){
+  try{ updateStatus(await fetch('/hand/status').then(r=>r.json())); }catch(_){}
+}
+
+// --- manual sliders ---
+function buildSliders(){
+  const c=document.getElementById('handSliders');
+  FINGERS_JP.forEach((nm,i)=>{
+    const row=document.createElement('div'); row.className='hand-row';
+    row.innerHTML=`<label>${nm}</label>`+
+      `<input type="range" min="0" max="1" step="0.01" value="0" data-fi="${i}">`+
+      `<span class="handVal" data-fi="${i}">0.00</span>`;
+    c.appendChild(row);
+  });
+  c.querySelectorAll('input[type=range]').forEach(s=>{
+    s.addEventListener('input',()=>{
+      const i=+s.dataset.fi, v=parseFloat(s.value)||0;
+      hand.sliders[i]=v;
+      c.querySelector(`.handVal[data-fi="${i}"]`).textContent=v.toFixed(2);
+      postBends(hand.sliders.slice());
+    });
+  });
+}
+function reflectSliders(bends){
+  const c=document.getElementById('handSliders');
+  bends.forEach((b,i)=>{ if(b==null) return; hand.sliders[i]=b;
+    const s=c.querySelector(`input[data-fi="${i}"]`); if(s) s.value=b;
+    const v=c.querySelector(`.handVal[data-fi="${i}"]`); if(v) v.textContent=b.toFixed(2); });
+}
+
+// --- WebXR finger-curl extraction (same math as ui.html) ---
+function fingerCurl(h,frame,refSpace,fi){
+  const [n0,n1,n2]=JOINT_TRIPLES[fi];
+  const j0=h.get(n0), j1=h.get(n1), j2=h.get(n2); if(!j0||!j1||!j2) return null;
+  const p0=frame.getJointPose(j0,refSpace), p1=frame.getJointPose(j1,refSpace), p2=frame.getJointPose(j2,refSpace);
+  if(!p0||!p1||!p2) return null;
+  const a=p0.transform.position, b=p1.transform.position, c=p2.transform.position;
+  const v1={x:b.x-a.x,y:b.y-a.y,z:b.z-a.z}, v2={x:c.x-b.x,y:c.y-b.y,z:c.z-b.z};
+  const l1=Math.hypot(v1.x,v1.y,v1.z)||1, l2=Math.hypot(v2.x,v2.y,v2.z)||1;
+  let dot=(v1.x*v2.x+v1.y*v2.y+v1.z*v2.z)/(l1*l2);
+  return Math.acos(Math.max(-1,Math.min(1,dot)));   // radians, 0=straight
+}
+function curlsToBends(curls){
+  return curls.map((c,i)=>{
+    if(c==null) return null;
+    const o=hand.calibOpen[i], cl=hand.calibClosed[i], span=(cl-o)||1;
+    let b=Math.max(0,Math.min(1,(c-o)/span));
+    if(hand.invert[i]) b=1-b;
+    return b;
+  });
+}
+
+// --- WebXR session (raw; minimal cleared GL layer so frames run) ---
+let xrSession=null, xrRefSpace=null, xrGL=null;
+function setVrStatus(t){ document.getElementById('vrStatus').textContent='VR: '+t; }
+
+async function startVR(){
+  if(!navigator.xr){ setVrStatus('WebXR 非対応ブラウザ（Quest Browser 推奨）'); return; }
+  if(!await navigator.xr.isSessionSupported('immersive-vr')){ setVrStatus('immersive-vr 非対応'); return; }
+  try{
+    const session = await navigator.xr.requestSession('immersive-vr',
+      { requiredFeatures:['hand-tracking','local-floor'] });
+    xrSession = session;
+    const canvas=document.createElement('canvas');
+    xrGL = canvas.getContext('webgl', {xrCompatible:true});
+    await xrGL.makeXRCompatible();
+    session.updateRenderState({ baseLayer:new XRWebGLLayer(session, xrGL) });
+    xrRefSpace = await session.requestReferenceSpace('local-floor');
+    session.addEventListener('end', ()=>{ xrSession=null; xrRefSpace=null;
+      hand.engaged=false; document.getElementById('btnVR').classList.remove('on');
+      document.getElementById('btnVR').textContent='VR 開始'; setVrStatus('終了'); });
+    document.getElementById('btnVR').classList.add('on');
+    document.getElementById('btnVR').textContent='VR 終了';
+    setVrStatus('開始 — 右手を見せると追従');
+    session.requestAnimationFrame(onXRFrame);
+  }catch(e){ setVrStatus('開始失敗: '+e); }
+}
+function stopVR(){ if(xrSession) xrSession.end(); }
+
+function onXRFrame(t, frame){
+  const session = frame.session;
+  // clear the layer (no scene render needed for hand teleop)
+  const gl=xrGL, layer=session.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+  gl.clearColor(0.07,0.07,0.09,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+  let right=null;
+  for(const src of session.inputSources){ if(src.hand && src.handedness==='right'){ right=src.hand; break; } }
+  if(!right){
+    if(hand.engaged){ hand.engaged=false; setVrStatus('右手ロスト → 停止（手を見せると再開）'); }
+  } else if(xrRefSpace){
+    if(!hand.engaged){ hand.engaged=true; setVrStatus('追従中 — 右手の指でハンドが動く'); }
+    const curls=JOINT_TRIPLES.map((_,i)=>fingerCurl(right,frame,xrRefSpace,i));
+    const bends=curlsToBends(curls);
+    reflectSliders(bends);
+    postBends(bends);
+  }
+  if(xrSession) session.requestAnimationFrame(onXRFrame);
+}
+
+// --- wiring ---
+buildSliders();
+document.getElementById('btnVR').addEventListener('click',()=> xrSession ? stopVR() : startVR());
+document.getElementById('btnOpen').addEventListener('click',()=>preset('open'));
+document.getElementById('btnClose').addEventListener('click',()=>preset('close'));
+document.getElementById('btnNeutral').addEventListener('click',()=>preset('neutral'));
+setInterval(poll, 1500); poll();
+</script>
+</body>
+</html>

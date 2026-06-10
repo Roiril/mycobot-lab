@@ -423,6 +423,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body); return
+            if path in ("/hand", "/hand.html"):
+                # ✋ standalone hand teleop page (no arm three.js scene; Quest-friendly).
+                # Same server, lighter page — serve over the existing /hand/* API.
+                body = (ROOT / "scripts" / "hand.html").read_text(encoding="utf-8").encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body); return
             if path == "/favicon.ico":
                 self.send_response(204); self.end_headers(); return
             if path.startswith("/static/"):
