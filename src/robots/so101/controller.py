@@ -11,6 +11,7 @@ Design parallels src/arm/hub.py's motion logic (plan -> validate each waypoint
 """
 from __future__ import annotations
 import math
+import time
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import profile
@@ -20,6 +21,13 @@ from . import safety
 
 # Default per-step joint increment when interpolating a path (deg).
 PATH_STEP_DEG = 4.0
+
+# Joint speed pacing (deg/s). Without pacing the waypoints are written
+# back-to-back and the real servos chase at their own full speed.
+# Values live in profile.SPEED_DPS (single source for server/UI too).
+DEFAULT_SPEED_DPS = profile.SPEED_DPS["default"]
+MIN_SPEED_DPS = profile.SPEED_DPS["min"]
+MAX_SPEED_DPS = profile.SPEED_DPS["max"]
 
 StepCb = Optional[Callable[[List[float]], None]]
 
@@ -35,21 +43,34 @@ def plan_joint_path(start: Sequence[float], goal: Sequence[float],
     return [[s + d * (k / n) for s, d in zip(start, deltas)] for k in range(1, n + 1)]
 
 
+AbortCb = Optional[Callable[[], bool]]
+
+
 class So101Controller:
-    def __init__(self, driver: So101DriverBase, step_deg: float = PATH_STEP_DEG):
+    def __init__(self, driver: So101DriverBase, step_deg: float = PATH_STEP_DEG,
+                 sleep_fn: Callable[[float], None] = time.sleep):
         self.driver = driver
         self.step_deg = step_deg
+        self.sleep_fn = sleep_fn  # injectable so tests/mocks don't pay real pacing
 
     def current_angles(self) -> List[float]:
         return self.driver.read_angles()
 
     def move_to_angles(self, target: Sequence[float], gripper: Optional[float] = None,
-                       on_step: StepCb = None) -> Tuple[bool, str]:
+                       on_step: StepCb = None,
+                       speed_dps: Optional[float] = None,
+                       should_abort: AbortCb = None) -> Tuple[bool, str]:
         """Validate target + every interpolated waypoint with safety.check_angles,
-        then drive the path. Aborts (without moving further) on the first unsafe
-        waypoint. Returns (ok, message)."""
+        then drive the path paced at `speed_dps` (deg/s of the fastest joint).
+        Aborts (without moving further) on the first unsafe waypoint, or as soon
+        as `should_abort()` turns True (emergency stop: holds at the last
+        commanded waypoint and reports)."""
         if len(target) != profile.NUM_JOINTS:
             return False, f"target length != {profile.NUM_JOINTS}"
+        if not all(math.isfinite(float(a)) for a in target):
+            return False, "target contains non-finite values"
+        if gripper is not None and not math.isfinite(float(gripper)):
+            return False, "gripper is non-finite"
         ok, msg, _ = safety.check_angles(target)
         if not ok:
             return False, f"target unsafe: {msg}"
@@ -59,23 +80,42 @@ class So101Controller:
             ok, msg, _ = safety.check_angles(wp)
             if not ok:
                 return False, f"path unsafe: {msg}"
+        sp = DEFAULT_SPEED_DPS if speed_dps is None else float(speed_dps)
+        if not math.isfinite(sp):  # NaN slips through min/max clamps
+            sp = DEFAULT_SPEED_DPS
+        sp = max(MIN_SPEED_DPS, min(MAX_SPEED_DPS, sp))
+        dt = self.step_deg / sp  # seconds per waypoint (fastest joint moves step_deg)
+        prev = start
         for wp in waypoints:
+            if should_abort is not None and should_abort():
+                return False, "aborted"
             self.driver.write_angles(wp, gripper)
             if on_step is not None:
                 on_step(wp)
+            step = max((abs(a - b) for a, b in zip(wp, prev)), default=self.step_deg)
+            prev = wp
+            self.sleep_fn(min(dt, step / sp) if step > 0 else 0.0)
         return True, "ok"
 
     def move_to_position(self, xyz: Sequence[float], gripper: Optional[float] = None,
-                         on_step: StepCb = None) -> Tuple[bool, str]:
+                         on_step: StepCb = None,
+                         speed_dps: Optional[float] = None,
+                         should_abort: AbortCb = None) -> Tuple[bool, str]:
         """Position-only IK from the current pose, then a validated joint move."""
+        if not all(math.isfinite(float(c)) for c in xyz):
+            return False, "xyz contains non-finite values"
         seed = self.current_angles()
         sol = solve_position(xyz, seed=seed)
         if sol is None:
             return False, f"no IK solution for {[round(c) for c in xyz[:3]]}"
-        return self.move_to_angles(sol, gripper, on_step)
+        return self.move_to_angles(sol, gripper, on_step, speed_dps=speed_dps,
+                                   should_abort=should_abort)
 
-    def home(self, on_step: StepCb = None) -> Tuple[bool, str]:
-        return self.move_to_angles(list(profile.HOME_ANGLES), on_step=on_step)
+    def home(self, on_step: StepCb = None,
+             speed_dps: Optional[float] = None,
+             should_abort: AbortCb = None) -> Tuple[bool, str]:
+        return self.move_to_angles(list(profile.HOME_ANGLES), on_step=on_step,
+                                   speed_dps=speed_dps, should_abort=should_abort)
 
     def set_gripper(self, value_0_100: float) -> None:
         cur = self.current_angles()

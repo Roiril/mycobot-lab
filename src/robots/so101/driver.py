@@ -32,9 +32,16 @@ def angles_to_action(angles: Sequence[float], gripper: Optional[float] = None) -
     return act
 
 
+def wrap_deg(a: float) -> float:
+    """Wrap any degree reading into [-180, 180). lerobot reports full-turn
+    joints (wrist_roll, range 0..4095) as 0..360+, which would fall outside
+    profile.JOINT_LIMITS and trip the safety checks."""
+    return ((float(a) + 180.0) % 360.0) - 180.0
+
+
 def observation_to_angles(obs: Dict[str, float]) -> List[float]:
     """lerobot observation dict -> canonical ordered arm angles (deg)."""
-    return [float(obs[f"{name}.pos"]) for name in profile.JOINT_NAMES]
+    return [wrap_deg(obs[f"{name}.pos"]) for name in profile.JOINT_NAMES]
 
 
 class So101DriverBase(abc.ABC):
@@ -55,6 +62,16 @@ class So101DriverBase(abc.ABC):
 
     def release(self) -> None:
         self.set_torque(False)
+
+    def torque_on(self) -> Optional[bool]:
+        """Last known torque state (None = unknown). Subclasses track it in
+        set_torque/connect/disconnect; used by the UI to show 脱力中."""
+        return getattr(self, "_torque", None)
+
+    def ping(self) -> Optional[dict]:
+        """Bus liveness probe: {id: name} of servos answering right now.
+        None = not supported (mock/sim have no bus)."""
+        return None
 
 
 class MockSo101Driver(So101DriverBase):
@@ -108,17 +125,20 @@ class LerobotSo101Driver(So101DriverBase):
         self.port = port
         self.robot_id = robot_id
         self._robot = None
+        self._torque: Optional[bool] = None
 
     def connect(self) -> None:
         from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig  # lazy
         cfg = SO101FollowerConfig(port=self.port, id=self.robot_id)
         self._robot = SO101Follower(cfg)
         self._robot.connect(calibrate=False)  # expects prior lerobot-calibrate
+        self._torque = True  # lerobot connect() enables torque
 
     def disconnect(self) -> None:
         if self._robot is not None:
             self._robot.disconnect()  # disables torque
             self._robot = None
+            self._torque = False
 
     def _require(self):
         if self._robot is None:
@@ -134,6 +154,10 @@ class LerobotSo101Driver(So101DriverBase):
         return float(obs[key]) if key in obs else None
 
     def write_angles(self, angles: Sequence[float], gripper: Optional[float] = None) -> None:
+        if gripper is not None:
+            # Clamp like the mock does — lerobot would otherwise pass any float
+            # (incl. out-of-range) straight to the serial layer.
+            gripper = max(0.0, min(100.0, float(gripper)))
         self._require().send_action(angles_to_action(angles, gripper))
 
     def set_torque(self, enabled: bool) -> None:
@@ -141,3 +165,12 @@ class LerobotSo101Driver(So101DriverBase):
         if bus is None:
             raise RuntimeError("lerobot robot exposes no .bus for torque control")
         bus.enable_torque() if enabled else bus.disable_torque()
+        self._torque = bool(enabled)
+
+    def ping(self) -> Optional[dict]:
+        robot = self._robot
+        if robot is None:
+            return None
+        found = robot.bus.broadcast_ping() or {}
+        names = {m.id: n for n, m in robot.bus.motors.items()}
+        return {int(i): names.get(int(i), "?") for i in found}

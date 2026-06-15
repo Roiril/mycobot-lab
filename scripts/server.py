@@ -92,6 +92,11 @@ class So101Subsystem:
         self._ee = so101_ee
         self.kind = kind
         self.lock = threading.Lock()
+        # Emergency stop: set WITHOUT taking self.lock (/so101/abort), checked
+        # by the controller's pacing loop each waypoint.
+        self.abort_flag = threading.Event()
+        self.moving = False
+        self._last_state: dict | None = None  # served when a serial read hiccups
         self._gl = ThreadPoolExecutor(max_workers=1, thread_name_prefix="so101gl")
         self.renders = False
         if kind == "sim":
@@ -112,34 +117,97 @@ class So101Subsystem:
         elif kind == "real":
             from robots.so101.driver import LerobotSo101Driver
             self.driver = LerobotSo101Driver(port=robot_port)
+            # Digital-twin view: mirror the real angles into a render-only
+            # MuJoCo model so the UI still shows the actual SO-101 geometry.
+            self._mirror = None
+            try:
+                from robots.so101.sim.mujoco_sim import So101Sim
+                self._mirror = self._gl.submit(So101Sim).result(timeout=60)
+                self.renders = True
+            except Exception as e:
+                log.warning("so101: render mirror unavailable (%s)", e)
         else:
             raise ValueError(f"unknown so101 driver {kind!r}")
         self.driver.connect()
         if hasattr(self.driver, "set_torque"):
             self.driver.set_torque(True)
         self.ctrl = So101Controller(self.driver)
-        try:
-            self.ctrl.move_to_angles(list(so101_profile.HOME_ANGLES), gripper=50.0)
-        except Exception as e:
-            log.warning("so101: initial home failed: %s", e)
+        if kind != "real":
+            # Park the virtual arm at HOME so the first render is well-defined.
+            # NEVER auto-move real hardware at boot — the user gets no warning
+            # and the resting pose may be far from HOME.
+            try:
+                self.ctrl.move_to_angles(list(so101_profile.HOME_ANGLES), gripper=50.0)
+            except Exception as e:
+                log.warning("so101: initial home failed: %s", e)
         log.info("so101: driver=%s renders=%s", self.kind, self.renders)
 
     def state(self) -> dict:
         p = self.profile
-        angles = self.ctrl.current_angles()
-        grip = self.driver.read_gripper()
-        return {
+        try:
+            angles = self.ctrl.current_angles()
+            grip = self.driver.read_gripper()
+        except Exception as e:
+            # Serial hiccup: serve the last good snapshot flagged stale instead
+            # of a 500+traceback per poll.
+            if self._last_state is not None:
+                out = dict(self._last_state)
+                out["stale"] = True
+                out["moving"] = self.moving
+                return out
+            raise
+        out = {
             "joint_names": p.JOINT_NAMES, "gripper_name": p.GRIPPER_NAME,
             "num_joints": p.NUM_JOINTS, "limits": p.JOINT_LIMITS,
             "gripper_range": [0, 100], "home": p.HOME_ANGLES,
+            "speed_dps": p.SPEED_DPS,
             "angles": [round(a, 2) for a in angles],
             "gripper": None if grip is None else round(grip, 1),
             "tip_mm": [round(c, 1) for c in self._ee(angles)],
             "renders": self.renders, "driver": self.kind,
+            "torque": self.driver.torque_on(),
+            "moving": self.moving,
+            "stale": False,
+        }
+        self._last_state = out
+        return out
+
+    def ping(self) -> dict:
+        """Bus liveness check: which servo IDs answer right now (real only)."""
+        found = self.driver.ping()
+        if found is None:
+            return {"supported": False, "driver": self.kind}
+        expected = {self.profile.JOINT_NAMES.index(n) + 1: n
+                    for n in self.profile.JOINT_NAMES}
+        expected[6] = self.profile.GRIPPER_NAME
+        return {
+            "supported": True,
+            "found": found,
+            "missing": [{"id": i, "name": n} for i, n in expected.items() if i not in found],
         }
 
+    def ensure_torque(self) -> bool:
+        """Re-enable torque before a motion if it was released. Returns True
+        if torque had to be re-enabled (caller surfaces this to the user)."""
+        if self.driver.torque_on() is False:
+            self.driver.set_torque(True)
+            return True
+        return False
+
     def frame_png(self, width=560, height=420) -> bytes:
-        arr = self._gl.submit(self.driver.render, width=width, height=height).result(timeout=10)
+        mirror = getattr(self, "_mirror", None)
+        if mirror is not None:
+            # real driver: pose the render-only twin at the live angles
+            angles = self.ctrl.current_angles()
+            grip = self.driver.read_gripper()
+            gdeg = None if grip is None else self.profile.gripper_0_100_to_deg(grip)
+
+            def _render():
+                mirror.set_angles_deg(angles, gripper=gdeg)
+                return mirror.render(width=width, height=height)
+            arr = self._gl.submit(_render).result(timeout=10)
+        else:
+            arr = self._gl.submit(self.driver.render, width=width, height=height).result(timeout=10)
         import io as _io
         from PIL import Image
         buf = _io.BytesIO()
@@ -532,12 +600,23 @@ class Handler(BaseHTTPRequestHandler):
                 with s.lock:
                     self._json(200, s.state())
                 return
+            if path == "/so101/ping":
+                s = _so101()
+                with s.lock:
+                    self._json(200, s.ping())
+                return
             if path == "/so101/frame.png":
                 s = _so101()
                 if not s.renders:
                     self._json(404, {"error": "driver has no rendering"}); return
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    w = max(320, min(1280, int(q.get("w", [560])[0])))
+                    h = max(240, min(960, int(q.get("h", [420])[0])))
+                except ValueError:
+                    w, h = 560, 420
                 with s.lock:
-                    png = s.frame_png()
+                    png = s.frame_png(width=w, height=h)
                 self.send_response(200)
                 self.send_header("Content-Type", "image/png")
                 self.send_header("Cache-Control", "no-store")
@@ -1035,24 +1114,65 @@ class Handler(BaseHTTPRequestHandler):
                 # SO-101 (third robot). All verbs return the full state + ok/msg
                 # so the UI can sync sliders in one round-trip.
                 s = _so101()
+
+                if path == "/so101/abort":
+                    # Emergency stop: NO lock (a motion holds it), no auth (an
+                    # e-stop must never be gated). The pacing loop sees the flag
+                    # at the next waypoint and stops.
+                    s.abort_flag.set()
+                    self._json(200, {"ok": True, "msg": "abort requested"}); return
+
+                import math as _math
+                def _finite(x):  # json.loads accepts NaN/Infinity — never pass them on
+                    return isinstance(x, (int, float)) and _math.isfinite(x)
+
                 with s.lock:
-                    if path == "/so101/jog":
-                        angles = body.get("angles")
-                        if not isinstance(angles, list) or len(angles) != s.profile.NUM_JOINTS:
-                            self._json(400, {"ok": False, "msg": f"angles must be length {s.profile.NUM_JOINTS}"}); return
-                        ok, msg = s.ctrl.move_to_angles(angles, gripper=body.get("gripper"))
-                    elif path == "/so101/ik":
-                        xyz = body.get("xyz")
-                        if not isinstance(xyz, list) or len(xyz) != 3:
-                            self._json(400, {"ok": False, "msg": "xyz must be length 3"}); return
-                        ok, msg = s.ctrl.move_to_position(xyz, gripper=body.get("gripper"))
-                    elif path == "/so101/home":
-                        ok, msg = s.ctrl.home()
-                    elif path == "/so101/release":
-                        s.driver.release()
-                        ok, msg = True, "released"
-                    else:
-                        self._json(404, {"error": "not found"}); return
+                    speed = body.get("speed")  # deg/s, clamped in controller
+                    if speed is not None and not _finite(speed):
+                        self._json(400, {"ok": False, "msg": "speed must be finite"}); return
+                    grip = body.get("gripper")
+                    if grip is not None and not _finite(grip):
+                        self._json(400, {"ok": False, "msg": "gripper must be finite"}); return
+                    s.abort_flag.clear()
+                    aborter = s.abort_flag.is_set
+                    retorqued = False
+                    try:
+                        s.moving = True
+                        if path == "/so101/jog":
+                            angles = body.get("angles")
+                            if angles is None and grip is not None:
+                                # gripper-only command: don't re-send (possibly
+                                # stale) joint targets just to move the jaw.
+                                retorqued = s.ensure_torque()
+                                s.ctrl.set_gripper(float(grip))
+                                ok, msg = True, "gripper ok"
+                            else:
+                                if not isinstance(angles, list) or len(angles) != s.profile.NUM_JOINTS:
+                                    self._json(400, {"ok": False, "msg": f"angles must be length {s.profile.NUM_JOINTS}"}); return
+                                if not all(_finite(a) for a in angles):
+                                    self._json(400, {"ok": False, "msg": "angles must be finite"}); return
+                                retorqued = s.ensure_torque()
+                                ok, msg = s.ctrl.move_to_angles(angles, gripper=grip,
+                                                                speed_dps=speed, should_abort=aborter)
+                        elif path == "/so101/ik":
+                            xyz = body.get("xyz")
+                            if not isinstance(xyz, list) or len(xyz) != 3 or not all(_finite(c) for c in xyz):
+                                self._json(400, {"ok": False, "msg": "xyz must be 3 finite numbers"}); return
+                            retorqued = s.ensure_torque()
+                            ok, msg = s.ctrl.move_to_position(xyz, gripper=grip,
+                                                              speed_dps=speed, should_abort=aborter)
+                        elif path == "/so101/home":
+                            retorqued = s.ensure_torque()
+                            ok, msg = s.ctrl.home(speed_dps=speed, should_abort=aborter)
+                        elif path == "/so101/release":
+                            s.driver.release()
+                            ok, msg = True, "released（脱力中 — 手で動かせます。次の動作で自動的に再トルク）"
+                        else:
+                            self._json(404, {"error": "not found"}); return
+                    finally:
+                        s.moving = False
+                    if retorqued and ok:
+                        msg = ("ok" if msg == "ok" else msg) + "（トルク再ON）"
                     out = s.state(); out["ok"] = ok; out["msg"] = msg
                     self._json(200, out); return
 
@@ -1779,6 +1899,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/abort":
                 HUB.abort_flag.set()
+                if SO101 is not None:  # e-stop covers all robots; never lazy-inits
+                    SO101.abort_flag.set()
                 self._json(200, {"ok": True}); return
 
             if path == "/capture_calib_frame":

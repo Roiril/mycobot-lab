@@ -2,6 +2,34 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "so101-calib",
+      "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "scripts/so101_calib_server.py",
+        "--port",
+        "COM13",
+        "--http-port",
+        "8012"
+      ],
+      "port": 8012
+    },
+    {
+      "name": "so101-real",
+      "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "scripts/server.py",
+        "--offline",
+        "--no-hand",
+        "--so101-driver",
+        "real",
+        "--so101-port",
+        "COM13",
+        "--port",
+        "8001"
+      ],
+      "port": 8001
+    },
+    {
       "name": "mycobot-server",
       "runtimeExecutable": "python",
       "runtimeArgs": [

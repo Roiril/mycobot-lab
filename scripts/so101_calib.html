@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SO-101 キャリブレーション</title>
+<style>
+:root{
+  --bg:#1e1e1e; --surface:#252526; --surface-2:#2d2d30; --surface-3:#333334;
+  --border:#3c3c3c; --border-strong:#525257; --divider:#2b2b2c;
+  --text:#d4d4d4; --text-muted:#9d9d9d; --text-faint:#6e6e72; --text-inv:#ffffff;
+  --accent:#4ec9ff; --accent-bg:#0e639c; --accent-bg-hover:#1177bb;
+  --accent-soft:rgba(78,201,255,.13); --accent-line:rgba(78,201,255,.30);
+  --ok:#388a5a; --ok-text:#4ec99a; --ok-soft:rgba(56,138,90,.18);
+  --warn:#9a7d12; --warn-text:#dcdcaa;
+  --danger:#a1260d; --danger-hover:#c5341a; --danger-text:#f14c4c; --danger-soft:rgba(161,38,13,.16);
+  --data-num:#9cdcfe; --mono:"Cascadia Code",Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.5}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border)}
+header h1{font-size:14px;font-weight:600;margin:0}
+.spacer{flex:1}
+.pill{font-family:var(--mono);font-size:11px;padding:2px 9px;border-radius:3px;background:var(--surface-3);color:var(--text-muted);border:1px solid var(--border)}
+.pill.on{background:var(--ok-soft);color:var(--ok-text);border-color:var(--ok)}
+.pill.rec{background:var(--danger-soft);color:var(--danger-text);border-color:var(--danger)}
+.pill.err{background:var(--danger-soft);color:var(--danger-text);border-color:var(--danger)}
+main{max-width:880px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:16px}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.panel.active{border-left:3px solid var(--accent)}
+.panel h2{font-size:12px;font-weight:600;margin:0;padding:10px 14px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--divider);background:var(--surface-2);display:flex;align-items:center;gap:8px}
+.panel h2 .step{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--surface-3);color:var(--text-muted);font-size:11px}
+.panel h2 .step.done{background:var(--ok);color:#fff}
+.panel .body{padding:14px}
+p.hint{color:var(--text-muted);margin:0 0 12px}
+p.hint b{color:var(--text)}
+button{font-family:inherit;font-size:13px;padding:9px 18px;border-radius:5px;cursor:pointer;background:var(--surface-3);color:var(--text);border:1px solid var(--border);transition:.12s}
+button:hover:not(:disabled){border-color:var(--border-strong)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:var(--accent-bg);border-color:var(--accent-bg);color:#fff}
+button.primary:hover:not(:disabled){background:var(--accent-bg-hover)}
+button.rec{background:var(--danger);border-color:var(--danger);color:#fff}
+button.rec:hover:not(:disabled){background:var(--danger-hover)}
+button.ok{background:var(--ok);border-color:var(--ok);color:#fff}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+/* joints */
+.joint{margin-bottom:12px}
+.joint .top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px}
+.joint .nm{font-size:12px;color:var(--text)}
+.joint .nm .badge{font-family:var(--mono);font-size:10px;color:var(--text-faint);margin-left:6px}
+.joint .stat{font-family:var(--mono);font-size:11px;color:var(--text-muted)}
+.joint .stat .span{color:var(--data-num)}
+.track{position:relative;height:16px;background:var(--surface-3);border-radius:3px;border:1px solid var(--border);overflow:hidden}
+.track .band{position:absolute;top:0;bottom:0;background:var(--accent-soft);border-left:1px solid var(--accent-line);border-right:1px solid var(--accent-line)}
+.track .band.ok{background:var(--ok-soft);border-color:var(--ok)}
+.track .mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--accent)}
+.joint.swept .nm{color:var(--ok-text)}
+.joint.swept .check{color:var(--ok-text)}
+.joint .check{font-family:var(--mono);font-size:11px;color:var(--text-faint)}
+.center-ind{font-family:var(--mono);font-size:11px}
+.center-ind .good{color:var(--ok-text)}
+.center-ind .off{color:var(--warn-text)}
+.note{font-size:11px;color:var(--text-faint);margin-top:8px;font-family:var(--mono)}
+.savedmsg{font-family:var(--mono);font-size:12px;color:var(--ok-text);margin-top:10px;word-break:break-all}
+</style>
+</head>
+<body>
+<header>
+  <h1>SO-101 キャリブレーション</h1>
+  <span class="pill" id="conn">接続中…</span>
+  <div class="spacer"></div>
+  <span class="pill" id="homePill">homing: 未</span>
+  <span class="pill" id="recPill">記録: 停止</span>
+  <span class="pill" id="errPill" style="display:none"></span>
+</header>
+
+<main>
+  <!-- Step 1 -->
+  <div class="panel active" id="p1">
+    <h2><span class="step" id="s1">1</span> 中立姿勢をセット（homing）</h2>
+    <div class="body">
+      <p class="hint">アームを<b>まっすぐな中立姿勢</b>に手で構えて<b>保持</b>し、ボタンを押す。一瞬かたく固まって正確に読み取り、各関節の 0° 基準（≒中央2048）を決めます。</p>
+      <div class="row">
+        <button class="primary" id="homeBtn">中立をセット</button>
+        <span class="center-ind" id="centerInd"></span>
+      </div>
+      <div class="note">押した瞬間だけ手で姿勢を支えて。終わると自動で脱力します。</div>
+    </div>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="panel" id="p2">
+    <h2><span class="step" id="s2">2</span> 可動範囲を記録</h2>
+    <div class="body">
+      <p class="hint"><b>記録開始</b>を押したら、各関節を<b>端から端までゆっくり</b>動かす。バーが<b style="color:var(--ok-text)">緑</b>になったらその関節は十分。全部緑にして<b>記録停止</b>。<span style="color:var(--text-faint)">（wrist_roll は自動・振らなくてOK）</span></p>
+      <div class="row" style="margin-bottom:14px">
+        <button class="rec" id="startBtn" disabled>記録開始</button>
+        <button id="stopBtn" disabled>記録停止</button>
+        <span class="stat" id="sweptCount"></span>
+      </div>
+      <div id="joints"></div>
+    </div>
+  </div>
+
+  <!-- Step 3 -->
+  <div class="panel" id="p3">
+    <h2><span class="step" id="s3">3</span> 保存</h2>
+    <div class="body">
+      <p class="hint">homing 済み＋全関節を振り終えたら保存できます。lerobot の校正ファイルに書き出し、実機ドライバが自動で読みます。</p>
+      <button class="ok" id="saveBtn" disabled>保存</button>
+      <div class="savedmsg" id="savedMsg"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const MAXT = 4095;
+let S = null;
+
+async function poll(){
+  try{
+    const r = await fetch("/cal/state");
+    S = await r.json();
+    render();
+  }catch(e){ /* keep polling */ }
+}
+
+function pill(el, on, txt, cls){ el.textContent = txt; el.className = "pill" + (on?(" "+cls):""); }
+
+function render(){
+  if(!S) return;
+  pill($("#conn"), S.connected, S.connected?"接続OK":"未接続", "on");
+  pill($("#homePill"), S.homed, S.homed?"homing: 済":"homing: 未", "on");
+  pill($("#recPill"), S.recording, S.recording?"記録: 中":"記録: 停止", "rec");
+  const err = $("#errPill");
+  if(S.error){ err.style.display=""; pill(err, true, "err: "+S.error.slice(0,40), "err"); }
+  else err.style.display="none";
+
+  // step indicators
+  $("#s1").classList.toggle("done", S.homed);
+  const allSwept = S.joints.length>0 && S.joints.every(j=>j.swept);
+  $("#s2").classList.toggle("done", allSwept && S.homed);
+  $("#s3").classList.toggle("done", S.saved);
+  $("#p1").classList.toggle("active", !S.homed);
+  $("#p2").classList.toggle("active", S.homed && !allSwept);
+  $("#p3").classList.toggle("active", S.homed && allSwept && !S.saved);
+
+  // center indicator after homing
+  if(S.homed && S.joints.length){
+    const offs = S.joints.map(j=>Math.abs(j.pos-2048));
+    const worst = Math.max(...S.joints.filter(j=>!j.full_turn).map(j=>Math.abs(j.pos-2048)));
+    $("#centerInd").innerHTML = worst<250
+      ? '<span class="good">✓ 中央付近に揃いました</span>'
+      : '<span class="off">中央から離れた関節あり（垂れただけなら問題なし）</span>';
+  }
+
+  // buttons
+  $("#startBtn").disabled = !S.homed || S.recording;
+  $("#stopBtn").disabled = !S.recording;
+  $("#saveBtn").disabled = !(S.homed && allSwept) || S.recording;
+
+  // swept count
+  const rec = S.joints.filter(j=>!j.full_turn);
+  const done = rec.filter(j=>j.swept).length;
+  $("#sweptCount").textContent = S.homed ? `振り終えた関節: ${done}/${rec.length}` : "先に homing してね";
+
+  // joints
+  const box = $("#joints");
+  box.innerHTML = "";
+  S.joints.forEach(j=>{
+    const div = document.createElement("div");
+    div.className = "joint" + (j.swept?" swept":"");
+    const posPct = (Math.max(0,Math.min(MAXT,j.pos))/MAXT)*100;
+    let band = "";
+    if(j.min!=null && j.max!=null){
+      const l=(Math.max(0,j.min)/MAXT)*100, w=(Math.max(0,j.max-j.min)/MAXT)*100;
+      band = `<div class="band ${j.swept?'ok':''}" style="left:${l}%;width:${w}%"></div>`;
+    }
+    const status = j.full_turn ? '<span class="check">自動</span>'
+      : (j.swept ? '<span class="check">✓ OK</span>' : `<span class="span">幅 ${j.span}</span>`);
+    div.innerHTML =
+      `<div class="top"><div class="nm">${j.name}<span class="badge">ID${j.id}</span></div>`+
+      `<div class="stat">pos ${j.pos} &nbsp; ${status}</div></div>`+
+      `<div class="track">${band}<div class="mark" style="left:${posPct}%"></div></div>`;
+    box.appendChild(div);
+  });
+}
+
+async function post(p){ await fetch(p,{method:"POST"}); poll(); }
+$("#homeBtn").addEventListener("click", ()=>post("/cal/home"));
+$("#startBtn").addEventListener("click", ()=>post("/cal/start"));
+$("#stopBtn").addEventListener("click", ()=>post("/cal/stop"));
+$("#saveBtn").addEventListener("click", ()=>post("/cal/save"));
+
+setInterval(poll, 200);
+poll();
+</script>
+</body>
+</html>

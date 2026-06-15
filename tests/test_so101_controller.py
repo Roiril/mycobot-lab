@@ -15,7 +15,8 @@ from robots.so101.kinematics import end_effector
 def _mk():
     d = MockSo101Driver()
     d.connect()
-    return So101Controller(d)
+    # no-op sleep: tests shouldn't pay real speed pacing (~5s across the suite)
+    return So101Controller(d, sleep_fn=lambda s: None)
 
 
 class TestPlanner(unittest.TestCase):

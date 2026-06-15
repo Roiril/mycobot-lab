@@ -60,6 +60,17 @@ JOINT_LIMITS = [
 # Gripper jaw range (deg) for reference; lerobot commands it as 0-100 normalized.
 GRIPPER_LIMIT_DEG = (-10.0, 100.0)  # (-0.174533 .. 1.74533)
 
+
+def gripper_0_100_to_deg(v: float) -> float:
+    """Normalized gripper command (0..100) -> jaw angle in degrees."""
+    lo, hi = GRIPPER_LIMIT_DEG
+    return lo + (max(0.0, min(100.0, float(v))) / 100.0) * (hi - lo)
+
+
+# Joint speed pacing (deg/s of the fastest joint). House rule (safety.md):
+# tabletop arm near a human — keep the ceiling conservative.
+SPEED_DPS = {"min": 5.0, "max": 60.0, "default": 45.0}
+
 # Provisional rest pose. lerobot has no fixed firmware HOME like myCobot; after
 # calibration, 0deg = each joint's calibrated midpoint. Tune on hardware.
 HOME_ANGLES = [0.0, 0.0, 0.0, 0.0, 0.0]
@@ -72,8 +83,13 @@ HOME_ANGLES = [0.0, 0.0, 0.0, 0.0, 0.0]
 SAFETY = {
     "floor_z_mm": 0.0,        # table plane = base mount height; confirm on mount
     "link_radius_mm": 25.0,   # approx half-width of the servo/bracket links
-    "self_clearance_mm": 35.0,
-    "tool_clearance_mm": 25.0,  # gripper jaws are thinner than the arm links
+    # 2026-06-10 hardware measurement: the arm folds (rest pose) with
+    # link1-link3 centerline distance = 18.9mm — by design, the links are
+    # laterally offset and pass beside each other, so the centerline+radius
+    # model over-rejects. 15mm permits the designed folding while still
+    # catching true plane crossings.
+    "self_clearance_mm": 15.0,
+    "tool_clearance_mm": 15.0,  # gripper jaws are thinner than the arm links
     "degenerate_link_mm": 15.0,  # links shorter than this are skipped in pairs
 }
 
