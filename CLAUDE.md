@@ -2,23 +2,25 @@
 
 Elephant Robotics **myCobot 320-M5**（6-DoF 卓上協働アーム）を Python から制御する研究用プロジェクト。pymycobot 経由で USB-Serial（M5Stack Basic の Transponder 経由）で通信する。
 
-## ⚠ 二系統あり — アーム と ハンド を混同するな
+## ⚠ 三系統あり — myCobot アーム / SO-101 アーム / ハンド を混同するな
 
-このプロジェクトには **物理的に独立した 2 つのロボット** がある。別マイコン・別 COM ポート・別電源・別プロトコル。「動かして」と言われたら **どちらの話か必ず確認**し、コード・ポート・電源を取り違えないこと。
+このプロジェクトには **物理的に独立した 3 つのロボット** がある。別マイコン・別 COM ポート・別電源・別プロトコル・**別 Python env**。「動かして」と言われたら **どれの話か必ず確認**し、コード・ポート・電源・env を取り違えないこと。
 
-| | 🦾 **アーム** | ✋ **ハンド** |
-|---|---|---|
-| 機種 | myCobot 320-M5（6-DoF アーム） | Hiwonder 5本指ハンド（LFD-01×5） |
-| 制御 MCU | M5Stack Basic + M5Atom | **Arduino Uno** |
-| 接続 | CH9102 USB-Serial | Arduino USB シリアル |
-| ボーレート | **115200** | **9600** |
-| COM | 動的（≈COM12） | 動的（≈COM10）※別ポート |
-| 電源 | DC 24V 120W（本体） | **外部 6V**（サーボ用、別系統） |
-| SDK/制御 | pymycobot | 生シリアル（`<f> <us>` / `open` / `close`） |
-| コード | `src/arm/` `scripts/server.py` | `hand/`（firmware + 今後 Python ドライバ）|
-| プロトコル | [.agent/rules/mycobot-protocol.md](.agent/rules/mycobot-protocol.md) | [hand/HANDOFF.md](hand/HANDOFF.md) |
+| | 🦾 **myCobot アーム** | 🦾 **SO-101 アーム** | ✋ **ハンド** |
+|---|---|---|---|
+| 機種 | myCobot 320-M5（6-DoF） | SO-101（5-DoF lerobot follower） | Hiwonder 5本指（LFD-01×5） |
+| 制御 MCU | M5Stack Basic + M5Atom | Seeed Driver Board for XIAO（CH343 内蔵） | **Arduino Uno** |
+| 接続 | CH9102 USB-Serial | **CH343**（VID 1A86/PID 55D3） | Arduino USB シリアル |
+| ボーレート | **115200** | **1,000,000** | **9600** |
+| COM | 動的（≈COM12） | 動的（≈COM13） | 動的（≈COM10） |
+| 電源 | DC 24V 120W | **DC 12V（5A推奨）** ⚠5V不可 | **外部 6V** |
+| SDK/制御・env | pymycobot / Python 3.10 | **lerobot / `.venv-so101`(3.12)** | 生シリアル / 3.10 |
+| コード | `src/arm/` `scripts/server.py` | `src/robots/so101/` + `So101Subsystem` | `hand/` |
+| 起動 | `python scripts/server.py` | `.venv-so101\…\python server.py --so101-driver real` | `--real-hand` |
+| 運用ハブ | skill `robot-action` | skill **`so101-operate`** | [hand/HANDOFF.md](hand/HANDOFF.md) |
 
 - **「ロボットハンド」= 指のハンド**（アームの先端ではない）。アームには現状エンドエフェクタは付いていない。
+- **SO-101 は実機稼働済み**。運用・キャリブ・切り分けは skill `so101-operate`・[memory/so101_bringup.md](.claude/memory/so101_bringup.md) が正本。env を間違えると real が動かない（lerobot は `.venv-so101` のみ）。
 - ハンドのファーム書き込み（arduino-cli）・配線・電源は [hand/HANDOFF.md](hand/HANDOFF.md) が正本。
 - 詳細メモリ: [memory/two_systems_arm_vs_hand.md](.claude/memory/two_systems_arm_vs_hand.md)
 

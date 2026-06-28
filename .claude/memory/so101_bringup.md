@@ -5,8 +5,11 @@ metadata:
   type: project
 ---
 
-SO-101（第2アーム、5-DoF follower / 12V / STS3215）の開発基盤メモ（2026-06-09 構築）。
-詳細手順は [hardware/SO101_BRINGUP.md](../../hardware/SO101_BRINGUP.md) が正本。
+SO-101（第3のロボット、5-DoF follower / 12V / STS3215）の開発基盤メモ（2026-06-09 構築）。
+**現状: 実機が動く状態に到達（2026-06-10）。** 実機運用・キャリブ・切り分けの手順は
+skill **`so101-operate`** が正本（診断コマンド集付き）。手順書は
+[hardware/SO101_BRINGUP.md](../../hardware/SO101_BRINGUP.md)、フェーズ状況は
+[計画の実装状況サマリ](../../.agent/plans/2026-06-04_so101-integration.md)。
 
 ## 2つの Python env（混同するな）
 - **`.venv-so101`（Python 3.12, uv 製）**: lerobot 0.5.1 + torch 2.10。実機ドライバ・
