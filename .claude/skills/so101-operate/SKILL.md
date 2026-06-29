@@ -120,6 +120,34 @@ b.disconnect()
 | `scripts/so101_calibrate.py` | 2段 CLI キャリブ（GUI に上位互換・整理候補） |
 | lerobot CLI | `lerobot-find-port` / `lerobot-setup-motors`（組立時の ID 設定・各1回） |
 
+## 9. 組み立てのコツ（前回の follower 制作で痛い目を見た学び）
+
+**⚠ サーボは horn を付ける前に必ず中央(エンコーダ 2048)へ寄せる。** follower で省いたら肘/土台の
+中立が**エンコーダの継ぎ目(0/4095)**に乗り、homing 補正が±2047 超で落ちる・wrist_roll 半回転…と
+散々ハマった（§5・§7）。手順:
+1. **ID 設定を先に**（1個ずつ）。follower=`--robot.type=so101_follower` / **leader=`so101_leader`**。
+   setup-motors が中央化もする。
+2. **各サーボを 2048 に駆動して保持したまま、horn/パーツを中立の向きで固定**（無電源だと手で回って
+   ズレるので付ける直前に駆動）。`so101_rotate.py` で1個ずつ中央寄せ可。
+3. キャリブは組み上がり後（leader は `--robot.type=so101_leader`）。
+
+**現状の follower は中央未合わせのまま運用中だが「やばくない」**＝動作正常・サーボ無傷。代償は一部関節の
+可動域がやや非対称なだけ（25秒スキャンで継ぎ目またぎ無し=clean を確認済み）。**働いてるのでバラして
+やり直す価値は薄い**。実使用で可動域不足を感じた1関節だけ直せば十分。
+
+**3Dプリントがぎちぎちでサーボが入らない問題**（毎回出る）: **モデルを等倍拡大するな**（ネジ穴間隔・
+嵌合が破綻）。スライサーで直す → **XY補正 -0.10〜-0.15mm**（Cura は Horizontal Expansion 同値）+
+**エレファントフット補正 ON** + 根本は **Flow -4% キャリブ**。刷り済みの硬いパーツは**力づく厳禁**
+（PLA 割れる。Wrist_Roll_Pitch を実際に割った）→ ヤスリ/リーマー/面取りで削って合わせる。
+
+## 10. 滑らかな実機モーション（2026-06-10 実装）
+
+カクつき＝「4°刻みを全速で送って止まる」を繰り返す方式が原因。現在は **`streams_smoothly` な
+ドライバ（実機）では目標を1回送り、サーボ内蔵の速度プロファイルで glide** させる
+（safety は全 waypoint 検証済み・単調パスなので等価）。`LerobotSo101Driver.set_speed_dps()` が
+速度スライダ連動で `Goal_Velocity` を、connect が `Acceleration` を緩やか(30)に設定。
+速度マッピングが合わないと感じたら driver の `dps*11.4` 係数 / Acceleration を調整。
+
 ## 関連
 - 基盤/学び: [memory/so101_bringup.md](../../memory/so101_bringup.md)
 - 手順正本: [hardware/SO101_BRINGUP.md](../../../hardware/SO101_BRINGUP.md)

@@ -87,11 +87,25 @@
 
 ---
 
-## 5. 本リポジトリへの接続（TODO・要実装）
+## 4.5 組み立てのコツ（前回 follower で痛い目を見た学び・必読）
 
-- [ ] `SO101Hub`（HubBase 実装、lerobot lazy ラップ）+ `VirtualSO101Hub`
-- [ ] `scripts/server.py` を `--robot {mycobot|so101}` で profile 切替（myCobot を壊さない）
-- [ ] `scripts/ui.html` を `num_joints` 駆動に（現状 J1-J6 ハードコード）
+- **⚠ horn を付ける前にサーボを中央(エンコーダ 2048)へ寄せる。** 省くと関節の中立がエンコーダの
+  継ぎ目(0/4095)に乗り、homing が補正上限超で落ちる / wrist_roll が半回転する。各サーボを 2048 に
+  駆動して保持したまま、中立の向きで horn 固定（無電源だと手で回ってズレる）。leader も同様。
+- **3Dプリントがぎちぎちでサーボが入らない**: **モデル等倍拡大は NG**（ネジ穴間隔・嵌合が破綻）。
+  スライサーで **XY補正 -0.10〜-0.15mm** + **エレファントフット補正 ON** + 根本は **Flow -4%**。
+  刷り済みの硬いパーツは**力づく厳禁**（PLA 割れる）→ ヤスリ/リーマー/面取り。
+- 詳細・診断は skill **`so101-operate`**。
+
+---
+
+## 5. 本リポジトリへの接続（✅ 実装済み）
+
+- [x] 実機ドライバ + 操作層: `LerobotSo101Driver` + `So101Controller`（safety/speed/abort）
+- [x] `scripts/server.py` の **`So101Subsystem`**（`/so101/*` API）+ ui.html **SO-101 タブ**で操作
+      （`SO101Hub`(HubBase) は作らず軽量実装で代替。myCobot 経路は無改変）
+- [x] 実機: ジョグ/HOME/IK/脱力/ABORT/速度（滑らかモーション）まで検証済み
+- [ ] 残: floor_z 実測校正 / 手首カメラ hand-eye / reach-grid 再計算
 
 → それまでは **MuJoCo 仮想アーム**で動作確認できる:
 ```powershell
