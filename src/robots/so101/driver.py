@@ -60,6 +60,16 @@ class So101DriverBase(abc.ABC):
     @abc.abstractmethod
     def set_torque(self, enabled: bool) -> None: ...
 
+    # True if the driver does its own velocity-profiled motion (real servos),
+    # so the controller can send a single smooth goal instead of streaming
+    # waypoints. Mock/sim leave this False to keep streamed animation.
+    streams_smoothly: bool = False
+
+    def set_speed_dps(self, dps: float) -> None:
+        """Set the motion speed (deg/s) for the next move. No-op unless the
+        driver has hardware velocity profiling."""
+        return None
+
     def release(self) -> None:
         self.set_torque(False)
 
@@ -127,12 +137,30 @@ class LerobotSo101Driver(So101DriverBase):
         self._robot = None
         self._torque: Optional[bool] = None
 
+    streams_smoothly = True  # STS3215 has hardware velocity profiling
+
     def connect(self) -> None:
         from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig  # lazy
         cfg = SO101FollowerConfig(port=self.port, id=self.robot_id)
         self._robot = SO101Follower(cfg)
         self._robot.connect(calibrate=False)  # expects prior lerobot-calibrate
         self._torque = True  # lerobot connect() enables torque
+        # Gentle acceleration ramp = smoother starts/stops (default 254 = snappy/jerky).
+        try:
+            self._robot.bus.sync_write("Acceleration", 30, normalize=False)
+        except Exception:
+            pass
+
+    def set_speed_dps(self, dps: float) -> None:
+        if self._robot is None:
+            return
+        # STS3215 Goal_Velocity unit ≈ ticks/s (4096 ticks/rev). deg/s -> ticks/s
+        # = dps * 4096/360 ≈ dps * 11.4. Clamp to a safe band.
+        vel = max(60, min(2400, round(float(dps) * 11.4)))
+        try:
+            self._robot.bus.sync_write("Goal_Velocity", vel, normalize=False)
+        except Exception:
+            pass
 
     def disconnect(self) -> None:
         if self._robot is not None:

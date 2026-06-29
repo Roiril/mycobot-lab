@@ -84,6 +84,30 @@ class So101Controller:
         if not math.isfinite(sp):  # NaN slips through min/max clamps
             sp = DEFAULT_SPEED_DPS
         sp = max(MIN_SPEED_DPS, min(MAX_SPEED_DPS, sp))
+
+        # Smooth path is linear per-joint (monotonic), so on a driver with its
+        # own velocity-profiled motion (real servos) we send the FINAL target
+        # ONCE at a matching Goal_Velocity and let the firmware glide — no
+        # per-waypoint zip-then-stop stutter. Safety already validated every
+        # waypoint above. Other drivers (mock/sim) keep streamed pacing so the
+        # offline UI animates.
+        if getattr(self.driver, "streams_smoothly", False):
+            self.driver.set_speed_dps(sp)
+            self.driver.write_angles(target, gripper)
+            if on_step is not None:
+                on_step(list(target))
+            max_delta = max((abs(t - s) for t, s in zip(target, start)), default=0.0)
+            deadline = time.time() + (max_delta / sp) + 2.0
+            while time.time() < deadline:
+                if should_abort is not None and should_abort():
+                    self.driver.write_angles(self.current_angles(), gripper)  # stop here
+                    return False, "aborted"
+                cur = self.current_angles()
+                if max((abs(c - t) for c, t in zip(cur, target)), default=0.0) <= 2.0:
+                    break
+                self.sleep_fn(0.05)
+            return True, "ok"
+
         dt = self.step_deg / sp  # seconds per waypoint (fastest joint moves step_deg)
         prev = start
         for wp in waypoints:
