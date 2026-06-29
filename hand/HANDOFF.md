@@ -1,7 +1,29 @@
 # ロボットハンド 開発引き継ぎ
 
-Hiwonder（LewanSoul）5本指ロボットハンドを Arduino Uno で制御するサブシステム。
+Hiwonder（LewanSoul）5本指ロボットハンドを制御するサブシステム。
 cogni-storage 側のセッションで開封〜基本制御確立まで完了し、ここ mycobot-lab へ引き継ぐ。
+
+---
+
+## ⚠ v2 (2026-06-29): Arduino Uno → **ATOM Lite + 8Servos Unit** へ移行（現行構成）
+
+配線小型化のため、Arduino Uno + ブレッドボードを撤去し、半田なし構成に置き換えた。
+**以下より下の「Arduino Uno / D3..D10 / 外部6V / arduino:avr:uno」の記述は v1（旧）**。
+ハード詳細・配線は当時の記録として残すが、現行は本節が優先。
+
+| 項目 | v2 現行 |
+|---|---|
+| 制御 MCU | **M5Stack ATOM Lite（ESP32-PICO-D4）** + **M5 8Servos Unit**（I2C 0x25） |
+| 接続 | ATOM の Grove(SDA=G26 / SCL=G32) → 8Servos。ATOM は USB-C 給電 |
+| USB シリアル | **FTDI（VID 0403 / "USB Serial Port"）**。⚠ WCH ではない。動的 ≈**COM9** |
+| 指→ch | 親=CH0 / 人=CH1 / 中=CH2 / 薬=CH3 / 小=CH4（各 `G/V/S` の並びに挿す） |
+| サーボ電源 | 8Servos のオレンジ端子台 **5V/G**（外部供給、実測5V）。HV(9-24V)は不使用 |
+| ファーム | [hand_control_atom/hand_control_atom.ino](hand_control_atom/hand_control_atom.ino)（旧Uno版とシリアル**完全互換**） |
+| ライブラリ | `M5Unit-8Servo`（GitHub限定・`Documents/Arduino/libraries/` に手動clone）。API: `servo.begin(&Wire,26,32)` → `setAllPinMode(SERVO_CTL_MODE)` → `setServoPulse(ch, us)` |
+| ビルド/書込 | `arduino-cli compile --upload -p COM9 --fqbn m5stack:esp32:m5stack_atom hand/hand_control_atom`。**書き込みは直挿し推奨**（ハブだと自動リセット/データが乱れ失敗しうる。検出はハブでも可） |
+| ドライバ | [hand_driver.py](hand_driver.py) が FTDI(0403) を自動検出（CH9102/CH343 は除外）。プロトコル・定数は v1 と同じ |
+
+> ポート特定で詰まったら: `esptool.exe --port COMx chip-id` で実体確認（読むだけ・安全）。`ESP32-PICO-D4` と出れば ATOM。詳細メモリ [[atom-hand-controller-port]]。
 
 ---
 

@@ -1,10 +1,12 @@
-"""Python driver for the Hiwonder 5-finger robot hand (Arduino Uno firmware).
+"""Python driver for the Hiwonder 5-finger robot hand.
 
-This is the ✋ HAND — a SEPARATE robot from the 🦾 myCobot ARM. Different MCU
-(Arduino Uno, not M5Stack), different COM port, different baud (9600, not
-115200), different power (external 6V). See hand/HANDOFF.md and CLAUDE.md.
+This is the ✋ HAND — a SEPARATE robot from the 🦾 myCobot ARM and the SO-101.
+Controller is an M5Stack ATOM Lite (ESP32) driving an M5 8Servos Unit over I2C.
+Firmware: hand/hand_control_atom/hand_control_atom.ino (serial-compatible with
+the legacy Uno firmware hand/hand_control/hand_control.ino). Different COM port,
+baud 9600, external 5V servo supply. See hand/HANDOFF.md and CLAUDE.md.
 
-Talks to hand/hand_control/hand_control.ino over serial:
+Talks to the controller over serial (same protocol on either firmware):
   - normalized teleop:  set_bends([b0..b4])  bend 0=open/straight, 1=closed/curled
   - raw microseconds:   set_fingers_us([u0..u4])
   - presets:            open() / close() / neutral()
@@ -74,30 +76,42 @@ def clamp_us(finger: int, us: float) -> int:
     return int(round(_clamp(float(us), MIN_US[finger], MAX_US[finger])))
 
 
-# --- Arduino port autodetect -------------------------------------------------
-# The hand's Arduino Uno must NOT be confused with the myCobot's CH9102 serial.
-# Match Arduino signatures (VID 0x2341 = Arduino LLC; CH340/USB-SERIAL clones).
-# Explicitly reject the CH9102 description used by the arm's adapter.
-_ARDUINO_VIDS = {0x2341, 0x2A03, 0x1A86}  # Arduino LLC, Arduino SRL, QinHeng(CH340)
-_ARM_ADAPTER_HINTS = ("CH9102",)          # myCobot 320 USB-serial — never the hand
+# --- hand controller port autodetect -----------------------------------------
+# The hand's controller (M5Stack ATOM Lite, ESP32-PICO-D4) must NOT be confused
+# with the OTHER robots' serial adapters sharing this PC:
+#   - myCobot 320 arm : CH9102 (VID 1A86 / PID 55D4)
+#   - SO-101 follower  : CH343  (VID 1A86 / PID 55D3)   <- shares VID 1A86!
+# The ATOM Lite enumerates as an FTDI USB-serial (VID 0403, "USB Serial Port").
+# So: accept FTDI 0403 + legacy Arduino VIDs, and REJECT the arm/SO-101 adapters
+# by description (CH9102 / CH343) so VID 1A86 can't accidentally match them.
+# Confirm a port is really the ATOM with esptool chip-id if ever in doubt.
+_HAND_VIDS = {0x0403, 0x2341, 0x2A03, 0x1A86}  # FTDI(ATOM), Arduino LLC/SRL, QinHeng(CH340)
+_OTHER_ROBOT_HINTS = ("CH9102", "CH343")        # myCobot arm / SO-101 — never the hand
 
 
 def find_hand_port() -> Optional[str]:
-    """Return the most likely Arduino Uno COM port for the hand, or None."""
+    """Return the most likely COM port for the hand controller, or None.
+
+    Targets the M5Stack ATOM Lite (FTDI USB-serial). Falls back to legacy
+    Arduino signatures. Explicitly skips the myCobot (CH9102) and SO-101 (CH343)
+    adapters so they are never picked as the hand.
+    """
     if list_ports is None:
         return None
     candidates = []
     for p in list_ports.comports():
         desc = (p.description or "") + " " + (getattr(p, "product", "") or "")
-        if any(h in desc for h in _ARM_ADAPTER_HINTS):
-            continue  # this is the arm's adapter, skip
+        if any(h in desc for h in _OTHER_ROBOT_HINTS):
+            continue  # this is the arm's / SO-101's adapter, skip
         vid = getattr(p, "vid", None)
         score = 0
-        if vid in _ARDUINO_VIDS:
+        if vid in _HAND_VIDS:
             score += 10
         d = desc.lower()
         if "arduino" in d:
             score += 8
+        if vid == 0x0403 or "usb serial port" in d or "ftdi" in d:
+            score += 6  # ATOM Lite USB-serial (FTDI)
         if "ch340" in d or "usb-serial" in d or "usb serial" in d:
             score += 3
         if score > 0:

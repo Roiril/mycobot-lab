@@ -9,11 +9,11 @@ Elephant Robotics **myCobot 320-M5**（6-DoF 卓上協働アーム）を Python 
 | | 🦾 **myCobot アーム** | 🦾 **SO-101 アーム** | ✋ **ハンド** |
 |---|---|---|---|
 | 機種 | myCobot 320-M5（6-DoF） | SO-101（5-DoF lerobot follower） | Hiwonder 5本指（LFD-01×5） |
-| 制御 MCU | M5Stack Basic + M5Atom | Seeed Driver Board for XIAO（CH343 内蔵） | **Arduino Uno** |
-| 接続 | CH9102 USB-Serial | **CH343**（VID 1A86/PID 55D3） | Arduino USB シリアル |
+| 制御 MCU | M5Stack Basic + M5Atom | Seeed Driver Board for XIAO（CH343 内蔵） | **M5Stack ATOM Lite（ESP32）+ 8Servos Unit** |
+| 接続 | CH9102 USB-Serial | **CH343**（VID 1A86/PID 55D3） | **FTDI USB-Serial（VID 0403）**→ Grove I2C で 8Servos(0x25) |
 | ボーレート | **115200** | **1,000,000** | **9600** |
-| COM | 動的（≈COM12） | 動的（≈COM13） | 動的（≈COM10） |
-| 電源 | DC 24V 120W | **DC 12V（5A推奨）** ⚠5V不可 | **外部 6V** |
+| COM | 動的（≈COM12） | 動的（≈COM13） | 動的（≈COM9。"USB Serial Port"） |
+| 電源 | DC 24V 120W | **DC 12V（5A推奨）** ⚠5V不可 | **外部 5V**（8Servos 端子台 / 実測5V） |
 | SDK/制御・env | pymycobot / Python 3.10 | **lerobot / `.venv-so101`(3.12)** | 生シリアル / 3.10 |
 | コード | `src/arm/` `scripts/server.py` | `src/robots/so101/` + `So101Subsystem` | `hand/` |
 | 起動 | `python scripts/server.py` | `.venv-so101\…\python server.py --so101-driver real` | `--real-hand` |
