@@ -595,6 +595,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body); return
             if path == "/favicon.ico":
                 self.send_response(204); self.end_headers(); return
+            if path == "/robots_status":
+                # 3系統コックピット用の軽量集約。副作用なし — SO-101 を lazy-init
+                # しない（UI が常時ポーリングしても MuJoCo ロードが走らない）。
+                # アーム詳細は /angles /power、ハンド詳細は /hand/status が担う。
+                self._json(200, {
+                    "so101": {"initialized": SO101 is not None,
+                              "driver": SO101_DRIVER_KIND},
+                })
+                return
             if path == "/so101/state":
                 s = _so101()
                 with s.lock:

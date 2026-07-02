@@ -158,5 +158,11 @@ class MujocoSo101Driver:
     def release(self) -> None:
         self.set_torque(False)
 
+    def torque_on(self) -> Optional[bool]:
+        return self._torque
+
+    def ping(self) -> Optional[dict]:
+        return None  # sim has no servo bus
+
     def render(self, **kw):
         return self.sim.render(**kw)
