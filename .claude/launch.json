@@ -2,6 +2,22 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "home",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "scripts/home_server.py"
+      ],
+      "port": 8010
+    },
+    {
+      "name": "so101-cockpit",
+      "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "scripts/so101_cockpit_server.py"
+      ],
+      "port": 8013
+    },
+    {
       "name": "so101-calib",
       "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
       "runtimeArgs": [

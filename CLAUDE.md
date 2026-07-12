@@ -69,12 +69,13 @@ Elephant Robotics **myCobot 320-M5**（6-DoF 卓上協働アーム）を Python 
 
 ```bash
 pip install -r requirements.txt
+python scripts/home_server.py       # 🏠 ホーム（全UIランチャー、:8010、どのenvでも可）
 python scripts/server.py            # 実機、loopback のみ
 python scripts/server.py --offline  # 仮想アーム（UI 開発用）
 python -m unittest discover tests   # 単体テスト
 ```
 
-ブラウザで http://localhost:8000/ を開いて操作。
+ブラウザで http://localhost:8000/ を開いて操作。**UI の入口に迷ったら http://localhost:8010/（ホーム）** — 統合UI / SO-101 コックピット(:8013) / SO-101 校正(:8012) / ハンド配線図への稼働状態付きリンク集。
 
 LAN 公開する場合は `--bind 0.0.0.0 --token <secret>` 必須。
 

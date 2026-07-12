@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>mycobot-lab ホーム</title>
+<style>
+/* Design tokens: manual copy of scripts/ui.html :root (single-file rule —
+   see .agent/rules/design.md; update both when tokens change) */
+:root{
+  --bg:#1e1e1e; --surface:#252526; --surface-2:#2d2d30; --surface-3:#333334;
+  --border:#3c3c3c; --border-strong:#525257; --divider:#2b2b2c;
+  --text:#d4d4d4; --text-muted:#9d9d9d; --text-faint:#6e6e72; --text-inv:#ffffff;
+  --accent:#4ec9ff; --accent-bg:#0e639c; --accent-bg-hover:#1177bb;
+  --accent-soft:rgba(78,201,255,.13); --accent-line:rgba(78,201,255,.30);
+  --ok:#388a5a; --ok-text:#4ec99a;
+  --warn:#9a7d12; --warn-text:#dcdcaa;
+  --danger:#a1260d; --danger-hover:#c5341a; --danger-text:#f14c4c; --danger-soft:rgba(161,38,13,.16);
+  --data-num:#9cdcfe; --data-tgt:#ce9178; --data-ok:#6a9955;
+  --font-ui:system-ui,"Segoe UI",Roboto,sans-serif;
+  --font-mono:ui-monospace,"SF Mono",Consolas,"Liberation Mono",monospace;
+  --fs-2xs:10px; --fs-xs:11px; --fs-sm:12px; --fs-base:13px; --fs-md:15px;
+  --fw-reg:400; --fw-med:600; --fw-bold:700;
+  --radius:4px; --radius-sm:3px; --bw:1px;
+  --pad:11px; --gap:8px;
+  --t-fast:.1s; --t-std:.16s; --ease:ease-out;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
+  font:var(--fs-base)/1.5 var(--font-ui);-webkit-font-smoothing:antialiased}
+#wrap{max-width:900px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+header{display:flex;align-items:baseline;gap:12px}
+header h1{font-size:var(--fs-md);margin:0;font-weight:var(--fw-bold)}
+header .sub{color:var(--text-faint);font-size:var(--fs-sm)}
+
+.sec{display:flex;align-items:center;gap:10px;color:var(--text-faint);font-size:var(--fs-2xs);
+  font-weight:var(--fw-med);text-transform:uppercase;letter-spacing:1.4px;margin:8px 0 0}
+.sec::before,.sec::after{content:'';flex:1;height:1px;background:var(--divider)}
+
+.card{background:var(--surface);border:var(--bw) solid var(--border);border-radius:var(--radius);
+  padding:var(--pad);display:flex;flex-direction:column;gap:6px}
+.card .head{display:flex;align-items:center;gap:8px}
+.card .head .dot{width:8px;height:8px;border-radius:50%;background:var(--surface-3);
+  border:var(--bw) solid var(--border-strong);flex-shrink:0}
+.card .head .dot.up{background:var(--ok);border-color:var(--ok)}
+.card .head .name{font-weight:var(--fw-bold)}
+.card .head .port{font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--data-num)}
+.card .head .spacer{flex:1}
+.card .desc{color:var(--text-muted);font-size:var(--fs-sm)}
+.card .note{color:var(--warn-text);font-size:var(--fs-xs)}
+.card .cmd{display:flex;gap:6px;align-items:center}
+.card .cmd code{flex:1;font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--text-muted);
+  background:var(--bg);border:var(--bw) solid var(--border);border-radius:var(--radius-sm);
+  padding:4px 8px;overflow-x:auto;white-space:nowrap}
+
+a.open,button{background:var(--surface-3);color:var(--text);border:var(--bw) solid var(--border);
+  padding:5px 12px;border-radius:var(--radius);cursor:pointer;text-decoration:none;display:inline-block;
+  font:var(--fw-med) var(--fs-base) var(--font-ui);
+  transition:background var(--t-fast) var(--ease),border-color var(--t-fast) var(--ease)}
+a.open:hover,button:hover{background:var(--surface-2);border-color:var(--border-strong)}
+a.open.primary{background:var(--accent-bg);border-color:var(--accent-bg);color:var(--text-inv)}
+a.open.primary:hover{background:var(--accent-bg-hover)}
+a.open.disabled{pointer-events:none;opacity:.45}
+button.sm{padding:3px 9px;font-size:var(--fs-xs)}
+button.copied{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+footer{color:var(--text-faint);font-size:var(--fs-xs);padding:4px 2px}
+footer code{font-family:var(--font-mono)}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <h1>🤖 mycobot-lab ホーム</h1>
+    <span class="sub">全 UI の入口 — 稼働中は緑ドット・「開く」が有効</span>
+  </header>
+  <div id="cards"></div>
+  <footer>
+    ⚠ 排他まとめ: <code>:8001</code> は launch 構成のうち1つだけ / SO-101 の COM13 は
+    「統合サーバ(real)・校正・コックピット・CLI teleop」のどれか1つだけが掴める（コックピットは COM14 も）。
+    このホーム自体は <code>python scripts/home_server.py</code>（:8010、どの env でも可）。
+  </footer>
+</div>
+
+<script>
+const CARDS=[
+ {sec:"統合コックピット（server.py — 3ロボット統合 UI）"},
+ {name:"統合 UI（メイン）",icon:"🦾",probe:["8000","8001"],
+  urls:{ "8000":"http://localhost:8000/", "8001":"http://localhost:8001/" },
+  desc:"myCobot 3D操作 / ポーズ / VR·✋ / 観測 / システム / SO-101 の6タブ。実機・仮想どちらも。",
+  cmd:"python scripts/server.py --offline --port 8001",
+  note:"SO-101 実機タブで使うなら .venv-so101 の python で --so101-driver real --so101-port COM13"},
+ {name:"ハンド軽量 teleop（Quest 用）",icon:"✋",probe:["8001"],
+  urls:{ "8001":"http://localhost:8001/hand" },
+  desc:"three.js 無しの軽量ページ。Quest ブラウザ / WebXR からのハンド操作用（/hand）。",
+  cmd:"python scripts/server.py --offline --real-hand --port 8001",
+  note:"Quest からは adb reverse tcp:8001 tcp:8001（docs/QUEST_DEV.md）"},
+ {sec:"SO-101 リーダー/フォロワー（.venv-so101 必須）"},
+ {name:"SO-101 コックピット",icon:"🎮",probe:["8013"],
+  urls:{ "8013":"http://localhost:8013/" },
+  desc:"リーダー/フォロワー全モーター監視・追従モード・個別ジョグ・トルク・ABORT。",
+  cmd:".venv-so101\\Scripts\\python.exe scripts\\so101_cockpit_server.py",
+  note:"COM13 + COM14 を排他占有（統合サーバ real / 校正と同時起動不可）"},
+ {name:"SO-101 校正 GUI",icon:"📐",probe:["8012"],
+  urls:{ "8012":"http://localhost:8012/" },
+  desc:"中立セット → 全関節スイープ記録 → lerobot 校正ファイル保存（ライブ進捗バー）。",
+  cmd:".venv-so101\\Scripts\\python.exe scripts\\so101_calib_server.py --port COM13",
+  note:"リーダー校正は --port COM14 --leader。COM を排他占有"},
+ {sec:"リファレンス"},
+ {name:"ハンド配線図",icon:"🔌",probe:[],always:true,
+  urls:{ "":"/wiring" },
+  desc:"5指ハンド（ATOM Lite + 8Servos）の静的配線リファレンス（hand/wiring.html）。",
+  cmd:"", note:""},
+];
+
+function build(){
+  const host=document.getElementById("cards");
+  for(const c of CARDS){
+    if(c.sec){const s=document.createElement("div");s.className="sec";s.textContent=c.sec;host.appendChild(s);continue;}
+    const el=document.createElement("div");el.className="card";el.dataset.name=c.name;
+    const links=Object.entries(c.urls).map(([p,u])=>
+      `<a class="open" data-port="${p}" href="${u}" target="_blank">開く${p?` :${p}`:""}</a>`).join(" ");
+    el.innerHTML=`
+      <div class="head"><span class="dot"></span><span class="name">${c.icon} ${c.name}</span>
+        <span class="port">${c.probe.map(p=>":"+p).join(" ")}</span><span class="spacer"></span>${links}</div>
+      <div class="desc">${c.desc}</div>
+      ${c.cmd?`<div class="cmd"><code>${c.cmd}</code><button class="sm" data-copy>コピー</button></div>`:""}
+      ${c.note?`<div class="note">⚠ ${c.note}</div>`:""}`;
+    host.appendChild(el);
+    const btn=el.querySelector("[data-copy]");
+    if(btn)btn.onclick=async()=>{
+      await navigator.clipboard.writeText(c.cmd);
+      btn.textContent="コピー済";btn.classList.add("copied");
+      setTimeout(()=>{btn.textContent="コピー";btn.classList.remove("copied");},1200);
+    };
+  }
+}
+build();
+
+async function poll(){
+  let st={};
+  try{st=await(await fetch("/status")).json();}catch(e){}
+  for(const c of CARDS){
+    if(c.sec)continue;
+    const el=document.querySelector(`.card[data-name="${c.name}"]`);
+    const up=c.always||c.probe.some(p=>st[p]);
+    el.querySelector(".dot").className="dot"+(up?" up":"");
+    el.querySelectorAll("a.open").forEach(a=>{
+      const p=a.dataset.port;
+      const linkUp=c.always||(p&&st[p]);
+      a.classList.toggle("disabled",!linkUp);
+      a.classList.toggle("primary",!!linkUp);
+    });
+  }
+  setTimeout(poll,2000);
+}
+poll();
+</script>
+</body>
+</html>
