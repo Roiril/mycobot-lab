@@ -23,7 +23,7 @@ import queue
 import argparse
 import pathlib
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 from lerobot.motors.feetech import FeetechMotorsBus
@@ -269,7 +269,7 @@ def main():
 
     threading.Thread(target=worker, args=(args.leader_port, args.follower_port),
                      daemon=True).start()
-    srv = HTTPServer(("127.0.0.1", args.http_port), Handler)
+    srv = ThreadingHTTPServer(("127.0.0.1", args.http_port), Handler)
     print(f"[SO-101 COCKPIT] leader={args.leader_port} follower={args.follower_port} "
           f"-> http://127.0.0.1:{args.http_port}/")
     try:
