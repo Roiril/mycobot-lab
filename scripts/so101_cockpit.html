@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SO-101 コックピット</title>
+<style>
+/* Design tokens: manual copy of scripts/ui.html :root (single-file rule —
+   see .agent/rules/design.md; update both when tokens change) */
+:root{
+  --bg:#1e1e1e; --surface:#252526; --surface-2:#2d2d30; --surface-3:#333334;
+  --border:#3c3c3c; --border-strong:#525257; --divider:#2b2b2c;
+  --text:#d4d4d4; --text-muted:#9d9d9d; --text-faint:#6e6e72; --text-inv:#ffffff;
+  --accent:#4ec9ff; --accent-bg:#0e639c; --accent-bg-hover:#1177bb;
+  --accent-soft:rgba(78,201,255,.13); --accent-line:rgba(78,201,255,.30);
+  --ok:#388a5a; --ok-text:#4ec99a;
+  --warn:#9a7d12; --warn-text:#dcdcaa;
+  --danger:#a1260d; --danger-hover:#c5341a; --danger-text:#f14c4c; --danger-soft:rgba(161,38,13,.16);
+  --data-num:#9cdcfe; --data-tgt:#ce9178; --data-ok:#6a9955;
+  --font-ui:system-ui,"Segoe UI",Roboto,sans-serif;
+  --font-mono:ui-monospace,"SF Mono",Consolas,"Liberation Mono",monospace;
+  --fs-2xs:10px; --fs-xs:11px; --fs-sm:12px; --fs-base:13px; --fs-md:15px;
+  --fw-reg:400; --fw-med:600; --fw-bold:700;
+  --radius:4px; --radius-sm:3px; --bw:1px;
+  --pad:11px; --gap:8px;
+  --t-fast:.1s; --t-std:.16s; --ease:ease-out;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
+  font:var(--fs-base)/1.45 var(--font-ui);-webkit-font-smoothing:antialiased}
+#wrap{max-width:980px;margin:0 auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+
+/* status bar */
+#statusBar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;
+  background:var(--surface);border:var(--bw) solid var(--border);border-radius:var(--radius);
+  padding:8px var(--pad)}
+#statusBar .title{font-weight:var(--fw-bold);font-size:var(--fs-md)}
+.badge{font-size:var(--fs-2xs);font-weight:var(--fw-bold);padding:2px 8px;border-radius:var(--radius-sm);
+  text-transform:uppercase;letter-spacing:.6px}
+.badge.ok{background:var(--ok);color:var(--text-inv)}
+.badge.err{background:var(--danger);color:var(--text-inv)}
+.badge.gray{background:var(--surface-3);color:var(--text-muted);border:var(--bw) solid var(--border)}
+.badge.accent{background:var(--accent-soft);color:var(--accent);border:var(--bw) solid var(--accent-line)}
+#statusBar .spacer{flex:1}
+
+button{background:var(--surface-3);color:var(--text);border:var(--bw) solid var(--border);
+  padding:6px 11px;border-radius:var(--radius);cursor:pointer;
+  font:var(--fw-med) var(--fs-base) var(--font-ui);
+  transition:background var(--t-fast) var(--ease),border-color var(--t-fast) var(--ease),color var(--t-fast) var(--ease)}
+button:hover:not(:disabled){background:var(--surface-2);border-color:var(--border-strong)}
+button:active:not(:disabled){transform:translateY(.5px)}
+button:disabled{background:var(--surface);color:var(--text-faint);cursor:not-allowed;opacity:.6}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent-bg);border-color:var(--accent-bg);color:var(--text-inv)}
+button.primary:hover:not(:disabled){background:var(--accent-bg-hover)}
+button.abort{background:var(--danger);border-color:var(--danger);color:var(--text-inv);font-weight:var(--fw-bold)}
+button.abort:hover:not(:disabled){background:var(--danger-hover)}
+button.toggle.active{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+button.sm{padding:3px 8px;font-size:var(--fs-xs)}
+
+/* teleop hero row */
+#teleopRow{display:flex;align-items:center;gap:10px;background:var(--surface);
+  border:var(--bw) solid var(--border);border-left:3px solid var(--accent-line);
+  border-radius:var(--radius);padding:var(--pad)}
+#teleopRow .desc{color:var(--text-muted);font-size:var(--fs-sm)}
+#teleopRow .spacer{flex:1}
+
+/* arm panels */
+#arms{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:760px){#arms{grid-template-columns:1fr}}
+.panel{background:var(--surface);border:var(--bw) solid var(--border);
+  border-radius:var(--radius);padding:var(--pad)}
+h2{font-size:var(--fs-xs);font-weight:var(--fw-bold);margin:0 0 8px;color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.8px;display:flex;justify-content:space-between;align-items:center;gap:6px}
+h2 .arm-name{color:var(--text);font-size:var(--fs-sm)}
+
+.joint{display:grid;grid-template-columns:92px 1fr 96px;gap:6px;align-items:center;
+  padding:5px 0;border-bottom:var(--bw) solid var(--divider)}
+.joint:last-of-type{border-bottom:none}
+.joint .name{font-size:var(--fs-xs);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.joint .name .tq{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;
+  background:var(--surface-3);border:var(--bw) solid var(--border-strong);vertical-align:1px}
+.joint .name .tq.on{background:var(--ok);border-color:var(--ok)}
+.bar{position:relative;height:16px;background:var(--bg);border:var(--bw) solid var(--border);
+  border-radius:var(--radius-sm);overflow:hidden}
+.bar .fill{position:absolute;top:0;bottom:0;left:0;width:0;background:var(--accent-soft)}
+.bar .tick{position:absolute;top:0;bottom:0;width:2px;background:var(--accent)}
+.bar .goal{position:absolute;top:0;bottom:0;width:2px;background:var(--data-tgt);opacity:.9}
+.joint .val{font-family:var(--font-mono);font-size:var(--fs-sm);color:var(--data-num);text-align:right;white-space:nowrap}
+.joint .val .u{color:var(--text-faint);font-size:var(--fs-2xs)}
+.joint input[type=range]{width:100%;accent-color:var(--accent-bg);height:16px;margin:0}
+.joint .rowbtns{display:flex;gap:4px;justify-content:flex-end}
+
+.armfoot{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
+.armfoot .meta{font-family:var(--font-mono);font-size:var(--fs-2xs);color:var(--text-faint);margin-left:auto}
+.hot{color:var(--warn-text)}
+.vlow{color:var(--danger-text)}
+
+/* log */
+#log{font-family:var(--font-mono);font-size:var(--fs-xs);max-height:140px;overflow:auto;
+  display:flex;flex-direction:column-reverse;gap:1px}
+#log .t{color:var(--text-faint);margin-right:8px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="statusBar">
+    <span class="title">🦾 SO-101 コックピット</span>
+    <span id="connBadge" class="badge gray">接続中…</span>
+    <span id="teleopBadge" class="badge gray">追従 OFF</span>
+    <span class="spacer"></span>
+    <button id="abortBtn" class="abort">⛔ ABORT (Esc)</button>
+  </div>
+
+  <div id="teleopRow">
+    <button id="teleopBtn" class="toggle">追従モード</button>
+    <span class="desc">ON でフォロワーがリーダーを追従（トルク上限・15°/step クランプ付き）。
+      OFF でその場の姿勢を保持。個別ジョグは OFF のときだけ有効。</span>
+    <span class="spacer"></span>
+  </div>
+
+  <div id="arms">
+    <div class="panel" id="leaderPanel">
+      <h2><span class="arm-name">🎮 リーダー（COM14 / 7.4V系）</span><span id="leaderVolt" class="badge gray">--V</span></h2>
+      <div id="leaderJoints"></div>
+      <div class="armfoot">
+        <button class="sm" data-arm="leader" data-tq="0">全脱力</button>
+        <button class="sm" data-arm="leader" data-tq="1">全トルクON</button>
+        <span class="meta" id="leaderMeta"></span>
+      </div>
+    </div>
+    <div class="panel" id="followerPanel">
+      <h2><span class="arm-name">🦾 フォロワー（COM13 / 12V）</span><span id="followerVolt" class="badge gray">--V</span></h2>
+      <div id="followerJoints"></div>
+      <div class="armfoot">
+        <button class="sm" data-arm="follower" data-tq="0">全脱力</button>
+        <button class="sm" data-arm="follower" data-tq="1">全トルクON</button>
+        <span class="meta" id="followerMeta"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>イベントログ</h2>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+const JOINTS=["shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll","gripper"];
+const JLABEL={shoulder_pan:"土台 pan",shoulder_lift:"肩 lift",elbow_flex:"肘 flex",
+  wrist_flex:"手首 flex",wrist_roll:"手首 roll",gripper:"グリッパ"};
+const deg=r=>((r-2048)*360/4096);
+const fmt=r=>deg(r).toFixed(1);
+let ranges=null, teleop=false, dragging=null;
+
+function post(path,body){return fetch(path,{method:"POST",body:JSON.stringify(body||{})});}
+
+function buildJoints(arm){
+  const host=document.getElementById(arm+"Joints");
+  host.innerHTML="";
+  for(const n of JOINTS){
+    const row=document.createElement("div"); row.className="joint"; row.dataset.joint=n;
+    row.innerHTML=`
+      <span class="name"><span class="tq" id="${arm}-${n}-tq"></span>${JLABEL[n]}</span>
+      <div>
+        <div class="bar"><div class="fill" id="${arm}-${n}-fill"></div>
+          <div class="tick" id="${arm}-${n}-tick"></div></div>
+        ${arm==="follower"?`<input type="range" id="${arm}-${n}-slider" min="0" max="4095" step="1">`:""}
+      </div>
+      <span class="val"><span id="${arm}-${n}-deg">--</span><span class="u">°</span>
+        <span class="u" id="${arm}-${n}-extra"></span></span>`;
+    host.appendChild(row);
+    if(arm==="follower"){
+      const s=row.querySelector("input");
+      s.addEventListener("input",()=>{dragging=n; post("/jog",{joint:n,pos:+s.value});});
+      s.addEventListener("change",()=>{setTimeout(()=>{if(dragging===n)dragging=null;},400);});
+    }
+  }
+}
+buildJoints("leader"); buildJoints("follower");
+
+document.getElementById("teleopBtn").onclick=()=>post("/teleop",{on:!teleop});
+document.getElementById("abortBtn").onclick=()=>post("/abort",{});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")post("/abort",{});});
+document.querySelectorAll("[data-tq]").forEach(b=>{
+  b.onclick=()=>post("/torque",{arm:b.dataset.arm,joint:"all",on:b.dataset.tq==="1"});
+});
+
+function paintArm(arm,data){
+  let vmin=99, tmax=0, imax=0;
+  for(const n of JOINTS){
+    const d=data[n]; if(!d) continue;
+    const [lo,hi]=ranges?ranges[n]:[0,4095];
+    const pct=Math.max(0,Math.min(100,(d.pos-lo)/(hi-lo)*100));
+    document.getElementById(`${arm}-${n}-fill`).style.width=pct+"%";
+    document.getElementById(`${arm}-${n}-tick`).style.left=`calc(${pct}% - 1px)`;
+    document.getElementById(`${arm}-${n}-deg`).textContent=fmt(d.pos);
+    document.getElementById(`${arm}-${n}-tq`).className="tq"+(d.torque?" on":"");
+    const ex=document.getElementById(`${arm}-${n}-extra`);
+    ex.textContent=d.temp?` ${d.temp}℃`:"";
+    ex.className="u"+(d.temp>=50?" hot":"");
+    if(arm==="follower"&&!dragging){
+      const s=document.getElementById(`${arm}-${n}-slider`);
+      if(s&&document.activeElement!==s)s.value=d.pos;
+    }
+    if(d.volt)vmin=Math.min(vmin,d.volt);
+    tmax=Math.max(tmax,d.temp||0); imax=Math.max(imax,d.cur||0);
+  }
+  const vb=document.getElementById(arm+"Volt");
+  if(vmin<99){
+    vb.textContent=vmin.toFixed(1)+"V";
+    const low=(arm==="follower"&&vmin<11)||(arm==="leader"&&vmin<5);
+    vb.className="badge "+(low?"err":"ok");
+  }
+  document.getElementById(arm+"Meta").textContent=`max ${tmax}℃ / ${imax}mA`;
+}
+
+async function poll(){
+  try{
+    const st=await(await fetch("/state")).json();
+    ranges=st.ranges||ranges;
+    teleop=st.teleop;
+    const cb=document.getElementById("connBadge");
+    cb.textContent=st.connected?"接続OK":"バス断";
+    cb.className="badge "+(st.connected?"ok":"err");
+    const tb=document.getElementById("teleopBadge");
+    tb.textContent=st.teleop?"追従 ON":"追従 OFF";
+    tb.className="badge "+(st.teleop?"accent":"gray");
+    const btn=document.getElementById("teleopBtn");
+    btn.classList.toggle("active",st.teleop);
+    btn.textContent=st.teleop?"追従モード ON":"追従モード";
+    document.querySelectorAll("#followerJoints input[type=range]").forEach(s=>s.disabled=st.teleop);
+    if(st.leader)paintArm("leader",st.leader);
+    if(st.follower)paintArm("follower",st.follower);
+    document.getElementById("log").innerHTML=(st.log||[]).map(
+      e=>`<div><span class="t">${e.t}</span>${e.msg}</div>`).reverse().join("");
+  }catch(e){
+    const cb=document.getElementById("connBadge");
+    cb.textContent="サーバ停止"; cb.className="badge err";
+  }
+  setTimeout(poll,150);
+}
+poll();
+</script>
+</body>
+</html>
