@@ -24,6 +24,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 from lerobot.motors import MotorCalibration
 from lerobot.motors.feetech import OperatingMode
 
@@ -41,8 +42,11 @@ STATE = {
 }
 
 
-def worker(port: str, robot_id: str):
-    robot = SO101Follower(SO101FollowerConfig(port=port, id=robot_id))
+def worker(port: str, robot_id: str, leader: bool):
+    if leader:
+        robot = SO101Leader(SO101LeaderConfig(port=port, id=robot_id))
+    else:
+        robot = SO101Follower(SO101FollowerConfig(port=port, id=robot_id))
     bus = robot.bus
     names = list(bus.motors)
     ids = {n: bus.motors[n].id for n in names}
@@ -209,11 +213,17 @@ def main():
     ap.add_argument("--port", required=True, help="board COM port (e.g. COM13)")
     # MUST match the id the integrated real driver uses (LerobotSo101Driver
     # defaults robot_id="so101_follower"), or the saved calibration won't load.
-    ap.add_argument("--id", default="so101_follower")
+    ap.add_argument("--id", default=None)
+    ap.add_argument("--leader", action="store_true",
+                    help="calibrate an SO-101 leader arm (teleoperator) instead of a follower")
     ap.add_argument("--http-port", type=int, default=8012)
     args = ap.parse_args()
+    if args.id is None:
+        # must match the id lerobot-teleoperate / the real driver will use,
+        # or the saved calibration won't load
+        args.id = "so101_leader" if args.leader else "so101_follower"
 
-    threading.Thread(target=worker, args=(args.port, args.id), daemon=True).start()
+    threading.Thread(target=worker, args=(args.port, args.id, args.leader), daemon=True).start()
     srv = HTTPServer(("127.0.0.1", args.http_port), Handler)
     print(f"[SO-101 CALIB] bus={args.port} -> http://127.0.0.1:{args.http_port}/")
     try:
