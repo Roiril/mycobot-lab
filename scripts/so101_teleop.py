@@ -35,6 +35,18 @@ def main():
     follower = SO101Follower(SO101FollowerConfig(
         port=args.follower_port, id="so101_follower",
         max_relative_target=args.max_step))
+
+    # Preflight: cap torque/acceleration BEFORE follower.connect(), because
+    # configure() torque-enables every servo at once and the uncapped inrush
+    # browns out the 2A supply (bus drops with "no status packet").
+    pre = SO101Follower(SO101FollowerConfig(port=args.follower_port, id="so101_follower"))
+    pre.bus.connect(handshake=False)
+    for n in pre.bus.motors:
+        pre.bus.write("Torque_Limit", n, TORQUE_LIMIT, normalize=False)
+        pre.bus.write("Acceleration", n, ACCELERATION, normalize=False)
+        pre.bus.write("Goal_Velocity", n, GOAL_VELOCITY, normalize=False)
+    pre.bus.disconnect(disable_torque=False)
+
     leader.connect(calibrate=False)
     follower.connect(calibrate=False)
 
