@@ -17,7 +17,17 @@ import time
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 
-TORQUE_LIMIT = 500      # /1000 — enough to track, caps inrush current
+# Per-joint torque caps (/1000). shoulder_lift/elbow_flex fight gravity and
+# stall+overheat+latch if capped too low; the rest stay low to limit total
+# draw on the 2A supply.
+TORQUE_LIMITS = {
+    "shoulder_pan": 400,
+    "shoulder_lift": 700,
+    "elbow_flex": 700,
+    "wrist_flex": 400,
+    "wrist_roll": 400,
+    "gripper": 400,
+}
 ACCELERATION = 30       # gentle ramp, avoids current spikes
 GOAL_VELOCITY = 800     # raw units; fast enough for live tracking
 
@@ -42,7 +52,7 @@ def main():
     pre = SO101Follower(SO101FollowerConfig(port=args.follower_port, id="so101_follower"))
     pre.bus.connect(handshake=False)
     for n in pre.bus.motors:
-        pre.bus.write("Torque_Limit", n, TORQUE_LIMIT, normalize=False)
+        pre.bus.write("Torque_Limit", n, TORQUE_LIMITS[n], normalize=False)
         pre.bus.write("Acceleration", n, ACCELERATION, normalize=False)
         pre.bus.write("Goal_Velocity", n, GOAL_VELOCITY, normalize=False)
     pre.bus.disconnect(disable_torque=False)
@@ -51,12 +61,12 @@ def main():
     follower.connect(calibrate=False)
 
     for n in follower.bus.motors:
-        follower.bus.write("Torque_Limit", n, TORQUE_LIMIT, normalize=False)
+        follower.bus.write("Torque_Limit", n, TORQUE_LIMITS[n], normalize=False)
         follower.bus.write("Acceleration", n, ACCELERATION, normalize=False)
         follower.bus.write("Goal_Velocity", n, GOAL_VELOCITY, normalize=False)
 
     print(f"[teleop] leader={args.leader_port} follower={args.follower_port} "
-          f"fps={args.fps} max_step={args.max_step}deg torque_limit={TORQUE_LIMIT}")
+          f"fps={args.fps} max_step={args.max_step}deg torque_limits={TORQUE_LIMITS}")
     period = 1.0 / args.fps
     errors = 0
     try:
