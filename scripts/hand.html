@@ -34,6 +34,7 @@
    background:var(--surface-3);color:var(--text-muted)}
  .badge.ok{background:rgba(56,138,90,.18);color:var(--ok-text)}
  .badge.warn{background:rgba(154,125,18,.18);color:#dcdcaa}
+ .badge.danger{background:rgba(161,38,13,.22);color:#f48771}
  .badge.accent{background:var(--accent-soft);color:var(--accent)}
  button{font-family:var(--font-ui);font-size:13px;color:var(--text);background:var(--surface-3);
    border:var(--bw) solid var(--border);border-radius:var(--radius);padding:8px 12px;cursor:pointer}
@@ -131,8 +132,8 @@ function flush(){
   const to = setTimeout(()=>ctrl.abort(), 1000);
   fetch('/hand/fingers',{method:'POST',headers:{'Content-Type':'application/json'},
                          body:JSON.stringify({bends}), signal:ctrl.signal})
-    .then(r=>r.json()).then(j=>{ if(j&&j.cur_us) updateStatus(j); })
-    .catch(()=>{})
+    .then(r=>r.json()).then(j=>{ netFailCount=0; if(j&&j.cur_us) updateStatus(j); })
+    .catch(()=>{ netFailCount++; })   // abort (stalled tunnel) or network error → VR server LED goes purple after 3
     .finally(()=>{ clearTimeout(to); hand._inflight=false; if(hand._pending) flush(); });
 }
 function preset(p){
@@ -146,14 +147,35 @@ function preset(p){
 // --- status ---
 function updateStatus(j){
   const b=document.getElementById('badge'), s=document.getElementById('statusLine');
-  if(j.present===false || j.connected===false && j.offline===undefined){
+  // /hand/status carries connected + mcu_alive; the /hand/fingers & /hand/preset
+  // replies carry only {ok, cur_us, offline}. Derive connected from either, and
+  // treat mcu_alive as unknown (leave the badge) when a partial reply lacks it.
+  const connected = (j.connected!==undefined) ? j.connected
+                    : (j.offline!==undefined) ? !j.offline : undefined;
+  const mcuDead = connected && j.mcu_alive===false;   // known-dead only
+  if(j.present===false){
     b.textContent='なし'; b.className='badge warn';
-  } else if(j.connected){ b.textContent='接続'; b.className='badge ok'; }
-  else { b.textContent='仮想'; b.className='badge'; }
-  if(j.cur_us) s.textContent = `us=[${j.cur_us.join(', ')}]  ${j.connected?('@'+(j.port||'?')):'(virtual)'}`;
+  } else if(mcuDead){
+    b.textContent='MCU応答なし'; b.className='badge danger';
+  } else if(connected){
+    b.textContent='接続'; b.className='badge ok';
+  } else if(connected===false){
+    b.textContent='仮想'; b.className='badge';
+  } // connected undefined → partial reply, leave the badge as-is
+  if(mcuDead){
+    s.textContent = `⚠ MCU 沈黙 — ATOM の USB-C 給電を確認  @${j.port||'?'}`;
+  } else if(j.cur_us){
+    s.textContent = `us=[${j.cur_us.join(', ')}]  ${connected?('@'+(j.port||'?')):'(virtual)'}`;
+  }
 }
 async function poll(){
-  try{ updateStatus(await fetch('/hand/status').then(r=>r.json())); }catch(_){}
+  try{
+    const j = await fetch('/hand/status').then(r=>r.json());
+    updateStatus(j);   // owned by the badge workstream — do not inline its logic here
+    // Mirror mcu death into the VR HUD only. mcu_alive is added by another
+    // workstream; when absent it's undefined → treated as "not known dead".
+    hudMcuDead = (j && j.connected && j.mcu_alive===false) || false;
+  }catch(_){ /* a lone status-poll failure doesn't flip the VR server LED; postBends failures do */ }
 }
 
 // --- manual sliders ---
@@ -204,9 +226,134 @@ function curlsToBends(curls){
   });
 }
 
-// --- WebXR session (raw; minimal cleared GL layer so frames run) ---
+// --- WebXR session (raw; minimal GL layer + in-headset HUD, no three.js) ---
 let xrSession=null, xrRefSpace=null, xrGL=null;
 function setVrStatus(t){ document.getElementById('vrStatus').textContent='VR: '+t; }
+
+// server-health signals read by the HUD (both also feed the 2D badge elsewhere)
+let netFailCount=0;      // consecutive /hand/fingers POST failures (abort or network)
+let hudMcuDead=false;    // /hand/status reported mcu_alive===false while connected
+function serverError(){ return netFailCount>=3 || hudMcuDead; }
+
+// last finger bends the HUD should show (persists through hand-lost frames so the
+// bars hold their last value instead of collapsing). null-safe: 0 where unknown.
+let hudBends=[0,0,0,0,0];
+
+// ---- in-headset HUD (raw WebGL) --------------------------------------------
+// One tiny program draws axis-aligned quads placed directly in *head/view space*
+// (a fixed offset in front of the eye) so the panel follows the gaze. Geometry is
+// a single unit-quad TRIANGLE_STRIP reused for every quad; per-quad we only push a
+// rect (cx,cy,w,h in metres at the HUD plane) + colour, or a text texture. That's
+// ~14 draw calls/eye of trivial cost. Text is a 2D-canvas→texture uploaded ONLY
+// when the message string changes (not per frame).
+const HUD_Z = -0.72;                        // metres in front of the eye
+const PANEL = {cx:0.0,  cy:-0.02, w:0.46, h:0.12};
+const SDOT  = {cx:0.285,cy:-0.02, w:0.05, h:0.05};   // server-health LED, right of panel
+const BAR   = {xs:[-0.15,-0.075,0,0.075,0.15], cyTrack:-0.22, w:0.05, h:0.20};
+const COL = {                                        // r,g,b 0..1
+  track:[0.16,0.16,0.20], fillLive:[0.30,0.80,0.95], fillDim:[0.42,0.42,0.48],
+  ok:[0.20,0.72,0.42], lost:[0.86,0.72,0.15], ctrl:[0.92,0.55,0.16],
+  empty:[0.78,0.20,0.16], srvErr:[0.62,0.24,0.88],
+};
+let hud=null, hudText='';                            // hud = compiled GL state, or null if init failed
+
+function compileHUD(gl){
+  const vs=`attribute vec2 aPos;uniform mat4 uMVP;uniform vec4 uRect;uniform float uZ;varying vec2 vUV;
+    void main(){vUV=aPos;vec2 p=uRect.xy+(aPos-0.5)*uRect.zw;gl_Position=uMVP*vec4(p,uZ,1.0);}`;
+  const fs=`precision mediump float;uniform vec4 uColor;uniform int uUseTex;uniform sampler2D uTex;varying vec2 vUV;
+    void main(){ if(uUseTex==1){ gl_FragColor=texture2D(uTex,vUV); } else { gl_FragColor=uColor; } }`;
+  function sh(type,src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+  const prog=gl.createProgram();
+  gl.attachShader(prog,sh(gl.VERTEX_SHADER,vs)); gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([0,0, 1,0, 0,1, 1,1]),gl.STATIC_DRAW);
+  const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  const cv=document.createElement('canvas'); cv.width=640; cv.height=168;
+  return { prog, buf, tex, cv, ctx:cv.getContext('2d'),
+    loc:{ aPos:gl.getAttribLocation(prog,'aPos'), uMVP:gl.getUniformLocation(prog,'uMVP'),
+      uRect:gl.getUniformLocation(prog,'uRect'), uZ:gl.getUniformLocation(prog,'uZ'),
+      uColor:gl.getUniformLocation(prog,'uColor'), uUseTex:gl.getUniformLocation(prog,'uUseTex'),
+      uTex:gl.getUniformLocation(prog,'uTex') } };
+}
+
+// column-major 4x4 multiply (a*b), matching WebXR's Float32Array layout
+function mat4mul(a,b){ const o=new Float32Array(16);
+  for(let c=0;c<4;c++) for(let r=0;r<4;r++){ let s=0;
+    for(let k=0;k<4;k++) s+=a[k*4+r]*b[c*4+k]; o[c*4+r]=s; } return o; }
+
+function hudSetText(msg){                    // re-upload text texture only on change
+  if(!hud || msg===hudText) return; hudText=msg;
+  const gl=xrGL, {cv,ctx,tex}=hud;
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  let px=52; ctx.font='bold '+px+'px system-ui, sans-serif';
+  while(ctx.measureText(msg).width>cv.width-24 && px>22){ px-=4; ctx.font='bold '+px+'px system-ui, sans-serif'; }
+  ctx.lineWidth=6; ctx.strokeStyle='rgba(0,0,0,0.85)'; ctx.strokeText(msg,cv.width/2,cv.height/2);
+  ctx.fillStyle='#ffffff'; ctx.fillText(msg,cv.width/2,cv.height/2);
+  gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,cv);
+}
+
+// {colour, message} for the main panel. Priority: server error > input classification.
+function hudPanel(mode){
+  if(serverError()) return { c:COL.srvErr, t: hudMcuDead ? 'MCU 応答なし' : 'サーバ応答なし' };
+  switch(mode){
+    case 'tracking':   return { c:COL.ok,    t:'右手 追従中' };
+    case 'lost':       return { c:COL.lost,  t:'右手ロスト 手を見せて' };
+    case 'controller': return { c:COL.ctrl,  t:'コントローラ検出 手を見せて' };
+    default:           return { c:COL.empty, t:'手/コントローラ 未検出' };  // 'empty'
+  }
+}
+
+function renderHUD(frame, mode){
+  if(!hud) return;
+  const gl=xrGL, layer=xrSession.renderState.baseLayer;
+  const pose=frame.getViewerPose(xrRefSpace); if(!pose) return;
+  const panel=hudPanel(mode); hudSetText(panel.t);
+  const live = (mode==='tracking');
+
+  gl.useProgram(hud.prog);
+  gl.disable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.bindBuffer(gl.ARRAY_BUFFER,hud.buf);
+  gl.enableVertexAttribArray(hud.loc.aPos);
+  gl.vertexAttribPointer(hud.loc.aPos,2,gl.FLOAT,false,0,0);
+  gl.uniform1f(hud.loc.uZ,HUD_Z);
+  gl.uniform1i(hud.loc.uTex,0);
+
+  const quad=(cx,cy,w,h,col,useTex)=>{
+    gl.uniform4f(hud.loc.uRect,cx,cy,w,h);
+    gl.uniform4f(hud.loc.uColor,col[0],col[1],col[2],col[3]===undefined?1:col[3]);
+    gl.uniform1i(hud.loc.uUseTex,useTex?1:0);
+    gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+  };
+
+  for(const view of pose.views){
+    const vp=layer.getViewport(view); gl.viewport(vp.x,vp.y,vp.width,vp.height);
+    // head-locked: projection · (ref→eye) · (head→ref) → geometry given in head space
+    const mvp=mat4mul(view.projectionMatrix, mat4mul(view.transform.inverse.matrix, pose.transform.matrix));
+    gl.uniformMatrix4fv(hud.loc.uMVP,false,mvp);
+    // status panel + text overlay
+    quad(PANEL.cx,PANEL.cy,PANEL.w,PANEL.h, panel.c, 0);
+    quad(PANEL.cx,PANEL.cy,PANEL.w,PANEL.h, [1,1,1,1], 1);
+    // finger bars: gray track, then fill grown from the bottom
+    const bottom=BAR.cyTrack-BAR.h/2;
+    for(let i=0;i<5;i++){
+      quad(BAR.xs[i],BAR.cyTrack,BAR.w,BAR.h, COL.track, 0);
+      const v=Math.max(0,Math.min(1,hudBends[i]||0)), fh=BAR.h*v;
+      if(fh>0.001) quad(BAR.xs[i], bottom+fh/2, BAR.w*0.82, fh, live?COL.fillLive:COL.fillDim, 0);
+    }
+    // server-health LED
+    quad(SDOT.cx,SDOT.cy,SDOT.w,SDOT.h, serverError()?COL.srvErr:COL.ok, 0);
+  }
+}
 
 async function startVR(){
   if(!navigator.xr){ setVrStatus('WebXR 非対応ブラウザ（Quest Browser 推奨）'); return; }
@@ -220,35 +367,73 @@ async function startVR(){
     await xrGL.makeXRCompatible();
     session.updateRenderState({ baseLayer:new XRWebGLLayer(session, xrGL) });
     xrRefSpace = await session.requestReferenceSpace('local-floor');
-    session.addEventListener('end', ()=>{ xrSession=null; xrRefSpace=null;
+    // Build the HUD program; a compile failure must not abort the teleop session.
+    hud=null; hudText='';
+    try{ hud=compileHUD(xrGL); }catch(e){ console.warn('HUD init failed, running without in-VR HUD:',e); }
+    // input presence diagnostics: know immediately if only controllers are seen
+    session.addEventListener('inputsourceschange', ()=>onInputsChanged(session));
+    session.addEventListener('end', ()=>{ xrSession=null; xrRefSpace=null; hud=null; hudText='';
       hand.engaged=false; document.getElementById('btnVR').classList.remove('on');
       document.getElementById('btnVR').textContent='VR 開始'; setVrStatus('終了'); });
     document.getElementById('btnVR').classList.add('on');
     document.getElementById('btnVR').textContent='VR 終了';
     setVrStatus('開始 — 右手を見せると追従');
+    classifyInputs(session);
     session.requestAnimationFrame(onXRFrame);
   }catch(e){ setVrStatus('開始失敗: '+e); }
 }
 function stopVR(){ if(xrSession) xrSession.end(); }
 
+// Classify the current input sources into a HUD mode + drive the 2D vrStatus so a
+// controller-only headset (hand tracking off / controllers in hand) is called out
+// distinctly from a genuinely lost hand. Returns {mode, right}.
+function classifyInputs(session){
+  let right=null, anyHand=false, anyController=false;
+  for(const src of session.inputSources){
+    if(src.hand){ anyHand=true; if(src.handedness==='right') right=src.hand; }
+    else if(src.targetRayMode==='tracked-pointer') anyController=true;
+  }
+  let mode;
+  if(right) mode='tracking';
+  else if(anyHand) mode='lost';
+  else if(anyController) mode='controller';
+  else mode='empty';
+  return {mode, right};
+}
+// 2D vrStatus line for the non-tracking modes (shared by the frame loop and the
+// inputsourceschange listener so controller-only vs lost vs empty read distinctly).
+function vrStatusForMode(mode){
+  return mode==='controller' ? 'コントローラのみ検出 → 手を見せて（トラッキング要ON）'
+       : mode==='lost'       ? '右手ロスト → 停止（手を見せると再開）'
+       :                       '手もコントローラも未検出（トラッキングを確認）';
+}
+// Fires the instant an input source appears/disappears (e.g. user sets the
+// controllers down and hand tracking kicks in) so the 2D line updates without
+// waiting on classification inside the render loop.
+function onInputsChanged(session){
+  const {mode, right}=classifyInputs(session);
+  if(!right && !hand.engaged) setVrStatus(vrStatusForMode(mode));
+}
+
 function onXRFrame(t, frame){
   const session = frame.session;
-  // clear the layer (no scene render needed for hand teleop)
   const gl=xrGL, layer=session.renderState.baseLayer;
   gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
-  gl.clearColor(0.07,0.07,0.09,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.clearColor(0.03,0.03,0.06,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
 
-  let right=null;
-  for(const src of session.inputSources){ if(src.hand && src.handedness==='right'){ right=src.hand; break; } }
+  const {mode, right}=classifyInputs(session);
   if(!right){
-    if(hand.engaged){ hand.engaged=false; setVrStatus('右手ロスト → 停止（手を見せると再開）'); }
+    if(hand.engaged){ hand.engaged=false; }
+    setVrStatus(vrStatusForMode(mode));   // controller-only / lost / empty read distinctly
   } else if(xrRefSpace){
     if(!hand.engaged){ hand.engaged=true; setVrStatus('追従中 — 右手の指でハンドが動く'); }
     const curls=JOINT_TRIPLES.map((_,i)=>fingerCurl(right,frame,xrRefSpace,i));
     const bends=curlsToBends(curls);
     reflectSliders(bends);
     postBends(bends);
+    for(let i=0;i<5;i++) if(bends[i]!=null) hudBends[i]=bends[i];   // hold last-known per finger
   }
+  renderHUD(frame, mode);
   if(xrSession) session.requestAnimationFrame(onXRFrame);
 }
 

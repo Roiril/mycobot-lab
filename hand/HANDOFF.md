@@ -25,6 +25,38 @@ cogni-storage 側のセッションで開封〜基本制御確立まで完了し
 
 > ポート特定で詰まったら: `esptool.exe --port COMx chip-id` で実体確認（読むだけ・安全）。`ESP32-PICO-D4` と出れば ATOM。詳細メモリ [[atom-hand-controller-port]]。
 
+### ⚠ 「COM が見える」≠「MCU が生きている」（2026-07-17 事故）
+
+シリアル用の **FTDI アダプタは ATOM とは別体・別給電**（ATOM=USB-C / FTDI=自前 USB）。
+そのため **ATOM が無給電でも COM ポートは正常に開く**。`hand_driver` / `server.py` は
+`connected: true` を返し続け、teleop の `t` コマンドは ACK 無し設計なので、実機が
+1mm も動いていないのに UI 上は全て正常に見える（今回これで空回しした）。
+
+- **切り分けは [scripts/hand_diag.py](../scripts/hand_diag.py)**（一次トリアージ）:
+  `python scripts/hand_diag.py`。ポート自動検出 → DTR → boot banner → `tspd` ACK →
+  `open` ACK の順に検査し、`FTDI は見える/MCU 沈黙 → ATOM の USB-C 給電を確認` まで
+  人間可読に判定する。読むだけでは動かない `tspd` ACK が生存判定の本命
+  （`open` はサーボが動くので、動かしたくなければ `--no-open`）。
+- **注意: ATOM は DTR で自動リセットしない**（Arduino Uno と違う）。よって boot banner が
+  空でも死亡ではない。生存判定は banner ではなく `tspd` ACK で行う。
+- `hand_driver.HandDriver` は接続時に `ping()`（= `tspd` の ACK 検証）で `mcu_alive` を
+  判定し、`status()` に載せる。死んでいても接続は維持（後から給電される場合があるため）。
+  UI（`/hand`）のバッジは 3 状態: **接続**(緑) / **MCU応答なし**(赤, connected だが
+  mcu_alive=false) / **なし**(present=false)。
+
+### LED の意味（ATOM Lite 本体の RGB, G27）
+
+ファーム（`hand_control_atom.ino`）が状態を LED で示す。**LED が点いている = この MCU は
+実際に走っている**（PC 側の「connected」と違い誤魔化せない一次サイン）:
+
+- **緑（点灯）** = boot 完了・アイドル（生きている）
+- **青（点滅）** = シリアル受信中。最後の受信から 3 秒で緑に戻る
+- **消灯** = 無給電 or ファーム未起動 → ATOM の USB-C 給電を確認
+
+> 実装はコア内蔵の `neopixelWrite()`（追加ライブラリ不要）。書き込みは ATOM の USB-C を
+> PC に直挿しして `arduino-cli upload -p COMx --fqbn m5stack:esp32:m5stack_atom
+> hand/hand_control_atom`（FTDI 経由では焼けない）。
+
 ---
 
 ## 別シュビーへの指示（最初に読む）

@@ -776,7 +776,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/hand/status":
                 # ✋ HAND (separate robot). Always present (VirtualHand if no Arduino).
                 if HAND is None:
-                    self._json(200, {"present": False, "connected": False}); return
+                    self._json(200, {"present": False, "connected": False,
+                                     "mcu_alive": False}); return
                 st = HAND.status(); st["present"] = True
                 self._json(200, st); return
             if path == "/real_angles":

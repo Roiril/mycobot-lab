@@ -24,6 +24,7 @@ Usage:
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Optional, Sequence
@@ -34,6 +35,8 @@ try:
 except ImportError:  # allow import in environments without pyserial (offline UI dev)
     serial = None
     list_ports = None
+
+log = logging.getLogger("hand")
 
 NUM_FINGERS = 5
 FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"]  # 0..4
@@ -58,6 +61,23 @@ DEFAULT_PORT_HINT = None
 # defaults are 25us/8ms; these ~2x the slew rate. Re-applied every connect.
 TELEOP_STEP_US = 40
 TELEOP_STEP_MS = 6
+
+# --- MCU liveness ping ---------------------------------------------------------
+# The hand's ATOM Lite talks over a SEPARATE FTDI USB-serial adapter, powered
+# independently (ATOM = USB-C, FTDI = its own USB). So the COM port opens fine
+# even when the ATOM is unpowered — serial.Serial() succeeds and 't' teleop
+# lines (which are silent by design) vanish into the void while the UI shows
+# "connected". To tell "port openable" from "MCU alive" we send an ACK-producing
+# command and actually read the reply.
+#
+# The ping command IS "tspd <us> <ms>" — the same ramp-tuning command already
+# sent on connect — so pinging doubles as (re)applying the teleop tuning. The
+# firmware answers "tele step=<us>us / <ms>ms"; teleop 't' lines produce no
+# reply, so a concurrent follow stream can't be mistaken for the ACK.
+PING_CMD = f"tspd {TELEOP_STEP_US} {TELEOP_STEP_MS}"
+PING_ACK_TOKEN = "tele step"   # substring of the firmware's tspd reply
+PING_TIMEOUT_S = 0.5           # max wait for the ACK before declaring silence
+PING_INTERVAL_S = 10.0         # re-ping at most this often from status()
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -134,6 +154,11 @@ class HandBase:
         self._cur_us = [1500] * NUM_FINGERS  # last commanded targets
         self._lock = threading.Lock()
         self._last_send_mono = 0.0
+        # True unless a liveness ping proves the MCU is silent. VirtualHand and
+        # any non-serial hand leave this True (nothing to disprove).
+        self.mcu_alive = True
+        self._ping_lock = threading.Lock()   # serialize pings; never blocks teleop
+        self._last_ping_mono = 0.0
 
     # --- high-level ---
     def set_bends(self, bends: Sequence[float]) -> list[int]:
@@ -168,9 +193,11 @@ class HandBase:
         return self.set_fingers_us([1500] * NUM_FINGERS)
 
     def status(self) -> dict:
+        self._maybe_ping()
         return {
             "connected": not self.offline,
             "offline": self.offline,
+            "mcu_alive": self.mcu_alive,
             "port": self.port,
             "baud": BAUD,
             "num_fingers": NUM_FINGERS,
@@ -183,6 +210,10 @@ class HandBase:
         }
 
     # --- subclass hooks ---
+    def _maybe_ping(self) -> None:
+        """Periodic MCU liveness recheck. No-op for hands with no live serial
+        link (VirtualHand); HandDriver overrides it."""
+
     def _send_teleop(self, us: Sequence[int]) -> None:
         raise NotImplementedError
 
@@ -222,10 +253,76 @@ class HandDriver(HandBase):
         except Exception:
             self._greeting = ""
         self.offline = False
-        # speed up the non-blocking teleop ramp (helps the thumb keep up)
-        self._write_line(f"tspd {TELEOP_STEP_US} {TELEOP_STEP_MS}")
+        # Verify the MCU actually answers (the FTDI adapter opens even when the
+        # ATOM is unpowered). The ping command IS "tspd 40 6", so this also
+        # applies the teleop ramp tuning that used to be sent blind here.
+        alive = self.ping()
+        if not alive:
+            log.warning(
+                "hand: port %s opens but the ATOM is silent (no ACK to '%s'). "
+                "The FTDI USB-serial adapter is powered independently of the "
+                "ATOM — check the ATOM's USB-C power. Keeping the connection "
+                "open in case power comes up; run scripts/hand_diag.py to "
+                "confirm.", self.port, PING_CMD)
         time.sleep(0.05)
         self.neutral()  # land at a known pose
+
+    def ping(self, timeout_s: float = PING_TIMEOUT_S) -> bool:
+        """Prove the MCU is alive by sending an ACK-producing command and
+        reading the reply. Updates and returns ``self.mcu_alive``.
+
+        Interleaves safely with the silent 't' teleop stream: the serial lock
+        is held only for sub-millisecond buffer ops (write, in_waiting read),
+        never across the wait for the reply, so a 40Hz follow stream is not
+        stalled. Only one ping runs at a time — a concurrent caller returns the
+        last known value instead of piling a second command onto the bus."""
+        if serial is None:
+            return self.mcu_alive
+        if not self._ping_lock.acquire(blocking=False):
+            return self.mcu_alive  # another ping in flight; don't double-send
+        try:
+            with self._lock:
+                if self._ser is None:
+                    return self.mcu_alive
+                try:
+                    self._ser.reset_input_buffer()  # drop any stale ACK bytes
+                    self._ser.write((PING_CMD + "\n").encode("ascii"))
+                except Exception as e:  # noqa: BLE001
+                    log.debug("hand ping write failed: %s", e)
+                    self.mcu_alive = False
+                    self._last_ping_mono = time.monotonic()
+                    return False
+            deadline = time.monotonic() + timeout_s
+            buf = ""
+            alive = False
+            while time.monotonic() < deadline:
+                chunk = ""
+                with self._lock:                 # brief: read whatever arrived
+                    if self._ser is None:
+                        break
+                    try:
+                        n = self._ser.in_waiting
+                        if n:
+                            chunk = self._ser.read(n).decode("utf-8", "replace")
+                    except Exception as e:  # noqa: BLE001
+                        log.debug("hand ping read failed: %s", e)
+                        break
+                if chunk:
+                    buf += chunk
+                    if PING_ACK_TOKEN in buf:
+                        alive = True
+                        break
+                else:
+                    time.sleep(0.008)            # yield to teleop between polls
+            self.mcu_alive = alive
+            self._last_ping_mono = time.monotonic()
+            return alive
+        finally:
+            self._ping_lock.release()
+
+    def _maybe_ping(self) -> None:
+        if time.monotonic() - self._last_ping_mono >= PING_INTERVAL_S:
+            self.ping()
 
     def _write_line(self, line: str) -> None:
         with self._lock:

@@ -16,6 +16,13 @@
 //   "spd <step>"        -> blocking-ramp step size (gentler current)
 //   "t <u0>..<u4>"      -> TELEOP: set all 5 targets, NON-BLOCKING. silent.
 //   "tspd <step> <ms>"  -> teleop ramp tuning (us/step, ms/step).
+//
+// Build / upload (arduino-cli; see hand/HANDOFF.md for the full path setup).
+// Compile-only (safe, no hardware):
+//   arduino-cli compile --fqbn m5stack:esp32:m5stack_atom hand/hand_control_atom
+// Upload (⚠ needs the ATOM's USB-C plugged straight into the PC — the FTDI
+// adapter used for runtime serial can't flash it; hub uploads are flaky):
+//   arduino-cli upload -p COMx --fqbn m5stack:esp32:m5stack_atom hand/hand_control_atom
 
 #include <Wire.h>
 #include <M5_UNIT_8SERVO.h>
@@ -30,6 +37,39 @@ const int I2C_SCL = 32;
 
 // finger index -> 8Servos channel (CH0=thumb .. CH4=pinky)
 const int CH[NUM_FINGERS] = {0, 1, 2, 3, 4};
+
+// --- Status LED (ATOM Lite onboard SK6812 on G27) -----------------------------
+// Purpose: make "the ATOM is alive" visible at a glance. The ATOM's USB-serial
+// is a SEPARATE FTDI adapter with its OWN power, so the host COM port opens even
+// when this ATOM is unpowered — a dead controller can look "connected" on the
+// PC side. A lit LED = this MCU is actually running.
+//   boot complete           -> steady green
+//   serial line received     -> blink blue (idle-green again 3s after last line)
+// Uses the core's built-in neopixelWrite() (esp32-hal-rgb-led) — no extra lib.
+const int LED_PIN = 27;               // ATOM Lite onboard RGB
+const unsigned long LED_RX_HOLD_MS = 3000;  // stay "receiving" this long after a line
+unsigned long lastRxMs = 0;           // millis() of the last serial line
+uint32_t ledLast = 0xFFFFFFFF;        // last written color (sentinel = force 1st write)
+
+// Write the LED only when the color actually changes (neopixelWrite briefly
+// disables interrupts; no point re-sending an identical frame every loop).
+void setLed(uint8_t r, uint8_t g, uint8_t b) {
+  uint32_t c = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+  if (c == ledLast) return;
+  ledLast = c;
+  neopixelWrite(LED_PIN, r, g, b);
+}
+
+// Non-blocking: green when idle, blinking blue while serial is arriving.
+void updateLed() {
+  unsigned long now = millis();
+  if (now - lastRxMs < LED_RX_HOLD_MS) {
+    bool on = ((now / 120) % 2) == 0;   // ~4Hz blink
+    setLed(0, 0, on ? 60 : 0);
+  } else {
+    setLed(0, 40, 0);                   // idle: dim green = "alive"
+  }
+}
 
 // Per-finger safe range in microseconds. Uno 版と同値を維持し、hand_driver.py の
 // クランプと一致させる。ストールする指が出たら内側に詰める。
@@ -151,17 +191,20 @@ void setup() {
   for (int i = 0; i < NUM_FINGERS; i++) {
     setFingerNow(i, 1500); // neutral on boot
   }
+  setLed(0, 40, 0);   // boot complete -> steady green
   Serial.println(F("ready. '<f> <us>', 'open'/'close'/'n', 'spd <step>', 't u0..u4', 'tspd <us> <ms>'"));
 }
 
 void loop() {
   // Service the non-blocking teleop ramp first so follow stays smooth.
   teleopTick();
+  updateLed();   // non-blocking; only writes the LED on a color change
 
   if (!Serial.available()) return;
   String line = Serial.readStringUntil('\n');
   line.trim();
   if (line.length() == 0) return;
+  lastRxMs = millis();   // a real line arrived -> LED blinks blue for a bit
 
   // --- TELEOP (non-blocking, silent): "t u0 u1 u2 u3 u4" ---
   if (line == "t" || line.startsWith("t ")) {
