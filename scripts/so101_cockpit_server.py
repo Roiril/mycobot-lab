@@ -98,9 +98,12 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
         except Exception as e:
             msg = str(e)
             if "Input voltage error" in msg:
-                # 給電の抜き差し順序でサーボにラッチするエラービット。実電圧が正常でも
-                # 全応答に付いて lerobot が例外化する。電源再投入でしか消えない。
-                msg += "（電圧エラーラッチの可能性: アーム給電のDCプラグを一度抜いて挿し直し→自動で再接続されます）"
+                # サーボ EEPROM の Max_Voltage(addr14)/Min_Voltage(addr15) を実電圧が
+                # 外れると出る。電源再投入では消えない（設定側の問題）。2026-07-17 に
+                # id3/4/5 が Max=12.0V のまま実測 12.2V で恒久エラーになった実績あり。
+                msg += ("（電圧リミット外れ: 電源ではなくサーボ設定側の可能性大。"
+                        "scripts/so101_check_voltage_limits.py で Max/Min_Voltage と"
+                        "実電圧を突き合わせてください）")
             with LOCK:
                 STATE["error"] = f"connect failed: {msg}"
             if first_fail:
@@ -116,6 +119,7 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
             time.sleep(5.0)
 
     while True:
+        cycle_start = time.perf_counter()
         try:
             # ---- commands -------------------------------------------------
             try:
@@ -225,9 +229,10 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
             log(f"エラー: {e}")
             time.sleep(0.5)
 
-        # pace to the target rate; step() already consumed most of the period
-        time.sleep(max(0.0, cfg.period - 0.005) if engine and engine.active
-                   else 0.03)
+        # 締切基準でペースを取る（固定 sleep だと実 I/O 時間の分だけ周期が漂う）。
+        # teleop 中は target_hz、idle 時は 30ms 相当に落としてバスを空ける。
+        period = cfg.period if (engine and engine.active) else 0.03
+        time.sleep(max(0.0, cycle_start + period - time.perf_counter()))
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -93,6 +93,11 @@ b.disconnect()
 - **電圧 ≈4.9V** → **12V が届いてない**（アダプタが5V品だった / ネジ端子緩み / 極性）。軽負荷の手首は
   動くが土台/肩が「Enable=1・Current=0・Status=0 で全く動かない」過負荷ラッチ風症状になる。
   → 12V を確保すれば直る（サーボは無故障）。**STS3215 は 12V版。5V/7.4V品ではない。**
+- **`[RxPacketError] Input voltage error!` で接続失敗するが実測電圧は正常** → 電源ではなく
+  **サーボ EEPROM の Max/Min_Voltage 設定**を疑う。電源を挿し直しても消えない。
+  → `python scripts/so101_check_voltage_limits.py --port COM13`（診断）/ `--set-max 14.0`（修復）。
+  実例: id3/4/5 だけ Max=12.0V のまま実測 12.2V で恒久エラー。詳細は
+  [memory/so101_voltage_error_latch.md](../../memory/so101_voltage_error_latch.md)
 - **生コマンドで動くが UI で動かない** → safety 拒否（多くは「床に近接」= floor_z 問題、§6）。
 - **生コマンドでも動かない & 12V 来てる & 温度正常** → 真の overload latch。**12V 電源入れ直し**で復旧
   （[memory/mycobot_firmware_quirks.md] の latch と同種）。
