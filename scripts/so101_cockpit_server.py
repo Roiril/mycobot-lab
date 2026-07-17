@@ -178,6 +178,14 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                 elif op == "abort":
                     engine.stop_teleop()
                     log("⛔ ABORT — 追従停止・姿勢凍結")
+                elif op == "relax":
+                    # 冷却モード: 追従OFF + フォロワー全関節トルクOFF（先端→根元）。
+                    # freeze はしない（トルクを切るので姿勢保持は無意味）。
+                    log("🧊 脱力（冷却モード）— アームを支えてください")
+                    engine.relax_follower()
+                    for n in JOINTS:
+                        telemetry["follower"][n]["torque"] = 0
+                    log("脱力完了。復帰は追従ON か各関節トルクスイッチで")
 
             # ---- fast telemetry: leader positions (teleop input + display) -
             lead = engine.read_leader()
@@ -323,7 +331,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             body = {}
         ops = {"/teleop": "teleop", "/jog": "jog", "/torque": "torque",
-               "/torque_profile": "torque_profile", "/abort": "abort"}
+               "/torque_profile": "torque_profile", "/abort": "abort",
+               "/relax": "relax"}
         op = ops.get(path)
         if op is None:
             self._send(404, b'{"error":"not found"}')

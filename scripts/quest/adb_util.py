@@ -45,8 +45,9 @@ def run_adb(adb: str, args: list[str], serial: str | None = None,
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=check)
 
 
-def list_devices(adb: str) -> list[str]:
-    """Serials of devices currently in the `device` state (excludes offline/unauthorized)."""
+def list_device_states(adb: str) -> list[tuple[str, str]]:
+    """(serial, state) for every attached device, including offline/unauthorized.
+    state is adb's raw word: 'device', 'offline', 'unauthorized', ..."""
     cp = run_adb(adb, ["devices"])
     out = []
     for line in cp.stdout.splitlines()[1:]:  # skip "List of devices attached"
@@ -54,6 +55,10 @@ def list_devices(adb: str) -> list[str]:
         if not line or "\t" not in line:
             continue
         serial, state = line.split("\t", 1)
-        if state.strip() == "device":
-            out.append(serial.strip())
+        out.append((serial.strip(), state.strip()))
     return out
+
+
+def list_devices(adb: str) -> list[str]:
+    """Serials of devices currently in the `device` state (excludes offline/unauthorized)."""
+    return [s for s, st in list_device_states(adb) if st == "device"]

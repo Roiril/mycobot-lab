@@ -43,6 +43,8 @@ html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
 .badge.gray{background:var(--surface-3);color:var(--text-muted);border:var(--bw) solid var(--border)}
 .badge.accent{background:var(--accent-soft);color:var(--accent);border:var(--bw) solid var(--accent-line)}
 #statusBar .spacer{flex:1}
+#statusBar .relax-hint{font-size:var(--fs-2xs);color:var(--text-faint);white-space:nowrap}
+@media (max-width:640px){#statusBar .relax-hint{display:none}}
 
 button{background:var(--surface-3);color:var(--text);border:var(--bw) solid var(--border);
   padding:6px 11px;border-radius:var(--radius);cursor:pointer;
@@ -115,6 +117,8 @@ h2 .arm-name{color:var(--text);font-size:var(--fs-sm)}
     <span id="connBadge" class="badge gray">接続中…</span>
     <span id="teleopBadge" class="badge gray">追従 OFF</span>
     <span class="spacer"></span>
+    <span id="relaxHint" class="relax-hint">復帰は追従ON か各関節トルクスイッチ</span>
+    <button id="relaxBtn" title="フォロワー全関節のトルクを切って放熱（アームは脱力して落ちます）">🧊 脱力</button>
     <button id="abortBtn" class="abort">⛔ ABORT (Esc)</button>
   </div>
 
@@ -196,6 +200,10 @@ document.getElementById("teleopBtn").onclick=()=>post("/teleop",{on:!teleop});
 document.getElementById("profFull").onclick=()=>post("/torque_profile",{profile:"full"});
 document.getElementById("profSafe").onclick=()=>post("/torque_profile",{profile:"safe"});
 document.getElementById("abortBtn").onclick=()=>post("/abort",{});
+document.getElementById("relaxBtn").onclick=()=>{
+  if(confirm("アームが脱力して落ちます。手で支えるか、置いてから実行してください。"))
+    post("/relax",{});
+};
 document.addEventListener("keydown",e=>{if(e.key==="Escape")post("/abort",{});});
 document.querySelectorAll("[data-tq]").forEach(b=>{
   b.onclick=()=>post("/torque",{arm:b.dataset.arm,joint:"all",on:b.dataset.tq==="1"});

@@ -104,6 +104,14 @@ ACCELERATION = 30       # gentle ramp, avoids current spikes
 GOAL_VELOCITY = 800     # raw units; fast enough for live tracking
 MAX_STEP_TICKS = 170    # per-cycle follower move clamp (~15 deg)
 
+# --- Cooling relax (torque-off for heat shedding) -----------------------------
+# Order to drop follower torque, tip -> base (gripper first, shoulder_pan last).
+# De-energizing from the tip keeps the gravity-loaded base joints (shoulder_lift
+# / shoulder_pan) holding longest, so the arm settles instead of slamming down
+# when it goes limp. This is exactly reversed(JOINTS); asserted in the tests.
+RELAX_ORDER: List[str] = list(reversed(JOINTS))
+RELAX_STAGGER_S = 0.05  # delay between per-joint torque-off (matches enable stagger)
+
 # --- Trip-wire thresholds (cockpit watchdog; PURE decision in classify_* below)
 # The follower is the 12V arm. STS3215 is nominal 12V and the Feetech bus
 # browns out / drops the connection when the supply sags under torque draw.
@@ -376,6 +384,33 @@ class TeleopEngine:
         for n in self.joints:
             self.set_follower_torque(n, True)
             time.sleep(self.cfg.torque_stagger_s)
+
+    def relax_order(self) -> List[str]:
+        """Tip -> base torque-off order for this engine's joints (pure)."""
+        return [n for n in RELAX_ORDER if n in self.joints]
+
+    def relax_follower(self, delay: float = RELAX_STAGGER_S,
+                       sleep: Callable[[float], None] = time.sleep) -> List[str]:
+        """Cooling relax: cut ALL follower torque, tip -> base, so the arm can
+        shed heat instead of holding current.
+
+        Teleop is forced off first — but NOT frozen: freezing (present->goal to
+        hold position) is meaningless once torque is removed, so it is skipped.
+        Joints are de-energized one at a time from the tip (`relax_order`) with
+        `delay` between each, so the gravity-loaded base joints stay energized
+        longest and the arm settles rather than slamming down.
+
+        The follower goes limp — the caller MUST have warned the operator to
+        support the arm first. Returns the order actually disabled (for
+        logging / tests). `sleep` is injectable so tests need not wall-clock.
+        """
+        self.active = False
+        order = self.relax_order()
+        for i, n in enumerate(order):
+            self.set_follower_torque(n, False)
+            if delay and i < len(order) - 1:
+                sleep(delay)
+        return order
 
     def freeze_follower(self) -> None:
         """Hold the follower where it is: command present->goal on live joints."""

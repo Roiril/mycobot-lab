@@ -89,7 +89,7 @@ const CARDS=[
   desc:"myCobot 3D操作 / ポーズ / VR·✋ / 観測 / システム / SO-101 の6タブ。実機・仮想どちらも。",
   cmd:"python scripts/server.py --offline --port 8001",
   note:"SO-101 実機タブで使うなら .venv-so101 の python で --so101-driver real --so101-port COM13"},
- {name:"ロボットハンド操作（Quest VR）",icon:"✋",probe:["8001"],
+ {name:"ロボットハンド操作（Quest VR）",icon:"✋",probe:["8001"],questLaunch:true,
   urls:{ "8001":"http://localhost:8001/hand" },
   desc:"three.js 無しの軽量 WebXR ページ（/hand）。Quest のハンドトラッキングで実5指ハンドを操作。PWA 対応（App Library に「ロボットハンド操作」）。",
   cmd:"powershell -ExecutionPolicy Bypass -File scripts\\teleop_all.ps1",
@@ -132,7 +132,31 @@ function build(){
       btn.textContent="コピー済";btn.classList.add("copied");
       setTimeout(()=>{btn.textContent="コピー";btn.classList.remove("copied");},1200);
     };
+    if(c.questLaunch)wireQuestLaunch(el);
   }
+}
+
+// ✋ Quest one-click: POST /quest/launch-hand → open /hand on the HMD.
+function wireQuestLaunch(el){
+  const bar=document.createElement("div");bar.className="cmd";
+  bar.innerHTML=`<button class="sm quest-launch">🥽 HMDで起動</button>`+
+    `<span class="quest-result" style="flex:1;font-size:var(--fs-xs);color:var(--text-muted)"></span>`;
+  el.appendChild(bar);
+  const qb=bar.querySelector(".quest-launch"),qr=bar.querySelector(".quest-result");
+  qb.onclick=async()=>{
+    qb.disabled=true;const label=qb.textContent;qb.textContent="起動中…";
+    qr.textContent="";qr.style.color="var(--text-muted)";
+    try{
+      const r=await fetch("/quest/launch-hand",{method:"POST"});
+      const j=await r.json();
+      qr.textContent=j.message||JSON.stringify(j);
+      qr.style.color=j.ok?"var(--ok-text)":"var(--danger-text)";
+    }catch(e){
+      qr.textContent="通信エラー: "+e;qr.style.color="var(--danger-text)";
+    }finally{
+      qb.disabled=false;qb.textContent=label;
+    }
+  };
 }
 build();
 

@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from robots.so101.teleop_engine import (
     OneEuroFilter, OneEuroConfig, TeleopEngine, TeleopConfig, JOINTS,
     TORQUE_PROFILES, DEFAULT_TORQUE_PROFILE, TORQUE_MAX,
+    RELAX_ORDER,
     classify_voltage, classify_temperature,
     VOLT_WARN_V, VOLT_DEMOTE_V, TEMP_WARN_C, TEMP_DEMOTE_C,
 )
@@ -272,6 +273,50 @@ class TestTorqueProfiles(unittest.TestCase):
         self.assertEqual(m["torque_profile"], "safe")
         self.assertEqual(m["joint_overrides"], {"wrist_flex": "safe"})
         self.assertIn(m["demote_reason"], ("sag", "hot"))
+
+
+# ---------------------------------------------------------------------------
+class TestRelaxFollower(unittest.TestCase):
+    def test_relax_order_is_tip_to_base(self):
+        # tip -> base = reversed motor order; base joint disabled last so the
+        # gravity-loaded roots hold longest.
+        self.assertEqual(RELAX_ORDER, list(reversed(JOINTS)))
+        self.assertEqual(RELAX_ORDER[0], "gripper")
+        self.assertEqual(RELAX_ORDER[-1], "shoulder_pan")
+        self.assertEqual(set(RELAX_ORDER), set(JOINTS))   # every joint covered
+
+    def test_relax_disables_all_in_order(self):
+        eng, _, foll = make_engine()
+        calls = []
+        order = eng.relax_follower(delay=0.0, sleep=lambda s: calls.append(s))
+        self.assertEqual(order, list(reversed(JOINTS)))
+        # exactly one Torque_Enable=0 write per joint, in tip->base order
+        offs = [w[1] for w in foll.writes
+                if w[0] == "Torque_Enable" and w[2] == 0]
+        self.assertEqual(offs, list(reversed(JOINTS)))
+        for n in JOINTS:
+            self.assertEqual(foll.torque[n], 0)
+
+    def test_relax_forces_teleop_off(self):
+        eng, lead, foll = make_engine(present={n: 512 for n in JOINTS})
+        eng.start_teleop()
+        self.assertTrue(eng.active)
+        eng.relax_follower(delay=0.0)
+        self.assertFalse(eng.active)
+
+    def test_relax_staggers_between_joints_only(self):
+        eng, _, _ = make_engine()
+        sleeps = []
+        eng.relax_follower(delay=0.05, sleep=lambda s: sleeps.append(s))
+        # 6 joints -> 5 inter-joint delays (no trailing sleep after the last)
+        self.assertEqual(sleeps, [0.05] * (len(JOINTS) - 1))
+
+    def test_relax_does_not_freeze(self):
+        # freeze writes Goal_Position (present->goal); relax must not, since
+        # torque is being removed and holding position is meaningless.
+        eng, _, foll = make_engine()
+        eng.relax_follower(delay=0.0)
+        self.assertFalse(any(w[0] == "Goal_Position" for w in foll.writes))
 
 
 # ---------------------------------------------------------------------------

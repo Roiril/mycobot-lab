@@ -30,10 +30,8 @@ Notes:
 """
 from __future__ import annotations
 import argparse
-import json
 import os
 import sys
-import urllib.request
 
 # Windows terminals default to cp932; our summary uses ● / — etc. Force UTF-8 so
 # printing never crashes (display may still mojibake in a cp932 console, but the
@@ -46,27 +44,8 @@ except Exception:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from adb_util import find_adb, run_adb, list_devices  # noqa: E402
-
-
-# ---- CDP helpers (parameterized by port; no module globals so 2 devices coexist) ----
-
-def cdp_pages(cdp_port: int) -> list[dict]:
-    with urllib.request.urlopen(f"http://localhost:{cdp_port}/json/list", timeout=5) as r:
-        data = json.load(r)
-    return [p for p in data if p.get("type") == "page"]
-
-
-def cdp_navigate(page: dict, url: str) -> None:
-    import websocket  # lazy: only needed when we actually navigate
-    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=8, suppress_origin=True)
-    try:
-        ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": url}}))
-        try:
-            ws.recv()
-        except Exception:
-            pass
-    finally:
-        ws.close()
+# CDP helpers are shared with home_server's /quest/launch-hand (single source).
+from hand_launch import cdp_pages, cdp_navigate  # noqa: E402
 
 
 def _plan_for_device(serial: str, idx: int, srv_port: int, cdp_base: int) -> dict:
