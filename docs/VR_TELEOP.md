@@ -202,3 +202,41 @@ ui.html と同じ。PWA 対応（`<title>ロボットハンド操作` + manifest
 **`/hand/fingers` は latest-wins（排他制御なし）**：両機が同時に指を動かすと、後に届いた POST の指値で
 実ハンドが上書きされる（40Hz スロットルは共有）。1人が操作し他方は観戦、あるいは交互操作を想定した運用。
 同一 PC・同一 COM9・単一の物理ハンドを2台で奪い合う構図なので、**同時に別々の指形を送っても合成はされない**。
+
+---
+
+## 13. ✋ ネイティブアプリ版（推奨）
+
+WebXR 版 `/hand` は Oculus Browser 上で動くため、**immersive VR への突入にヘッドセット内でのタップが必須**で、
+かつ**非装着時はページ自体が凍結**する（近接センサ OFF で JS が止まる）。この2点により「PC から起動して被るだけで動く」
+という運用ができない。これを解消するのが Unity 製ネイティブアプリ **「ロボットハンド操作VR」（package
+`com.mycobot.handteleop`）**。ネイティブは**起動＝即 immersive VR** なので、PC から起動しておけば
+**被った瞬間にはもう操作可能**（タップ不要・非装着凍結なし）。指の curl→`/hand/fingers` の制御則・calib は WebXR 版と同一。
+
+### 起動導線
+
+| 経路 | 操作 | 挙動 |
+|---|---|---|
+| ホーム（:8010）「🥽 HMDで起動」 | ワンクリック | `com.mycobot.handteleop` が入っていれば**ネイティブ優先で起動**、無ければ WebXR にフォールバック |
+| CLI | `adb shell monkey -p com.mycobot.handteleop -c android.intent.category.LAUNCHER 1` | activity 名非依存でランチャー起動 |
+
+「HMDで起動」の内部フロー（[scripts/quest/hand_launch.py](../scripts/quest/hand_launch.py) `launch_hand_on_device`）は
+`prefer_native=True` で以下を判定する：
+
+1. `adb shell pm list packages com.mycobot.handteleop` — **未インストールなら即 WebXR フローへフォールバック**。
+2. インストール済みかつ `dumpsys activity activities` の `mResumedActivity` が当該 package
+   → **`already_native`（何もしない）**。
+3. インストール済みで前面でない → `adb reverse tcp:8001` 設定後 `adb shell monkey`（LAUNCHER category）で起動
+   → **`launched_native`**（起動＝VR なので被るだけ）。
+
+`pm list` / `dumpsys` の probe が adb 都合で失敗した場合は握りつぶして WebXR フローへ退避する
+（実績のある経路を probe の不調でブロックしない）。タイムアウト堅牢性は既存の deadline 方式を踏襲。
+
+### WebXR 版との関係
+
+- **WebXR 版（§12・`/hand`）は fallback として残す**。ネイティブ未導入の headset・ブラウザで確認したい場合はそのまま使える。
+- ネイティブ／ブラウザどちらで開いたかはホームの結果表示（action: `launched_native`/`already_native` は「被るだけで操作可」、
+  `launched`/`navigated`/`already` は「ヘッドセット内で『VR 開始』タップ要」）と、`/quest/launch-hand` レスポンスの
+  `message` で出し分けられる。
+- 2台運用時、片方だけネイティブ導入済みでも問題ない（台ごとに native/browser を独立判定）。
+- hand server（:8001）・`adb reverse tcp:8001` は両版で共通。ネイティブでも localhost:8001 経由で PC の hand server に到達する。

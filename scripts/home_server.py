@@ -156,23 +156,38 @@ class Handler(BaseHTTPRequestHandler):
 
 
 _ACTION_JA = {
+    "launched_native": "VR アプリ起動（被るだけで操作可）",
+    "already_native": "VR アプリ起動済み（被るだけで操作可）",
     "navigated": "既存タブを /hand に遷移",
     "already": "すでに /hand 表示中",
     "launched": "アプリ起動（新規タブ）",
     "error": "失敗",
 }
 
+# Native = the app enters VR on launch (no in-headset tap). Browser = the WebXR
+# /hand page still needs a "VR 開始" tap once worn.
+_NATIVE_ACTIONS = ("launched_native", "already_native")
+
 
 def _quest_launch_message(result: dict) -> str:
-    """Short human summary for the launcher card."""
+    """Short human summary for the launcher card. The lead sentence changes with
+    HOW the hand teleop was opened: native VR app (no tap) vs WebXR page (tap)."""
     if not result.get("ok"):
         return result.get("error") or "起動に失敗しました。"
+    devices = result.get("devices", [])
     parts = []
-    for d in result.get("devices", []):
+    for d in devices:
         tag = _ACTION_JA.get(d.get("action"), d.get("action", "?"))
         detail = f"（{d['detail']}）" if d.get("action") == "error" and d.get("detail") else ""
         parts.append(f"{d.get('serial', '?')[:8]}…: {tag}{detail}")
-    head = "HMD でページを開きました。ヘッドセット内で「VR 開始」をタップしてください。"
+    actions = [d.get("action") for d in devices]
+    if actions and all(a in _NATIVE_ACTIONS for a in actions):
+        head = "HMD で VR アプリを起動しました。被るだけで操作できます。"
+    elif any(a in _NATIVE_ACTIONS for a in actions):
+        head = ("HMD で VR アプリを起動しました（被るだけで操作可）。"
+                "ブラウザ版で開いた台はヘッドセット内で「VR 開始」をタップしてください。")
+    else:
+        head = "HMD でページを開きました。ヘッドセット内で「VR 開始」をタップしてください。"
     return head + ("  " + " / ".join(parts) if parts else "")
 
 

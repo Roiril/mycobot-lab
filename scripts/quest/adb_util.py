@@ -45,20 +45,38 @@ def run_adb(adb: str, args: list[str], serial: str | None = None,
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=check)
 
 
-def list_device_states(adb: str) -> list[tuple[str, str]]:
-    """(serial, state) for every attached device, including offline/unauthorized.
-    state is adb's raw word: 'device', 'offline', 'unauthorized', ..."""
-    cp = run_adb(adb, ["devices"])
+# Quest headsets identify as these products in `adb devices -l`
+# (Quest 3 = eureka, Quest 2 = hollywood, Quest Pro = seacliff). The user's PC
+# often has non-Quest Android devices (phones) attached at the same time; the
+# hand-teleop launch flow must never touch those (2026-07-17: a launch-all pass
+# hit 3 attached phones — harmless no-op, but wrong scope).
+QUEST_PRODUCTS = {"eureka", "hollywood", "seacliff", "monterey"}
+
+
+def list_device_states(adb: str, quest_only: bool = True) -> list[tuple[str, str]]:
+    """(serial, state) for attached devices, including offline/unauthorized.
+    state is adb's raw word: 'device', 'offline', 'unauthorized', ...
+    quest_only filters to Quest headsets via the product field of `adb devices -l`
+    (offline devices report no product and are kept — resolving them is the
+    caller's job and a Quest can be offline too)."""
+    cp = run_adb(adb, ["devices", "-l"])
     out = []
     for line in cp.stdout.splitlines()[1:]:  # skip "List of devices attached"
         line = line.strip()
-        if not line or "\t" not in line:
+        if not line:
             continue
-        serial, state = line.split("\t", 1)
-        out.append((serial.strip(), state.strip()))
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        serial, state = parts[0], parts[1]
+        product = next((p.split(":", 1)[1] for p in parts[2:]
+                        if p.startswith("product:")), None)
+        if quest_only and product is not None and product not in QUEST_PRODUCTS:
+            continue
+        out.append((serial, state))
     return out
 
 
-def list_devices(adb: str) -> list[str]:
+def list_devices(adb: str, quest_only: bool = True) -> list[str]:
     """Serials of devices currently in the `device` state (excludes offline/unauthorized)."""
-    return [s for s, st in list_device_states(adb) if st == "device"]
+    return [s for s, st in list_device_states(adb, quest_only=quest_only) if st == "device"]

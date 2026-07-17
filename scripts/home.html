@@ -91,7 +91,7 @@ const CARDS=[
   note:"SO-101 実機タブで使うなら .venv-so101 の python で --so101-driver real --so101-port COM13"},
  {name:"ロボットハンド操作（Quest VR）",icon:"✋",probe:["8001"],questLaunch:true,
   urls:{ "8001":"http://localhost:8001/hand" },
-  desc:"three.js 無しの軽量 WebXR ページ（/hand）。Quest のハンドトラッキングで実5指ハンドを操作。PWA 対応（App Library に「ロボットハンド操作」）。",
+  desc:"Quest のハンドトラッキングで実5指ハンドを操作。「HMDで起動」はネイティブVRアプリ（被るだけで操作可・タップ不要）を優先し、未導入なら軽量 WebXR ページ（/hand・要「VR 開始」タップ）にフォールバック。",
   cmd:"powershell -ExecutionPolicy Bypass -File scripts\\teleop_all.ps1",
   note:"ワンコマンド起動: teleop_all.ps1 が cockpit(:8013)+hand(:8001)+home を上げ Quest 2台を配備。手動なら python scripts/server.py --offline --real-hand --port 8001 → python scripts/quest/deploy_hand.py（adb reverse/forward・タブ再利用。docs/QUEST_DEV.md）。SO-101 teleop ON はコックピット(:8013)のトグルで"},
  {sec:"SO-101 リーダー/フォロワー（.venv-so101 必須）"},
@@ -136,23 +136,47 @@ function build(){
   }
 }
 
-// ✋ Quest one-click: POST /quest/launch-hand → open /hand on the HMD.
+// ✋ Quest one-click: POST /quest/launch-hand → open the hand teleop on the HMD.
+// Native VR app (launched_native/already_native) = "被るだけで操作可"（タップ不要）;
+// browser fallback (launched/navigated/already) = ヘッドセット内で「VR 開始」タップ要。
+const QUEST_ACTION={
+  launched_native:{t:"VR アプリ起動",cls:"ok"},
+  already_native :{t:"VR アプリ起動済",cls:"ok"},
+  navigated      :{t:"タブを /hand に遷移",cls:"ok"},
+  already        :{t:"すでに /hand",cls:"ok"},
+  launched       :{t:"タブ起動",cls:"ok"},
+  error          :{t:"失敗",cls:"err"},
+};
 function wireQuestLaunch(el){
-  const bar=document.createElement("div");bar.className="cmd";
+  const bar=document.createElement("div");bar.className="cmd";bar.style.flexWrap="wrap";
   bar.innerHTML=`<button class="sm quest-launch">🥽 HMDで起動</button>`+
-    `<span class="quest-result" style="flex:1;font-size:var(--fs-xs);color:var(--text-muted)"></span>`;
+    `<span class="quest-msg" style="flex:1;min-width:200px;font-size:var(--fs-xs);color:var(--text-muted)"></span>`+
+    `<span class="quest-chips" style="display:flex;gap:5px;flex-wrap:wrap"></span>`;
   el.appendChild(bar);
-  const qb=bar.querySelector(".quest-launch"),qr=bar.querySelector(".quest-result");
+  const qb=bar.querySelector(".quest-launch"),qm=bar.querySelector(".quest-msg"),
+        qc=bar.querySelector(".quest-chips");
   qb.onclick=async()=>{
     qb.disabled=true;const label=qb.textContent;qb.textContent="起動中…";
-    qr.textContent="";qr.style.color="var(--text-muted)";
+    qm.textContent="";qm.style.color="var(--text-muted)";qc.innerHTML="";
     try{
       const r=await fetch("/quest/launch-hand",{method:"POST"});
       const j=await r.json();
-      qr.textContent=j.message||JSON.stringify(j);
-      qr.style.color=j.ok?"var(--ok-text)":"var(--danger-text)";
+      qm.textContent=j.message||JSON.stringify(j);
+      qm.style.color=j.ok?"var(--ok-text)":"var(--danger-text)";
+      for(const d of (j.devices||[])){
+        const a=QUEST_ACTION[d.action]||{t:d.action||"?",cls:"err"};
+        const chip=document.createElement("span");
+        const good=a.cls==="ok";
+        chip.textContent=`${(d.serial||"?").slice(0,6)}: ${a.t}`;
+        chip.title=d.detail||"";
+        chip.style.cssText="font-family:var(--font-mono);font-size:var(--fs-2xs);"+
+          "padding:2px 6px;border-radius:var(--radius-sm);border:var(--bw) solid "+
+          (good?"var(--accent-line);background:var(--accent-soft);color:var(--accent)"
+               :"var(--danger-soft);background:var(--danger-soft);color:var(--danger-text)");
+        qc.appendChild(chip);
+      }
     }catch(e){
-      qr.textContent="通信エラー: "+e;qr.style.color="var(--danger-text)";
+      qm.textContent="通信エラー: "+e;qm.style.color="var(--danger-text)";
     }finally{
       qb.disabled=false;qb.textContent=label;
     }
