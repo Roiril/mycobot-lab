@@ -1,0 +1,7 @@
+# ビルド生成物
+dist/
+*.apk
+
+# 署名鍵（debug でも commit しない）
+*.keystore
+debug.keystore
