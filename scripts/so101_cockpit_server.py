@@ -2,8 +2,9 @@
 
 Browser GUI for the leader->follower rig: live state of every motor on both
 arms (position, voltage, temperature, current, torque), a teleop-mode toggle
-(follower mirrors leader with the brownout-safe caps from so101_teleop.py),
-per-joint jog sliders and torque switches for the follower, and ABORT.
+(follower mirrors leader through the shared teleop engine — One-Euro smoothing,
+last-goal stepping, brownout-safe staged torque), per-joint jog sliders and
+torque switches for the follower, and ABORT.
 
 Separate page (not a ui.html workspace tab) for the same reason as the calib
 GUI: it must own BOTH COM ports exclusively and runs on the lerobot venv,
@@ -11,12 +12,16 @@ which conflicts with scripts/server.py's real driver on the follower port.
 
 Single worker thread owns both Feetech buses (serial is not thread-safe);
 HTTP handlers only enqueue commands and read a shared snapshot. Transient bus
-dropouts (12V 2A supply sag) are logged and reconnected, not fatal.
+dropouts (12V supply sag) are logged and reconnected, not fatal. The motion +
+safety pipeline lives in src/robots/so101/teleop_engine.py, shared with the CLI
+(scripts/so101_teleop.py) so there is one definition of the caps, smoothing and
+stepping logic.
 
 Run:  .venv-so101\\Scripts\\python.exe scripts\\so101_cockpit_server.py
 Open: http://localhost:8013/
 """
 from __future__ import annotations
+import sys
 import json
 import time
 import queue
@@ -26,32 +31,25 @@ import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-from lerobot.motors.feetech import FeetechMotorsBus
-from lerobot.motors import Motor, MotorNormMode
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from robots.so101.teleop_engine import (
+    TeleopEngine, TeleopConfig, JOINTS, make_bus, load_ranges,
+)
 
 HERE = pathlib.Path(__file__).resolve().parent
 UI_HTML = HERE / "so101_cockpit.html"
-CAL_DIR = pathlib.Path.home() / ".cache/huggingface/lerobot/calibration"
 
-JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex",
-          "wrist_flex", "wrist_roll", "gripper"]
-
-# Brownout mitigations for the 12V 2A supply (see so101_teleop.py):
-# gravity-loaded joints need headroom or they stall/overheat; the rest stay
-# low to cap total draw.
-TORQUE_LIMITS = {
-    "shoulder_pan": 400, "shoulder_lift": 700, "elbow_flex": 700,
-    "wrist_flex": 400, "wrist_roll": 400, "gripper": 400,
-}
-ACCELERATION = 30
-GOAL_VELOCITY = 800
-MAX_STEP_TICKS = 170          # per-cycle clamp (~15 deg) while teleoperating
+# How often (in worker cycles) to read one slow telemetry field (V/temp/current).
+# Kept off the teleop hot path so smoothing latency is unaffected.
+TELEMETRY_EVERY = 6
 
 LOCK = threading.Lock()
 CMDQ: "queue.Queue" = queue.Queue()
 STATE = {
     "connected": False, "teleop": False, "error": "", "log": [],
-    "leader": {}, "follower": {},
+    "leader": {}, "follower": {}, "hz": 0.0, "engine": {},
 }
 
 
@@ -61,62 +59,61 @@ def log(msg: str):
         del STATE["log"][:-40]
 
 
-def load_ranges() -> dict:
-    """Follower calibration ranges (offset-applied domain, shared by both
-    arms now that the leader homing is aligned to the follower)."""
-    fp = CAL_DIR / "robots/so_follower/so101_follower.json"
-    try:
-        cal = json.loads(fp.read_text())
-        return {n: (c["range_min"], c["range_max"]) for n, c in cal.items()}
-    except Exception as e:
-        log(f"calibration load failed ({e}) - using full range")
-        return {n: (0, 4095) for n in JOINTS}
-
-
-def make_bus(port: str) -> FeetechMotorsBus:
-    motors = {n: Motor(i + 1, "sts3215", MotorNormMode.DEGREES)
-              for i, n in enumerate(JOINTS)}
-    return FeetechMotorsBus(port, motors)
-
-
-def worker(leader_port: str, follower_port: str):
-    ranges = load_ranges()
-    arms = {}       # name -> bus
+def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
+    ranges = load_ranges(log)
     telemetry = {a: {n: {"pos": 0, "volt": 0.0, "temp": 0, "cur": 0, "torque": 0}
                      for n in JOINTS} for a in ("leader", "follower")}
-    teleop = False
-    slow_idx = 0    # round-robin (arm, joint, field) for slow telemetry reads
+    engine = None
+    leader = follower = None
+    slow_idx = 0    # round-robin (arm, joint) for slow telemetry reads
+    cycle = 0
 
     def connect_all():
-        for name, port in (("leader", leader_port), ("follower", follower_port)):
-            b = make_bus(port)
-            b.connect(handshake=False)
-            arms[name] = b
-        for n in JOINTS:
-            arms["follower"].write("Torque_Limit", n, TORQUE_LIMITS[n], normalize=False)
-            arms["follower"].write("Acceleration", n, ACCELERATION, normalize=False)
-            arms["follower"].write("Goal_Velocity", n, GOAL_VELOCITY, normalize=False)
+        nonlocal leader, follower, engine
+        leader = make_bus(leader_port)
+        leader.connect(handshake=False)
+        follower = make_bus(follower_port)
+        follower.connect(handshake=False)
+        if engine is None:
+            engine = TeleopEngine(leader, follower, ranges, config=cfg, log=log)
+        else:
+            engine.rebind(leader, follower)
+        engine.apply_follower_caps()
 
     def set_follower_torque(joint: str, on: bool):
-        arms["follower"].write("Torque_Enable", joint, 1 if on else 0)
+        engine.set_follower_torque(joint, on)
         telemetry["follower"][joint]["torque"] = 1 if on else 0
 
-    def freeze_follower():
-        for n in JOINTS:
-            if telemetry["follower"][n]["torque"]:
-                p = arms["follower"].read("Present_Position", n, normalize=False)
-                arms["follower"].write("Goal_Position", n, p, normalize=False)
-
-    try:
-        connect_all()
-        with LOCK:
-            STATE["connected"] = True
-        log("両アーム接続 OK")
-    except Exception as e:
-        with LOCK:
-            STATE["error"] = f"connect failed: {e}"
-        log(f"接続失敗: {e}")
-        return
+    # 初回接続はリトライループ（電圧エラーラッチ等は電源挿し直しで直るため、
+    # プロセス再起動なしで復帰できるようにする）
+    first_fail = True
+    while True:
+        try:
+            connect_all()
+            with LOCK:
+                STATE["connected"] = True
+                STATE["error"] = ""
+            log("両アーム接続 OK")
+            break
+        except Exception as e:
+            msg = str(e)
+            if "Input voltage error" in msg:
+                # 給電の抜き差し順序でサーボにラッチするエラービット。実電圧が正常でも
+                # 全応答に付いて lerobot が例外化する。電源再投入でしか消えない。
+                msg += "（電圧エラーラッチの可能性: アーム給電のDCプラグを一度抜いて挿し直し→自動で再接続されます）"
+            with LOCK:
+                STATE["error"] = f"connect failed: {msg}"
+            if first_fail:
+                log(f"接続失敗: {msg}")
+                log("5秒ごとに再接続を試みます")
+                first_fail = False
+            for b in (leader, follower):
+                try:
+                    if b is not None:
+                        b.disconnect(disable_torque=False)
+                except Exception:
+                    pass
+            time.sleep(5.0)
 
     while True:
         try:
@@ -128,21 +125,21 @@ def worker(leader_port: str, follower_port: str):
             if cmd:
                 op = cmd.get("op")
                 if op == "teleop":
-                    teleop = bool(cmd["on"])
-                    if teleop:
-                        # enable torque one joint at a time (inrush control)
+                    if bool(cmd["on"]):
+                        engine.start_teleop()      # staged torque enable inside
                         for n in JOINTS:
-                            set_follower_torque(n, True)
-                            time.sleep(0.05)
+                            telemetry["follower"][n]["torque"] = 1
                         log("追従モード ON")
                     else:
-                        freeze_follower()
+                        engine.stop_teleop()       # freeze (torque stays on)
                         log("追従モード OFF（姿勢保持）")
-                elif op == "jog" and not teleop:
+                elif op == "jog" and not engine.active:
                     n = cmd["joint"]
-                    tgt = max(ranges[n][0], min(ranges[n][1], int(cmd["pos"])))
+                    lo, hi = ranges[n]
+                    tgt = max(lo, min(hi, int(cmd["pos"])))
                     set_follower_torque(n, True)
-                    arms["follower"].write("Goal_Position", n, tgt, normalize=False)
+                    follower.write("Goal_Position", n, tgt, normalize=False)
+                    engine.last_goal[n] = tgt
                 elif op == "torque":
                     n = cmd["joint"]
                     arm = cmd.get("arm", "follower")
@@ -151,57 +148,68 @@ def worker(leader_port: str, follower_port: str):
                         if arm == "follower":
                             set_follower_torque(j, bool(cmd["on"]))
                         else:
-                            arms["leader"].write("Torque_Enable", j, 1 if cmd["on"] else 0)
+                            leader.write("Torque_Enable", j, 1 if cmd["on"] else 0,
+                                         normalize=False)
                             telemetry["leader"][j]["torque"] = 1 if cmd["on"] else 0
                     log(f"{arm} {n} torque {'ON' if cmd['on'] else 'OFF'}")
                 elif op == "abort":
-                    teleop = False
-                    freeze_follower()
+                    engine.stop_teleop()
                     log("⛔ ABORT — 追従停止・姿勢凍結")
 
-            # ---- fast telemetry: positions -------------------------------
-            for arm in ("leader", "follower"):
-                pos = arms[arm].sync_read("Present_Position", normalize=False, num_retry=1)
-                for n in JOINTS:
-                    telemetry[arm][n]["pos"] = int(pos[n])
+            # ---- fast telemetry: leader positions (teleop input + display) -
+            lead = engine.read_leader()
+            for n in JOINTS:
+                telemetry["leader"][n]["pos"] = lead[n]
 
-            # ---- teleop step ----------------------------------------------
-            if teleop:
+            # ---- teleop step (follower present NOT read every cycle) -------
+            if engine.active:
+                res = engine.step(leader_ticks=lead)
+                for n in JOINTS:                       # display commanded goal
+                    telemetry["follower"][n]["pos"] = engine.last_goal[n]
+                if "follower" in res:                  # periodic present sample
+                    for n in JOINTS:
+                        telemetry["follower"][n]["pos"] = res["follower"][n]
+            else:
+                # idle: keep follower display live with an actual present read
+                fpos = engine.read_follower_present()
                 for n in JOINTS:
-                    lp = telemetry["leader"][n]["pos"]
-                    fp = telemetry["follower"][n]["pos"]
-                    tgt = max(ranges[n][0], min(ranges[n][1], lp))
-                    step = max(-MAX_STEP_TICKS, min(MAX_STEP_TICKS, tgt - fp))
-                    arms["follower"].write("Goal_Position", n, fp + step, normalize=False)
+                    telemetry["follower"][n]["pos"] = fpos[n]
 
-            # ---- slow telemetry: V / temp / current, one motor per cycle --
-            arm = ("leader", "follower")[slow_idx % 2]
-            n = JOINTS[(slow_idx // 2) % len(JOINTS)]
-            t = telemetry[arm][n]
-            t["volt"] = arms[arm].read("Present_Voltage", n, normalize=False) / 10
-            t["temp"] = arms[arm].read("Present_Temperature", n, normalize=False)
-            t["cur"] = arms[arm].read("Present_Current", n, normalize=False)
-            if arm == "leader":
-                t["torque"] = arms[arm].read("Torque_Enable", n, normalize=False)
-            slow_idx += 1
+            # ---- slow telemetry: V / temp / current, one motor per N cycles-
+            if cycle % TELEMETRY_EVERY == 0:
+                arm = ("leader", "follower")[slow_idx % 2]
+                n = JOINTS[(slow_idx // 2) % len(JOINTS)]
+                bus = leader if arm == "leader" else follower
+                t = telemetry[arm][n]
+                t["volt"] = bus.read("Present_Voltage", n, normalize=False) / 10
+                t["temp"] = bus.read("Present_Temperature", n, normalize=False)
+                t["cur"] = bus.read("Present_Current", n, normalize=False)
+                if arm == "leader":
+                    t["torque"] = bus.read("Torque_Enable", n, normalize=False)
+                slow_idx += 1
+            cycle += 1
 
             with LOCK:
-                STATE["teleop"] = teleop
+                STATE["teleop"] = engine.active
                 STATE["connected"] = True
                 STATE["error"] = ""
                 STATE["leader"] = json.loads(json.dumps(telemetry["leader"]))
                 STATE["follower"] = json.loads(json.dumps(telemetry["follower"]))
                 STATE["ranges"] = ranges
+                STATE["hz"] = engine.measured_hz
+                STATE["engine"] = engine.metrics()
         except ConnectionError as e:
             # supply sag / bus dropout: log, reconnect, keep serving
             log(f"バス断: {e}")
             with LOCK:
                 STATE["connected"] = False
                 STATE["error"] = str(e)
-            teleop = False
-            for b in arms.values():
+            if engine is not None:
+                engine.active = False
+            for b in (leader, follower):
                 try:
-                    b.disconnect(disable_torque=False)
+                    if b is not None:
+                        b.disconnect(disable_torque=False)
                 except Exception:
                     pass
             time.sleep(1.0)
@@ -216,7 +224,10 @@ def worker(leader_port: str, follower_port: str):
                 STATE["error"] = str(e)
             log(f"エラー: {e}")
             time.sleep(0.5)
-        time.sleep(0.03)
+
+        # pace to the target rate; step() already consumed most of the period
+        time.sleep(max(0.0, cfg.period - 0.005) if engine and engine.active
+                   else 0.03)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -265,13 +276,16 @@ def main():
     ap.add_argument("--leader-port", default="COM14")
     ap.add_argument("--follower-port", default="COM13")
     ap.add_argument("--http-port", type=int, default=8013)
+    ap.add_argument("--fps", type=float, default=60.0, help="teleop target rate (Hz)")
     args = ap.parse_args()
 
-    threading.Thread(target=worker, args=(args.leader_port, args.follower_port),
+    cfg = TeleopConfig(target_hz=args.fps)
+    threading.Thread(target=worker,
+                     args=(args.leader_port, args.follower_port, cfg),
                      daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", args.http_port), Handler)
     print(f"[SO-101 COCKPIT] leader={args.leader_port} follower={args.follower_port} "
-          f"-> http://127.0.0.1:{args.http_port}/")
+          f"target={args.fps}Hz -> http://127.0.0.1:{args.http_port}/")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

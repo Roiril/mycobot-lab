@@ -1,107 +1,112 @@
-"""SO-101 leader->follower teleoperation (run with .venv-so101 / Python 3.12).
+"""SO-101 leader->follower teleoperation CLI (run with .venv-so101 / Python 3.12).
 
-Wraps lerobot's SO101Leader / SO101Follower in a loop equivalent to
-lerobot-teleoperate, with brownout mitigations for the current 12V 2A supply:
-full-torque inrush on several servos at once sags the rail and drops the whole
-Feetech bus ("There is no status packet!"), so we cap Torque_Limit and
-Acceleration on every follower servo and clamp per-cycle steps with
-max_relative_target. Transient bus errors are retried instead of crashing.
+Thin wrapper over src/robots/so101/teleop_engine.py — the same engine the
+cockpit server uses, so both share one motion + safety pipeline (One-Euro
+smoothing, last-goal stepping, brownout-safe staged torque). This drives the
+raw FeetechMotorsBus directly (no lerobot SO101Leader/Follower wrappers) so the
+follower path is byte-identical to the cockpit.
 
 Run:  .venv-so101\\Scripts\\python.exe scripts\\so101_teleop.py
 Stop: Ctrl+C (follower torque is released on exit)
 """
 from __future__ import annotations
-import argparse
+import sys
 import time
+import pathlib
+import argparse
 
-from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
-from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
 
-# Per-joint torque caps (/1000). shoulder_lift/elbow_flex fight gravity and
-# stall+overheat+latch if capped too low; the rest stay low to limit total
-# draw on the 2A supply.
-TORQUE_LIMITS = {
-    "shoulder_pan": 400,
-    "shoulder_lift": 700,
-    "elbow_flex": 700,
-    "wrist_flex": 400,
-    "wrist_roll": 400,
-    "gripper": 400,
-}
-ACCELERATION = 30       # gentle ramp, avoids current spikes
-GOAL_VELOCITY = 800     # raw units; fast enough for live tracking
+from robots.so101.teleop_engine import (
+    TeleopEngine, TeleopConfig, OneEuroConfig,
+    make_bus, load_ranges, TICKS_PER_DEG,
+)
+
+
+def _connect(leader_port: str, follower_port: str):
+    leader = make_bus(leader_port)
+    follower = make_bus(follower_port)
+    leader.connect(handshake=False)
+    follower.connect(handshake=False)
+    return leader, follower
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--leader-port", default="COM14")
     ap.add_argument("--follower-port", default="COM13")
-    ap.add_argument("--fps", type=int, default=50)
+    ap.add_argument("--fps", type=float, default=60.0, help="target loop rate (Hz)")
     ap.add_argument("--max-step", type=float, default=15.0,
-                    help="max joint move per cycle, in normalized units (deg)")
+                    help="max follower move per cycle, in degrees")
+    ap.add_argument("--min-cutoff", type=float, default=1.0,
+                    help="One-Euro min cutoff (Hz); lower = smoother at rest")
+    ap.add_argument("--beta", type=float, default=0.01,
+                    help="One-Euro beta; higher = less lag when moving fast")
     args = ap.parse_args()
 
-    leader = SO101Leader(SO101LeaderConfig(port=args.leader_port, id="so101_leader"))
-    follower = SO101Follower(SO101FollowerConfig(
-        port=args.follower_port, id="so101_follower",
-        max_relative_target=args.max_step))
+    cfg = TeleopConfig(
+        target_hz=args.fps,
+        max_step_ticks=int(round(args.max_step * TICKS_PER_DEG)),
+        one_euro=OneEuroConfig(min_cutoff=args.min_cutoff, beta=args.beta),
+    )
+    ranges = load_ranges(log=lambda m: print(f"[teleop] {m}"))
 
-    # Preflight: cap torque/acceleration BEFORE follower.connect(), because
-    # configure() torque-enables every servo at once and the uncapped inrush
-    # browns out the 2A supply (bus drops with "no status packet").
-    pre = SO101Follower(SO101FollowerConfig(port=args.follower_port, id="so101_follower"))
-    pre.bus.connect(handshake=False)
-    for n in pre.bus.motors:
-        pre.bus.write("Torque_Limit", n, TORQUE_LIMITS[n], normalize=False)
-        pre.bus.write("Acceleration", n, ACCELERATION, normalize=False)
-        pre.bus.write("Goal_Velocity", n, GOAL_VELOCITY, normalize=False)
-    pre.bus.disconnect(disable_torque=False)
-
-    leader.connect(calibrate=False)
-    follower.connect(calibrate=False)
-
-    for n in follower.bus.motors:
-        follower.bus.write("Torque_Limit", n, TORQUE_LIMITS[n], normalize=False)
-        follower.bus.write("Acceleration", n, ACCELERATION, normalize=False)
-        follower.bus.write("Goal_Velocity", n, GOAL_VELOCITY, normalize=False)
+    leader, follower = _connect(args.leader_port, args.follower_port)
+    engine = TeleopEngine(leader, follower, ranges, config=cfg,
+                          log=lambda m: print(f"[teleop] {m}"))
+    engine.start_teleop()
 
     print(f"[teleop] leader={args.leader_port} follower={args.follower_port} "
-          f"fps={args.fps} max_step={args.max_step}deg torque_limits={TORQUE_LIMITS}")
-    period = 1.0 / args.fps
+          f"target={args.fps}Hz max_step={args.max_step}deg "
+          f"({cfg.max_step_ticks}tk) min_cutoff={args.min_cutoff} beta={args.beta}")
+
+    period = cfg.period
     errors = 0
     try:
         while True:
             t0 = time.perf_counter()
             try:
-                action = leader.get_action()
-                follower.send_action(action)
+                engine.step(now=t0)
                 errors = 0
             except ConnectionError as e:
-                # transient bus dropout (supply sag) — back off and retry
+                # transient bus dropout (supply sag) — back off, reconnect, and
+                # restart teleop so filters + last_goal reseed cleanly.
                 errors += 1
                 print(f"[teleop] bus error ({errors}): {e}")
                 if errors >= 10:
                     raise
+                engine.active = False
+                for b in (leader, follower):
+                    try:
+                        b.disconnect(disable_torque=False)
+                    except Exception:
+                        pass
                 time.sleep(0.5)
+                try:
+                    leader, follower = _connect(args.leader_port, args.follower_port)
+                    engine.rebind(leader, follower)
+                    engine.start_teleop()
+                    print("[teleop] reconnected")
+                except Exception as e2:
+                    print(f"[teleop] reconnect failed: {e2}")
+                    time.sleep(1.0)
                 continue
             dt = time.perf_counter() - t0
             if dt < period:
                 time.sleep(period - dt)
     except KeyboardInterrupt:
-        print("\n[teleop] stopping")
+        print(f"\n[teleop] stopping (measured {engine.measured_hz} Hz)")
     finally:
         try:
-            follower.bus.disable_torque()
+            follower.disable_torque()
         except Exception:
             pass
-        try:
-            follower.disconnect()
-        except Exception:
-            pass
-        try:
-            leader.disconnect()
-        except Exception:
-            pass
+        for b in (follower, leader):
+            try:
+                b.disconnect()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
