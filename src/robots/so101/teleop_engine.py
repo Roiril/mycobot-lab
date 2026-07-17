@@ -55,22 +55,92 @@ TICKS_PER_DEG = TICKS_PER_REV / 360.0                       # ~11.377
 # Joints mirrored, in Feetech motor order 1..6 (5-DoF arm + gripper).
 JOINTS: List[str] = list(profile.JOINT_NAMES) + [profile.GRIPPER_NAME]
 
-# --- Safety / drive constants (SINGLE definition; previously duplicated in
+# --- Torque profiles (SINGLE definition; previously duplicated in
 #     so101_teleop.py and so101_cockpit_server.py) ---------------------------
-# Per-joint torque caps (/1000). shoulder_lift/elbow_flex fight gravity and
-# stall+overheat+latch if capped too low; the rest stay low to limit total draw
-# on the 12V supply.
-TORQUE_LIMITS: Dict[str, int] = {
-    "shoulder_pan": 400,
-    "shoulder_lift": 700,
-    "elbow_flex": 700,
-    "wrist_flex": 400,
-    "wrist_roll": 400,
-    "gripper": 400,
+# Per-joint torque caps written to STS3215 Torque_Limit (register range 0..1000).
+# Two named profiles, selected by TeleopConfig.torque_profile:
+#
+#   "full" — every joint at the register max. The 12V/5A supply upgrade
+#            (2026-07) removed the brownout that forced the old low caps, so the
+#            follower no longer stalls / drops tracking under gravity + payload.
+#            This is the normal operating profile. The cockpit watchdog
+#            (so101_cockpit_server.py) is the safety net: it DEMOTES to "safe"
+#            on a measured supply sag / overheat / bus dropout (see the
+#            trip-wire thresholds below). Recovery from a demotion is manual.
+#
+#   "safe" — the conservative pre-upgrade caps, kept as the DEMOTION TARGET (not
+#            the normal profile). shoulder_lift / elbow_flex fight gravity and
+#            stall+overheat+latch if capped too low, so they stay higher; the
+#            rest stay low to cut total current draw on a sagging bus.
+#
+# NOTE: the "safe" numbers are provisional — a parallel power-budget study may
+# revise them. Every torque value lives in this one dict so a revision is a
+# single edit that both the CLI and the cockpit pick up.
+TORQUE_MAX = 1000       # STS3215 Torque_Limit register full-scale
+TORQUE_PROFILES: Dict[str, Dict[str, int]] = {
+    # "full" = arm joints uncapped, matching stock lerobot (which writes no
+    # Torque_Limit on the 5 arm joints). Gripper stays at 500: this follower's
+    # gripper EEPROM carries lerobot's burnout guard (Max_Torque=500,
+    # Protection_Current=250(=1.6A), Overload_Torque=25 — measured 2026-07-17),
+    # because a gripper holding an object is a sustained stall by design.
+    "full": {**{n: TORQUE_MAX for n in JOINTS}, "gripper": 500},
+    "safe": {
+        "shoulder_pan": 400,
+        "shoulder_lift": 700,
+        "elbow_flex": 700,
+        "wrist_flex": 400,
+        "wrist_roll": 400,
+        "gripper": 400,
+    },
 }
+DEFAULT_TORQUE_PROFILE = "full"
+
+# Back-compat alias: TORQUE_LIMITS was the single per-joint cap dict before
+# profiles existed. Kept pointing at "safe" so any lingering reference resolves
+# to the conservative caps rather than breaking.
+TORQUE_LIMITS: Dict[str, int] = TORQUE_PROFILES["safe"]
+
 ACCELERATION = 30       # gentle ramp, avoids current spikes
 GOAL_VELOCITY = 800     # raw units; fast enough for live tracking
 MAX_STEP_TICKS = 170    # per-cycle follower move clamp (~15 deg)
+
+# --- Trip-wire thresholds (cockpit watchdog; PURE decision in classify_* below)
+# The follower is the 12V arm. STS3215 is nominal 12V and the Feetech bus
+# browns out / drops the connection when the supply sags under torque draw.
+# Two-stage voltage response (whole-arm scope):
+#   WARN  below VOLT_WARN_V  — log an early notice while still operating.
+#   DEMOTE below VOLT_DEMOTE_V — sag confirmed; demote the follower to "safe"
+#                               to cut current and keep the bus alive.
+VOLT_WARN_V = 11.0
+VOLT_DEMOTE_V = 10.5
+# Servo temperature (deg C). STS3215 self-protects around ~70 C; act earlier.
+# Temperature scope is PER-JOINT (only the hot joint is demoted).
+#   WARN   above TEMP_WARN_C  — log.
+#   DEMOTE above TEMP_DEMOTE_C — demote THAT joint's cap to its "safe" value.
+TEMP_WARN_C = 55
+TEMP_DEMOTE_C = 62
+
+
+def classify_voltage(volt: float) -> str:
+    """Pure follower-voltage trip classification -> "ok" | "warn" | "demote".
+
+    Callers must not pass a stale/zero reading (0 V would classify as demote);
+    guard with ``volt > 0`` at the call site.
+    """
+    if volt < VOLT_DEMOTE_V:
+        return "demote"
+    if volt < VOLT_WARN_V:
+        return "warn"
+    return "ok"
+
+
+def classify_temperature(temp: float) -> str:
+    """Pure per-joint temperature trip classification -> "ok" | "warn" | "demote"."""
+    if temp > TEMP_DEMOTE_C:
+        return "demote"
+    if temp > TEMP_WARN_C:
+        return "warn"
+    return "ok"
 
 CAL_DIR = pathlib.Path.home() / ".cache/huggingface/lerobot/calibration"
 
@@ -185,6 +255,7 @@ class TeleopConfig:
     deadband_ticks: int = 2            # skip writes when the clamped step is tiny
     follower_read_every: int = 30      # sample follower present every N cycles (~0.5s @60Hz)
     torque_stagger_s: float = 0.05     # delay between per-joint torque enables
+    torque_profile: str = DEFAULT_TORQUE_PROFILE  # "full" (normal) | "safe" (demoted caps)
     one_euro: OneEuroConfig = field(default_factory=OneEuroConfig)
 
     @property
@@ -217,6 +288,16 @@ class TeleopEngine:
         self.last_goal: Dict[str, int] = {n: 0 for n in self.joints}
         self.active = False
 
+        # torque profile state (mutable at runtime via set_torque_profile).
+        # `joint_profile_override` holds per-joint demotions (temperature trip)
+        # layered on top of the global `torque_profile`; `demote_reason` is a
+        # human string surfaced in /state for the cockpit UI.
+        self.torque_profile = (self.cfg.torque_profile
+                               if self.cfg.torque_profile in TORQUE_PROFILES
+                               else DEFAULT_TORQUE_PROFILE)
+        self.joint_profile_override: Dict[str, str] = {}
+        self.demote_reason: str = ""
+
         # metrics
         self._cycle = 0
         self._last_step_t: Optional[float] = None
@@ -229,16 +310,62 @@ class TeleopEngine:
         self.leader_bus = leader_bus
         self.follower_bus = follower_bus
 
+    def effective_limit(self, joint: str) -> int:
+        """Torque cap for `joint` = its per-joint override (if demoted) else the
+        global profile. Single place that resolves profile + override -> value.
+        """
+        prof = self.joint_profile_override.get(joint, self.torque_profile)
+        limits = TORQUE_PROFILES.get(prof, TORQUE_PROFILES[DEFAULT_TORQUE_PROFILE])
+        return limits[joint]
+
     def apply_follower_caps(self) -> None:
         """Write per-joint Torque_Limit / Acceleration / Goal_Velocity.
 
-        Call while follower torque is DISABLED (before any staged enable) so the
-        caps are in effect before the servos draw current — the brownout guard.
+        Uses the currently selected profile (+ per-joint overrides) via
+        `effective_limit`. Call while follower torque is DISABLED (before any
+        staged enable) so the caps are in effect before the servos draw current
+        — the brownout guard. Also safe to call live (profile switch / demote):
+        writing Torque_Limit mid-motion just changes the cap.
         """
         for n in self.joints:
-            self.follower_bus.write("Torque_Limit", n, TORQUE_LIMITS[n], normalize=False)
+            self.follower_bus.write("Torque_Limit", n, self.effective_limit(n), normalize=False)
             self.follower_bus.write("Acceleration", n, ACCELERATION, normalize=False)
             self.follower_bus.write("Goal_Velocity", n, GOAL_VELOCITY, normalize=False)
+
+    def set_torque_profile(self, profile: str, reason: str = "",
+                           apply: bool = True) -> None:
+        """Select the global torque profile.
+
+        Switching to the default ("full") is treated as a manual RECOVERY: it
+        clears any per-joint demotions and the demote reason. Switching to a
+        non-default ("safe") is a demotion and records `reason`. `apply=False`
+        updates state only (used on the reconnect path, where the caller
+        re-applies caps right after reconnecting the bus).
+        """
+        if profile not in TORQUE_PROFILES:
+            raise ValueError(f"unknown torque profile: {profile!r}")
+        self.torque_profile = profile
+        if profile == DEFAULT_TORQUE_PROFILE:
+            self.joint_profile_override.clear()
+            self.demote_reason = ""
+        else:
+            self.demote_reason = reason
+        if apply:
+            self.apply_follower_caps()
+
+    def demote_joint(self, joint: str, reason: str = "", apply: bool = True) -> None:
+        """Demote a single joint's cap to its "safe" value (temperature trip).
+
+        Layers on top of the global profile so an already-"safe" global profile
+        is unaffected. `apply=True` writes only this joint's Torque_Limit to
+        avoid re-touching the others mid-teleop.
+        """
+        self.joint_profile_override[joint] = "safe"
+        if reason:
+            self.demote_reason = reason
+        if apply:
+            self.follower_bus.write("Torque_Limit", joint,
+                                    self.effective_limit(joint), normalize=False)
 
     # -- torque helpers --------------------------------------------------------
     def set_follower_torque(self, joint: str, on: bool) -> None:
@@ -379,6 +506,9 @@ class TeleopEngine:
             "max_step_ticks": self.cfg.max_step_ticks,
             "deadband_ticks": self.cfg.deadband_ticks,
             "follower_lag_ticks": self.follower_lag_ticks,
+            "torque_profile": self.torque_profile,
+            "joint_overrides": dict(self.joint_profile_override),
+            "demote_reason": self.demote_reason,
             "one_euro": {
                 "min_cutoff": oe.min_cutoff,
                 "beta": oe.beta,

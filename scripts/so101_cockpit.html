@@ -39,6 +39,7 @@ html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
   text-transform:uppercase;letter-spacing:.6px}
 .badge.ok{background:var(--ok);color:var(--text-inv)}
 .badge.err{background:var(--danger);color:var(--text-inv)}
+.badge.warn{background:var(--warn);color:var(--text-inv)}
 .badge.gray{background:var(--surface-3);color:var(--text-muted);border:var(--bw) solid var(--border)}
 .badge.accent{background:var(--accent-soft);color:var(--accent);border:var(--bw) solid var(--accent-line)}
 #statusBar .spacer{flex:1}
@@ -64,6 +65,11 @@ button.sm{padding:3px 8px;font-size:var(--fs-xs)}
   border-radius:var(--radius);padding:var(--pad)}
 #teleopRow .desc{color:var(--text-muted);font-size:var(--fs-sm)}
 #teleopRow .spacer{flex:1}
+
+/* torque profile control */
+#profileGroup{display:flex;align-items:center;gap:6px;flex-shrink:0}
+#profileGroup .plabel{font-size:var(--fs-xs);color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.6px}
 
 /* arm panels */
 #arms{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -117,6 +123,12 @@ h2 .arm-name{color:var(--text);font-size:var(--fs-sm)}
     <span class="desc">ON でフォロワーがリーダーを追従（トルク上限・15°/step クランプ付き）。
       OFF でその場の姿勢を保持。個別ジョグは OFF のときだけ有効。</span>
     <span class="spacer"></span>
+    <div id="profileGroup">
+      <span class="plabel">トルク</span>
+      <button id="profFull" class="toggle sm" title="全関節フルトルク（通常運転）">full</button>
+      <button id="profSafe" class="toggle sm" title="保守的な上限に降格">safe</button>
+      <span id="profBadge" class="badge gray" title="">--</span>
+    </div>
   </div>
 
   <div id="arms">
@@ -181,6 +193,8 @@ function buildJoints(arm){
 buildJoints("leader"); buildJoints("follower");
 
 document.getElementById("teleopBtn").onclick=()=>post("/teleop",{on:!teleop});
+document.getElementById("profFull").onclick=()=>post("/torque_profile",{profile:"full"});
+document.getElementById("profSafe").onclick=()=>post("/torque_profile",{profile:"safe"});
 document.getElementById("abortBtn").onclick=()=>post("/abort",{});
 document.addEventListener("keydown",e=>{if(e.key==="Escape")post("/abort",{});});
 document.querySelectorAll("[data-tq]").forEach(b=>{
@@ -216,6 +230,21 @@ function paintArm(arm,data){
   document.getElementById(arm+"Meta").textContent=`max ${tmax}℃ / ${imax}mA`;
 }
 
+function paintProfile(st){
+  const eng=st.engine||{};
+  const prof=st.torque_profile||eng.torque_profile||"full";
+  const reason=st.demote_reason||eng.demote_reason||"";
+  const overrides=eng.joint_overrides||{};
+  const nOver=Object.keys(overrides).length;
+  const demoted=prof!=="full"||nOver>0;
+  const pb=document.getElementById("profBadge");
+  pb.textContent=prof+(nOver?` +${nOver}関節safe`:"");
+  pb.className="badge "+(demoted?"warn":"accent");
+  pb.title=reason||(demoted?"降格中":"通常運転");
+  document.getElementById("profFull").classList.toggle("active",prof==="full");
+  document.getElementById("profSafe").classList.toggle("active",prof==="safe");
+}
+
 async function poll(){
   try{
     const st=await(await fetch("/state")).json();
@@ -231,6 +260,7 @@ async function poll(){
     btn.classList.toggle("active",st.teleop);
     btn.textContent=st.teleop?"追従モード ON":"追従モード";
     document.querySelectorAll("#followerJoints input[type=range]").forEach(s=>s.disabled=st.teleop);
+    paintProfile(st);
     if(st.leader)paintArm("leader",st.leader);
     if(st.follower)paintArm("follower",st.follower);
     document.getElementById("log").innerHTML=(st.log||[]).map(

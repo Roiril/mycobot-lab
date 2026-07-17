@@ -14,6 +14,9 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from robots.so101.teleop_engine import (
     OneEuroFilter, OneEuroConfig, TeleopEngine, TeleopConfig, JOINTS,
+    TORQUE_PROFILES, DEFAULT_TORQUE_PROFILE, TORQUE_MAX,
+    classify_voltage, classify_temperature,
+    VOLT_WARN_V, VOLT_DEMOTE_V, TEMP_WARN_C, TEMP_DEMOTE_C,
 )
 
 
@@ -185,8 +188,115 @@ class TestEngineIO(unittest.TestCase):
 
 
 def ec_limit(joint):
-    from robots.so101.teleop_engine import TORQUE_LIMITS
-    return TORQUE_LIMITS[joint]
+    # start_teleop applies the config's profile; make_engine uses the default.
+    return TORQUE_PROFILES[DEFAULT_TORQUE_PROFILE][joint]
+
+
+# ---------------------------------------------------------------------------
+class TestTorqueProfiles(unittest.TestCase):
+    def test_default_profile_is_full(self):
+        self.assertEqual(DEFAULT_TORQUE_PROFILE, "full")
+        eng, _, _ = make_engine()
+        self.assertEqual(eng.torque_profile, "full")
+        for n in JOINTS:
+            if n == "gripper":
+                # gripper keeps lerobot's burnout guard (EEPROM Max_Torque=500)
+                self.assertEqual(eng.effective_limit(n), 500)
+            else:
+                self.assertEqual(eng.effective_limit(n), TORQUE_MAX)
+
+    def test_config_selects_profile(self):
+        eng, _, _ = make_engine(torque_profile="safe")
+        self.assertEqual(eng.torque_profile, "safe")
+        for n in JOINTS:
+            self.assertEqual(eng.effective_limit(n), TORQUE_PROFILES["safe"][n])
+
+    def test_bad_config_profile_falls_back_to_default(self):
+        eng, _, _ = make_engine(torque_profile="bogus")
+        self.assertEqual(eng.torque_profile, DEFAULT_TORQUE_PROFILE)
+
+    def test_apply_caps_writes_effective_profile(self):
+        eng, _, foll = make_engine(torque_profile="safe")
+        eng.apply_follower_caps()
+        for n in JOINTS:
+            self.assertIn(("Torque_Limit", n, TORQUE_PROFILES["safe"][n]), foll.writes)
+
+    def test_set_profile_writes_new_caps_live(self):
+        eng, _, foll = make_engine()                      # full
+        foll.writes.clear()
+        eng.set_torque_profile("safe", reason="test")
+        self.assertEqual(eng.torque_profile, "safe")
+        self.assertEqual(eng.demote_reason, "test")
+        for n in JOINTS:
+            self.assertIn(("Torque_Limit", n, TORQUE_PROFILES["safe"][n]), foll.writes)
+
+    def test_set_profile_no_apply_is_state_only(self):
+        eng, _, foll = make_engine()
+        foll.writes.clear()
+        eng.set_torque_profile("safe", reason="r", apply=False)
+        self.assertEqual(eng.torque_profile, "safe")
+        self.assertEqual(foll.writes, [])                 # no bus I/O
+
+    def test_full_recovery_clears_overrides_and_reason(self):
+        eng, _, _ = make_engine()
+        eng.set_torque_profile("safe", reason="sag")
+        eng.demote_joint("elbow_flex", reason="hot")
+        self.assertTrue(eng.joint_profile_override)
+        eng.set_torque_profile("full")                    # manual recovery
+        self.assertEqual(eng.torque_profile, "full")
+        self.assertEqual(eng.joint_profile_override, {})
+        self.assertEqual(eng.demote_reason, "")
+
+    def test_demote_joint_is_per_joint(self):
+        eng, _, foll = make_engine()                      # global full
+        foll.writes.clear()
+        eng.demote_joint("elbow_flex", reason="hot")
+        self.assertEqual(eng.effective_limit("elbow_flex"),
+                         TORQUE_PROFILES["safe"]["elbow_flex"])
+        self.assertEqual(eng.effective_limit("shoulder_pan"), TORQUE_MAX)  # unaffected
+        # only the demoted joint's cap is written
+        self.assertEqual(foll.writes,
+                         [("Torque_Limit", "elbow_flex",
+                           TORQUE_PROFILES["safe"]["elbow_flex"])])
+
+    def test_unknown_profile_raises(self):
+        eng, _, _ = make_engine()
+        with self.assertRaises(ValueError):
+            eng.set_torque_profile("nope")
+
+    def test_metrics_expose_profile(self):
+        eng, _, _ = make_engine()
+        eng.set_torque_profile("safe", reason="sag")
+        eng.demote_joint("wrist_flex", reason="hot")
+        m = eng.metrics()
+        self.assertEqual(m["torque_profile"], "safe")
+        self.assertEqual(m["joint_overrides"], {"wrist_flex": "safe"})
+        self.assertIn(m["demote_reason"], ("sag", "hot"))
+
+
+# ---------------------------------------------------------------------------
+class TestTripWireThresholds(unittest.TestCase):
+    def test_voltage_bands(self):
+        self.assertEqual(classify_voltage(12.4), "ok")
+        self.assertEqual(classify_voltage(VOLT_WARN_V), "ok")        # boundary: not < warn
+        self.assertEqual(classify_voltage(VOLT_WARN_V - 0.1), "warn")
+        self.assertEqual(classify_voltage(VOLT_DEMOTE_V), "warn")    # boundary: not < demote
+        self.assertEqual(classify_voltage(VOLT_DEMOTE_V - 0.1), "demote")
+        self.assertEqual(classify_voltage(9.0), "demote")
+
+    def test_temperature_bands(self):
+        self.assertEqual(classify_temperature(40), "ok")
+        self.assertEqual(classify_temperature(TEMP_WARN_C), "ok")        # boundary: not > warn
+        self.assertEqual(classify_temperature(TEMP_WARN_C + 1), "warn")
+        self.assertEqual(classify_temperature(TEMP_DEMOTE_C), "warn")    # boundary: not > demote
+        self.assertEqual(classify_temperature(TEMP_DEMOTE_C + 1), "demote")
+        self.assertEqual(classify_temperature(70), "demote")
+
+    def test_threshold_ordering(self):
+        # demote must trip at a more severe reading than warn, or the bands
+        # collapse (a demote would never be preceded by a warn).
+        self.assertLess(VOLT_DEMOTE_V, VOLT_WARN_V)
+        self.assertGreater(TEMP_DEMOTE_C, TEMP_WARN_C)
 
 
 if __name__ == "__main__":

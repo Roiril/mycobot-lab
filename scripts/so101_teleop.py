@@ -43,11 +43,14 @@ def main():
                     help="One-Euro min cutoff (Hz); lower = smoother at rest")
     ap.add_argument("--beta", type=float, default=0.01,
                     help="One-Euro beta; higher = less lag when moving fast")
+    ap.add_argument("--torque-profile", choices=["full", "safe"], default="full",
+                    help="follower torque caps: full (max, normal) | safe (demoted)")
     args = ap.parse_args()
 
     cfg = TeleopConfig(
         target_hz=args.fps,
         max_step_ticks=int(round(args.max_step * TICKS_PER_DEG)),
+        torque_profile=args.torque_profile,
         one_euro=OneEuroConfig(min_cutoff=args.min_cutoff, beta=args.beta),
     )
     ranges = load_ranges(log=lambda m: print(f"[teleop] {m}"))
@@ -59,7 +62,8 @@ def main():
 
     print(f"[teleop] leader={args.leader_port} follower={args.follower_port} "
           f"target={args.fps}Hz max_step={args.max_step}deg "
-          f"({cfg.max_step_ticks}tk) min_cutoff={args.min_cutoff} beta={args.beta}")
+          f"({cfg.max_step_ticks}tk) min_cutoff={args.min_cutoff} beta={args.beta} "
+          f"torque_profile={args.torque_profile}")
 
     period = cfg.period
     errors = 0

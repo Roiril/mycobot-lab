@@ -36,6 +36,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from robots.so101.teleop_engine import (
     TeleopEngine, TeleopConfig, JOINTS, make_bus, load_ranges,
+    classify_voltage, classify_temperature,
+    VOLT_WARN_V, VOLT_DEMOTE_V, TEMP_WARN_C, TEMP_DEMOTE_C,
 )
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -50,6 +52,7 @@ CMDQ: "queue.Queue" = queue.Queue()
 STATE = {
     "connected": False, "teleop": False, "error": "", "log": [],
     "leader": {}, "follower": {}, "hz": 0.0, "engine": {},
+    "torque_profile": "full", "demote_reason": "",
 }
 
 
@@ -67,6 +70,9 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
     leader = follower = None
     slow_idx = 0    # round-robin (arm, joint) for slow telemetry reads
     cycle = 0
+    # trip-wire edge state: last classified level so WARN/DEMOTE logs fire once
+    # on transition instead of every round-robin pass through the same joint.
+    trip = {"volt": "ok", "temp": {n: "ok" for n in JOINTS}}
 
     def connect_all():
         nonlocal leader, follower, engine
@@ -156,6 +162,19 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                                          normalize=False)
                             telemetry["leader"][j]["torque"] = 1 if cmd["on"] else 0
                     log(f"{arm} {n} torque {'ON' if cmd['on'] else 'OFF'}")
+                elif op == "torque_profile":
+                    prof = str(cmd.get("profile", "full"))
+                    try:
+                        # applies live (even mid-teleop). "full" is a manual
+                        # recovery: clears any watchdog demotion + per-joint holds.
+                        engine.set_torque_profile(prof, reason="手動切替")
+                        if prof == "full":
+                            trip["volt"] = "ok"
+                            trip["temp"] = {n: "ok" for n in JOINTS}
+                        log(f"トルクプロファイル → {prof}"
+                            f"{'（手動復帰）' if prof == 'full' else '（手動降格）'}")
+                    except ValueError as e:
+                        log(f"不正なトルクプロファイル: {e}")
                 elif op == "abort":
                     engine.stop_teleop()
                     log("⛔ ABORT — 追従停止・姿勢凍結")
@@ -190,6 +209,33 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                 t["cur"] = bus.read("Present_Current", n, normalize=False)
                 if arm == "leader":
                     t["torque"] = bus.read("Torque_Enable", n, normalize=False)
+                elif arm == "follower":
+                    # trip-wire: watch the 12V follower for supply sag / overheat.
+                    # Log on level transition (edge) so a persistent low reading
+                    # doesn't spam. Demotion is one-way here — recovery is manual.
+                    v = t["volt"]
+                    if v and v > 1.0:                      # ignore stale/zero reads
+                        vlvl = classify_voltage(v)
+                        if vlvl != trip["volt"]:
+                            if vlvl == "warn":
+                                log(f"⚠ フォロワー電圧低下 {v:.1f}V (< {VOLT_WARN_V}V)")
+                            elif vlvl == "demote":
+                                log(f"⚠ 電源sag {v:.1f}V (< {VOLT_DEMOTE_V}V)"
+                                    f" → safe プロファイルへ自動降格")
+                                if engine.torque_profile != "safe":
+                                    engine.set_torque_profile(
+                                        "safe", reason=f"電源sag {v:.1f}V")
+                            trip["volt"] = vlvl
+                    tp = t["temp"]
+                    tlvl = classify_temperature(tp)
+                    if tlvl != trip["temp"][n]:
+                        if tlvl == "warn":
+                            log(f"⚠ {n} 温度上昇 {tp}℃ (> {TEMP_WARN_C}℃)")
+                        elif tlvl == "demote":
+                            log(f"⚠ {n} 高温 {tp}℃ (> {TEMP_DEMOTE_C}℃)"
+                                f" → この関節を safe 値へ降格")
+                            engine.demote_joint(n, reason=f"{n} 高温 {tp}℃")
+                        trip["temp"][n] = tlvl
                 slow_idx += 1
             cycle += 1
 
@@ -202,6 +248,8 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                 STATE["ranges"] = ranges
                 STATE["hz"] = engine.measured_hz
                 STATE["engine"] = engine.metrics()
+                STATE["torque_profile"] = engine.torque_profile
+                STATE["demote_reason"] = engine.demote_reason
         except ConnectionError as e:
             # supply sag / bus dropout: log, reconnect, keep serving
             log(f"バス断: {e}")
@@ -210,6 +258,14 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                 STATE["error"] = str(e)
             if engine is not None:
                 engine.active = False
+                # a bus dropout is itself a brownout symptom: demote to safe so
+                # the reconnected follower comes back with reduced draw. state
+                # only (apply=False) — connect_all re-applies caps on reconnect.
+                if engine.torque_profile != "safe":
+                    engine.set_torque_profile(
+                        "safe", reason="バス断（brownout の徴候）", apply=False)
+                    trip["volt"] = "demote"
+                    log("バス断のため safe プロファイルへ降格（復帰は手動）")
             for b in (leader, follower):
                 try:
                     if b is not None:
@@ -266,7 +322,8 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             body = {}
-        ops = {"/teleop": "teleop", "/jog": "jog", "/torque": "torque", "/abort": "abort"}
+        ops = {"/teleop": "teleop", "/jog": "jog", "/torque": "torque",
+               "/torque_profile": "torque_profile", "/abort": "abort"}
         op = ops.get(path)
         if op is None:
             self._send(404, b'{"error":"not found"}')
