@@ -177,3 +177,28 @@ viewer（視点）系の手 delta → arm base 系 delta。
 - **joint は 4-DoF**: J3/J4 固定で先端を任意位置へ置けない。
 - **ハンドトラッキングのドロップアウト**: 手を FOV 端へ伸ばすと飛ぶ（hw のフレーム間ワープで検出可）。
 - **デッドコード** `_xrSendJogPos` の整理。
+
+---
+
+## 12. ✋ ハンド専用ページ（/hand）と同時運用
+
+上記 1〜11 は 🦾アーム（myCobot）の teleop。**ハンド（Hiwonder 5指）は別系統**で、軽量ページ
+[scripts/hand.html](../scripts/hand.html)（three.js 無し）が `/hand` で配信される。右手5指の curl を
+0..1 に正規化して `/hand/fingers` に POST（サーバ側 40Hz スロットル・latest-wins）。curl 計算・calib は
+ui.html と同じ。PWA 対応（`<title>ロボットハンド操作` + manifest + アイコン。App Library に載る）。配備は
+[QUEST_DEV.md](QUEST_DEV.md) の「2台運用」を参照。
+
+### SO-101 teleop と同時運用
+
+ハンド teleop と **SO-101 リーダー/フォロワー追従は独立に並行できる**。両者は別プロセス・別ハード：
+
+- SO-101 teleop は cockpit（:8013, `.venv-so101`）内で完結し **Quest 非依存**（PC 内の COM13/COM14 のみ）。
+- ハンドは hand server（:8001, `--offline --real-hand`）が COM9 の実5指ハンドを駆動。Quest の WebXR から操作。
+- 同時起動はワンコマンド [scripts/teleop_all.ps1](../scripts/teleop_all.ps1)（cockpit + hand + home を上げ、Quest 2台へ `/hand` を配備）。**SO-101 follow は自動 ON にしない** — 安全のためコックピットのトグルで明示的に開始する。
+
+### 2台同時装着（Quest ×2）
+
+2台の Quest が同じ hand server（同じ `adb reverse tcp:8001`）を共有する。したがって
+**`/hand/fingers` は latest-wins（排他制御なし）**：両機が同時に指を動かすと、後に届いた POST の指値で
+実ハンドが上書きされる（40Hz スロットルは共有）。1人が操作し他方は観戦、あるいは交互操作を想定した運用。
+同一 PC・同一 COM9・単一の物理ハンドを2台で奪い合う構図なので、**同時に別々の指形を送っても合成はされない**。

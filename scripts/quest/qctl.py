@@ -22,7 +22,13 @@ Usage:
   python scripts/quest/qctl.py install      # (re)inject the recorder/fetch hook only
   python scripts/quest/qctl.py tabs         # list / collapse to a single localhost tab
 
-Options: --port N (server port, default 8001) --cdp N (CDP port, default 9223)
+Options:
+  --port N   server port, default 8001
+  --cdp N    CDP port, default 9223
+  --serial S target a specific Quest. When given, qctl first runs
+             `adb -s S forward tcp:<cdp> localabstract:chrome_devtools_remote`
+             so a 2nd headset can be driven with e.g. `--serial <s2> --cdp 9224`.
+             Backward-compatible: without --serial nothing about adb changes.
 """
 from __future__ import annotations
 import json, sys, time, urllib.request
@@ -117,18 +123,44 @@ def cmd_end(ws):
         return "end-failed"
 
 
+def _ensure_forward(serial: str, cdp_port: int):
+    """Set up the CDP forward for a named device so a 2nd headset works.
+    Best-effort: if adb can't be located we just warn and let the connect fail
+    with the usual 'no localhost page' message."""
+    try:
+        from adb_util import find_adb, run_adb
+    except ImportError:
+        import os as _os
+        sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        from adb_util import find_adb, run_adb
+    try:
+        adb = find_adb()
+    except RuntimeError as e:
+        print(f"[warn] {e}; skipping forward (assuming it's already set)")
+        return
+    cp = run_adb(adb, ["forward", f"tcp:{cdp_port}", "localabstract:chrome_devtools_remote"],
+                 serial=serial)
+    tag = "ok" if cp.returncode == 0 else f"rc={cp.returncode} {cp.stderr.strip()}"
+    print(f"[adb] -s {serial} forward tcp:{cdp_port} -> chrome_devtools_remote: {tag}")
+
+
 def main():
     global CDP_PORT, SRV_PORT
     args = sys.argv[1:]
     # option parse
     out = []
+    serial = None
     i = 0
     while i < len(args):
         if args[i] == "--port": SRV_PORT = int(args[i+1]); i += 2
         elif args[i] == "--cdp": CDP_PORT = int(args[i+1]); i += 2
+        elif args[i] == "--serial": serial = args[i+1]; i += 2
         else: out.append(args[i]); i += 1
     args = out
     sub = args[0] if args else "check"
+
+    if serial:
+        _ensure_forward(serial, CDP_PORT)
 
     if sub == "tabs":
         ps = pages()

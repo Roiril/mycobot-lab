@@ -593,6 +593,46 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body); return
+            if path == "/hand/manifest.webmanifest":
+                # ✋ PWA manifest so the Quest App Library / "add to home" shows a
+                # named, icon'd entry ("ロボットハンド操作") instead of a bare URL.
+                manifest = {
+                    "name": "ロボットハンド操作",
+                    "short_name": "ハンド操作",
+                    "description": "Quest ハンドトラッキングで Hiwonder 5指ハンドを遠隔操作する軽量 WebXR ページ。",
+                    "lang": "ja",
+                    "display": "standalone",
+                    "orientation": "any",
+                    "start_url": "/hand",
+                    "scope": "/hand",
+                    "background_color": "#1e1e1e",
+                    "theme_color": "#1e1e1e",
+                    "icons": [
+                        {"src": "/hand/icon-192.png", "sizes": "192x192",
+                         "type": "image/png", "purpose": "any maskable"},
+                        {"src": "/hand/icon-512.png", "sizes": "512x512",
+                         "type": "image/png", "purpose": "any maskable"},
+                    ],
+                }
+                body = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/manifest+json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body); return
+            if path in ("/hand/icon-192.png", "/hand/icon-512.png"):
+                # PWA icons (committed real PNGs; regenerate via scripts/hand_pwa/gen_icons.py).
+                fname = "icon-192.png" if path.endswith("192.png") else "icon-512.png"
+                f = ROOT / "scripts" / "hand_pwa" / fname
+                if not f.is_file():
+                    self.send_response(404); self.end_headers(); return
+                data = f.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(data); return
             if path == "/favicon.ico":
                 self.send_response(204); self.end_headers(); return
             if path == "/robots_status":
