@@ -194,5 +194,30 @@ class TestLaunchBranch(unittest.TestCase):
         self.assertFalse(fake.issued("shell", "monkey"))
 
 
+class TestCdpNavigateLazyImport(unittest.TestCase):
+    """The websocket-client import in cdp_navigate is lazy so the module (and the
+    native-VR launch path) stay dependency-free. When it is absent (e.g. the SO-101
+    cockpit's .venv-so101), the browser fallback must fail with a clear, actionable
+    RuntimeError — never a raw ModuleNotFoundError and never at import time."""
+
+    def test_missing_websocket_raises_actionable_runtimeerror(self):
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *a, **k):
+            if name == "websocket":
+                raise ModuleNotFoundError("No module named 'websocket'")
+            return real_import(name, *a, **k)
+
+        builtins.__import__ = fake_import
+        try:
+            with self.assertRaises(RuntimeError) as cm:
+                hand_launch.cdp_navigate({"webSocketDebuggerUrl": "ws://x"},
+                                         "http://localhost:8001/hand")
+        finally:
+            builtins.__import__ = real_import
+        self.assertIn("websocket-client", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

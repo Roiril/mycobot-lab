@@ -28,6 +28,7 @@ import queue
 import argparse
 import pathlib
 import threading
+import urllib.request
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -42,6 +43,92 @@ from robots.so101.teleop_engine import (
 
 HERE = pathlib.Path(__file__).resolve().parent
 UI_HTML = HERE / "so101_cockpit.html"
+
+# ---- ✋ Quest hand-teleop one-click launch (fully independent of the serial worker) ----
+# The operator lives on this cockpit page and shouldn't have to open the home
+# launcher (:8010) just to start the HMD. hand_launch.py is the single source of
+# truth for the adb/CDP launch flow (shared with home_server.py). It is imported
+# lazily-safe: a failure here must not stop the cockpit from serving SO-101.
+#
+# ⚠ env: this server runs on .venv-so101 (Python 3.12). hand_launch + adb_util are
+# stdlib-only; websocket-client (needed ONLY by the browser/WebXR fallback) is
+# absent here, so cdp_navigate raises a clean RuntimeError that the browser-flow
+# path reports as an error. The native-VR launch path (monkey) is dependency-free
+# and is the normal case, so a headset with the native app installed launches fine.
+#
+# ⚠ isolation: the adb work runs on its own worker thread and NEVER touches CMDQ or
+# the Feetech buses — it only shells out to adb and probes the hand server (:8001).
+sys.path.insert(0, str(HERE / "quest"))
+try:
+    import hand_launch  # noqa: E402
+except Exception:  # pragma: no cover - keep the cockpit usable even if import fails
+    hand_launch = None
+
+HAND_SERVER_PROBE_URL = "http://127.0.0.1:8001/"
+HAND_STATUS_URL = "http://127.0.0.1:8001/hand/status"
+# Overall wall-clock cap for the /quest/launch-hand handler (adb/CDP can hang).
+QUEST_LAUNCH_DEADLINE_S = 18.0
+QUEST_LAUNCH_JOIN_S = 20.0
+
+
+def probe_once(url: str, timeout: float = 0.8) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return 200 <= r.status < 500
+    except Exception:
+        return False
+
+
+def hand_status_proxy(timeout: float = 2.0) -> dict:
+    """Server-side proxy to the hand server's /hand/status (:8001). The browser
+    can't hit :8001 directly (cross-origin), so the cockpit relays it. Adds
+    server_up; on any failure returns a not-up snapshot instead of raising."""
+    try:
+        with urllib.request.urlopen(HAND_STATUS_URL, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        if isinstance(data, dict):
+            data["server_up"] = True
+            return data
+        return {"server_up": True, "present": False, "connected": False,
+                "mcu_alive": False, "error": "unexpected status payload"}
+    except Exception as e:
+        return {"server_up": False, "present": False, "connected": False,
+                "mcu_alive": False, "error": str(e)}
+
+
+# ja labels for per-device launch actions (mirrors home_server.py). Native = the
+# app enters VR on launch (no in-headset tap); browser = the WebXR page still
+# needs a "VR 開始" tap once worn.
+_ACTION_JA = {
+    "launched_native": "VR アプリ起動（被るだけで操作可）",
+    "already_native": "VR アプリ起動済み（被るだけで操作可）",
+    "navigated": "既存タブを /hand に遷移",
+    "already": "すでに /hand 表示中",
+    "launched": "アプリ起動（新規タブ）",
+    "error": "失敗",
+}
+_NATIVE_ACTIONS = ("launched_native", "already_native")
+
+
+def _quest_launch_message(result: dict) -> str:
+    """Short human summary for the launch button (mirrors home_server.py)."""
+    if not result.get("ok"):
+        return result.get("error") or "起動に失敗しました。"
+    devices = result.get("devices", [])
+    parts = []
+    for d in devices:
+        tag = _ACTION_JA.get(d.get("action"), d.get("action", "?"))
+        detail = f"（{d['detail']}）" if d.get("action") == "error" and d.get("detail") else ""
+        parts.append(f"{d.get('serial', '?')[:8]}…: {tag}{detail}")
+    actions = [d.get("action") for d in devices]
+    if actions and all(a in _NATIVE_ACTIONS for a in actions):
+        head = "HMD で VR アプリを起動しました。被るだけで操作できます。"
+    elif any(a in _NATIVE_ACTIONS for a in actions):
+        head = ("HMD で VR アプリを起動しました（被るだけで操作可）。"
+                "ブラウザ版で開いた台はヘッドセット内で「VR 開始」をタップしてください。")
+    else:
+        head = "HMD でページを開きました。ヘッドセット内で「VR 開始」をタップしてください。"
+    return head + ("  " + " / ".join(parts) if parts else "")
 
 # How often (in worker cycles) to read one slow telemetry field (V/temp/current).
 # Kept off the teleop hot path so smoothing latency is unaffected.
@@ -320,6 +407,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/state":
             with LOCK:
                 self._send(200, json.dumps(STATE).encode("utf-8"))
+        elif path == "/hand-status":
+            # server-side proxy to the hand server (:8001) so the browser avoids
+            # a cross-origin call. Independent of the SO-101 serial worker.
+            self._send(200, json.dumps(hand_status_proxy(), ensure_ascii=False).encode("utf-8"))
         else:
             self._send(404, b'{"error":"not found"}')
 
@@ -330,6 +421,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             body = {}
+        if path == "/quest/launch-hand":
+            self._quest_launch_hand()
+            return
         ops = {"/teleop": "teleop", "/jog": "jog", "/torque": "torque",
                "/torque_profile": "torque_profile", "/abort": "abort",
                "/relax": "relax"}
@@ -340,6 +434,54 @@ class Handler(BaseHTTPRequestHandler):
         body["op"] = op
         CMDQ.put(body)
         self._send(200, b'{"ok":true}')
+
+    def _quest_launch_hand(self):
+        """Open the ✋ hand-teleop (native VR app, else WebXR page) on every
+        connected Quest — one click from the cockpit. The adb/CDP work runs on a
+        worker thread joined with a hard cap so the handler never blocks forever,
+        and it never touches CMDQ / the Feetech buses."""
+        result = {"hand_server_up": probe_once(HAND_SERVER_PROBE_URL)}
+
+        if hand_launch is None:
+            result.update(ok=False,
+                          error="hand_launch モジュールを読み込めませんでした（scripts/quest）。",
+                          devices=[])
+            result["message"] = result["error"]
+            self._send(200, json.dumps(result, ensure_ascii=False).encode())
+            return
+
+        if not result["hand_server_up"]:
+            result.update(ok=False,
+                          error="hand server が起動していません（:8001）。"
+                                "teleop_all.ps1 か server.py --real-hand を先に起動してください。",
+                          devices=[])
+            result["message"] = result["error"]
+            self._send(200, json.dumps(result, ensure_ascii=False).encode())
+            return
+
+        box = {}
+
+        def work():
+            try:
+                deadline = time.monotonic() + QUEST_LAUNCH_DEADLINE_S
+                box["r"] = hand_launch.launch_hand_all(srv_port=8001, cdp_base=9223,
+                                                       deadline=deadline)
+            except Exception as e:  # pragma: no cover
+                box["r"] = {"ok": False, "error": f"内部エラー: {e}", "devices": []}
+
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        th.join(QUEST_LAUNCH_JOIN_S)
+        if th.is_alive():
+            result.update(ok=False,
+                          error=f"adb/CDP がタイムアウトしました（{int(QUEST_LAUNCH_JOIN_S)}s）。"
+                                "USB 接続を確認してください。",
+                          devices=[])
+        else:
+            result.update(box.get("r", {"ok": False, "error": "結果が取得できませんでした。",
+                                        "devices": []}))
+        result["message"] = _quest_launch_message(result)
+        self._send(200, json.dumps(result, ensure_ascii=False).encode())
 
 
 def main():

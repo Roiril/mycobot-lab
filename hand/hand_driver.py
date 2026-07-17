@@ -332,7 +332,22 @@ class HandDriver(HandBase):
 
     def _send_teleop(self, us: Sequence[int]) -> None:
         # firmware: "t u0 u1 u2 u3 u4" — non-blocking, silent (no ack to read)
-        self._write_line("t " + " ".join(str(int(u)) for u in us))
+        line = "t " + " ".join(str(int(u)) for u in us)
+        with self._lock:
+            if self._ser is None:
+                return
+            # Latest-wins at the OS TX-buffer level: if the previous line(s)
+            # haven't finished transmitting (9600 baud ≈ 26ms per 't' line),
+            # drop THIS frame instead of queueing it. An unbounded backlog is
+            # what starved the liveness ping's ACK during VR streaming
+            # (false "MCU応答なし", 2026-07-17) and adds pure latency —
+            # a stale finger frame has no value once a fresher one exists.
+            try:
+                if self._ser.out_waiting > 8:
+                    return
+            except Exception:
+                pass  # out_waiting unsupported -> keep old always-send behavior
+            self._ser.write((line + "\n").encode("ascii"))
 
     def send_raw(self, line: str) -> str:
         """Send an arbitrary command and return whatever the firmware echoes

@@ -73,6 +73,15 @@ button.sm{padding:3px 8px;font-size:var(--fs-xs)}
 #profileGroup .plabel{font-size:var(--fs-xs);color:var(--text-muted);
   text-transform:uppercase;letter-spacing:.6px}
 
+/* ✋ HMD hand-teleop launch row (independent of the SO-101 serial bus) */
+#handRow{display:flex;align-items:center;gap:10px;background:var(--surface);
+  border:var(--bw) solid var(--border);border-left:3px solid var(--accent-line);
+  border-radius:var(--radius);padding:var(--pad);flex-wrap:wrap}
+#handRow .desc{color:var(--text-muted);font-size:var(--fs-sm);min-width:0;flex:1}
+#handRow .desc.bad{color:var(--danger-text)}
+#handRow .desc.good{color:var(--ok-text)}
+#handRow .handbadges{display:flex;gap:6px;flex-shrink:0}
+
 /* arm panels */
 #arms{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 @media (max-width:760px){#arms{grid-template-columns:1fr}}
@@ -133,6 +142,15 @@ h2 .arm-name{color:var(--text);font-size:var(--fs-sm)}
       <button id="profSafe" class="toggle sm" title="保守的な上限に降格">safe</button>
       <span id="profBadge" class="badge gray" title="">--</span>
     </div>
+  </div>
+
+  <div id="handRow">
+    <button id="handLaunchBtn" title="接続中の Quest でハンド操作VR（被るだけ）を起動">🥽 HMDでハンド操作</button>
+    <span id="handMsg" class="desc">被るだけでロボットハンドを操作できます。</span>
+    <span class="handbadges">
+      <span id="handSrvBadge" class="badge gray" title="ハンドサーバ :8001 の死活">ハンド:確認中</span>
+      <span id="handMcuBadge" class="badge gray" title="ハンド MCU（ATOM Lite）の応答">MCU:--</span>
+    </span>
   </div>
 
   <div id="arms">
@@ -280,6 +298,48 @@ async function poll(){
   setTimeout(poll,150);
 }
 poll();
+
+// ---- ✋ HMD hand-teleop launch (proxied through this cockpit; :8001 is cross-origin) ----
+const handBtn=document.getElementById("handLaunchBtn");
+const handMsg=document.getElementById("handMsg");
+const HAND_MSG_IDLE="被るだけでロボットハンドを操作できます。";
+handBtn.onclick=async()=>{
+  handBtn.disabled=true;
+  handMsg.className="desc"; handMsg.textContent="HMD 起動中…（adb/CDP、最大 20 秒）";
+  try{
+    const r=await(await post("/quest/launch-hand",{})).json();
+    handMsg.textContent=r.message||(r.ok?"起動しました。":"起動に失敗しました。");
+    handMsg.className="desc"+(r.ok?" good":" bad");
+  }catch(e){
+    handMsg.textContent="起動リクエストに失敗しました: "+e;
+    handMsg.className="desc bad";
+  }finally{
+    handBtn.disabled=false;
+  }
+};
+
+async function pollHand(){
+  const sb=document.getElementById("handSrvBadge");
+  const mb=document.getElementById("handMcuBadge");
+  try{
+    const s=await(await fetch("/hand-status")).json();
+    if(!s.server_up){
+      sb.textContent="ハンド:サーバ停止"; sb.className="badge gray";
+      mb.textContent="MCU:--"; mb.className="badge gray";
+    }else{
+      sb.textContent="ハンド:起動中"; sb.className="badge ok";
+      if(s.mcu_alive){mb.textContent="MCU:応答"; mb.className="badge ok";}
+      else if(s.connected){mb.textContent="MCU:応答なし"; mb.className="badge warn";}
+      else{mb.textContent="MCU:未接続"; mb.className="badge warn";}
+    }
+  }catch(e){
+    // cockpit server itself unreachable — connBadge already reflects that.
+    sb.textContent="ハンド:確認不可"; sb.className="badge gray";
+    mb.textContent="MCU:--"; mb.className="badge gray";
+  }
+  setTimeout(pollHand,10000);
+}
+pollHand();
 </script>
 </body>
 </html>

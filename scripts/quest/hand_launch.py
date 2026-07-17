@@ -94,7 +94,19 @@ def cdp_pages(cdp_port: int, timeout: float = 4.0) -> list[dict]:
 
 
 def cdp_navigate(page: dict, url: str, timeout: float = 6.0) -> None:
-    import websocket  # lazy: only needed when we actually navigate
+    # Lazy import so the whole module (and the native-VR launch path, which never
+    # navigates a tab) stays dependency-free. websocket-client is only needed for
+    # the browser (WebXR /hand) fallback, and it is absent in some envs (e.g. the
+    # SO-101 cockpit's .venv-so101). Surface a clear, actionable error instead of a
+    # raw ModuleNotFoundError so the caller can report it without crashing.
+    try:
+        import websocket  # noqa: PLC0415 (intentionally lazy)
+    except ModuleNotFoundError as e:
+        raise RuntimeError(
+            "websocket-client 未導入のためブラウザ版フォールバックを実行できません"
+            "（ネイティブVRアプリが入っていない台のみ該当）。"
+            "`pip install websocket-client` で解消します。"
+        ) from e
     ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=timeout,
                                      suppress_origin=True)
     try:

@@ -1124,7 +1124,12 @@ class Handler(BaseHTTPRequestHandler):
                 if HAND is None:
                     self._json(503, {"ok": False, "code": "NO_HAND"}); return
                 now_m = time.monotonic()
-                if now_m - _LAST_HAND_MONO < 0.025:  # 25ms ≈ 40Hz cap
+                # 34ms ≈ 30Hz cap. One 't u0..u4' line is ~25 bytes ≈ 26ms of
+                # line time at 9600 baud — a 25ms (40Hz) cadence saturated the
+                # link (>100% utilization), backlogged the OS TX buffer, and
+                # starved the liveness ping's ACK window (false "MCU応答なし"
+                # during VR streaming, 2026-07-17). 30Hz leaves ~25% headroom.
+                if now_m - _LAST_HAND_MONO < 0.034:
                     self._json(429, {"ok": False, "code": "THROTTLED"}); return
                 _LAST_HAND_MONO = now_m
                 try:
