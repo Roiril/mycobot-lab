@@ -150,6 +150,104 @@ def classify_temperature(temp: float) -> str:
         return "warn"
     return "ok"
 
+# --- Auto-follow gate (arm follow mode without a human clicking) --------------
+# Turning follow ON snaps the follower to wherever the leader currently is, at
+# up to MAX_STEP per cycle. That is violent if the two arms are far apart, so an
+# unattended start waits for the operator to bring the leader ONTO the follower's
+# pose first — the same thing a careful human does before clicking the toggle.
+AUTO_FOLLOW_TOL_DEG = 20.0     # per-joint agreement required before engaging
+AUTO_FOLLOW_STILL_DEG = 3.0    # leader must be roughly parked, not swinging through
+AUTO_FOLLOW_HOLD_CYCLES = 5    # consecutive good cycles (rejects a momentary crossing)
+
+
+def deg_to_ticks(deg: float) -> int:
+    return int(round(deg * TICKS_PER_DEG))
+
+
+def pose_gaps(leader_ticks: Dict[str, int], follower_ticks: Dict[str, int],
+              joints: Optional[List[str]] = None) -> Dict[str, int]:
+    """Per-joint |leader - follower| in ticks (pure).
+
+    Both arms report in the same homed tick domain (calibration writes
+    Homing_Offset into each servo's EEPROM), which is what lets the engine feed
+    leader ticks straight into follower goals — so the difference is meaningful.
+    """
+    names = joints or JOINTS
+    return {n: abs(int(leader_ticks[n]) - int(follower_ticks[n]))
+            for n in names if n in leader_ticks and n in follower_ticks}
+
+
+def max_pose_gap(leader_ticks: Dict[str, int], follower_ticks: Dict[str, int],
+                 joints: Optional[List[str]] = None) -> Tuple[Optional[str], int]:
+    """Worst-disagreeing joint and its gap in ticks (pure). ("", 0) if empty."""
+    gaps = pose_gaps(leader_ticks, follower_ticks, joints)
+    if not gaps:
+        return None, 0
+    joint = max(gaps, key=lambda n: gaps[n])
+    return joint, gaps[joint]
+
+
+class AutoFollowGate:
+    """Decides when it is safe to engage follow mode unattended (pure).
+
+    `update` is called once per idle cycle with both arms' present positions and
+    returns True exactly when the arms have agreed, with the leader held still,
+    for `hold_cycles` consecutive calls. `status` carries a Japanese reason for
+    the UI so the operator can see what is still blocking it.
+    """
+
+    def __init__(self, tol_ticks: Optional[int] = None,
+                 still_ticks: Optional[int] = None,
+                 hold_cycles: int = AUTO_FOLLOW_HOLD_CYCLES,
+                 joints: Optional[List[str]] = None):
+        self.tol_ticks = (deg_to_ticks(AUTO_FOLLOW_TOL_DEG)
+                          if tol_ticks is None else int(tol_ticks))
+        self.still_ticks = (deg_to_ticks(AUTO_FOLLOW_STILL_DEG)
+                            if still_ticks is None else int(still_ticks))
+        self.hold_cycles = max(1, int(hold_cycles))
+        self.joints = joints or list(JOINTS)
+        self.reset()
+
+    def reset(self) -> None:
+        self._prev_leader: Optional[Dict[str, int]] = None
+        self.held = 0
+        self.gap_ticks = 0
+        self.gap_joint: Optional[str] = None
+        self.status = "待機中"
+
+    def update(self, leader_ticks: Dict[str, int],
+               follower_ticks: Dict[str, int]) -> bool:
+        joint, gap = max_pose_gap(leader_ticks, follower_ticks, self.joints)
+        self.gap_joint, self.gap_ticks = joint, gap
+        if joint is None:
+            self.held = 0
+            self.status = "姿勢を取得できません"
+            return False
+
+        moved = 0
+        if self._prev_leader is not None:
+            _, moved = max_pose_gap(leader_ticks, self._prev_leader, self.joints)
+        self._prev_leader = dict(leader_ticks)
+
+        gap_deg = gap / TICKS_PER_DEG
+        if gap > self.tol_ticks:
+            self.held = 0
+            self.status = (f"リーダーをフォロワーの姿勢に合わせてください"
+                           f"（最大ずれ {gap_deg:.1f}° / {joint}）")
+            return False
+        if moved > self.still_ticks:
+            self.held = 0
+            self.status = "リーダーが動いています（静止すると開始）"
+            return False
+
+        self.held += 1
+        if self.held < self.hold_cycles:
+            self.status = f"姿勢一致 — 開始待ち {self.held}/{self.hold_cycles}"
+            return False
+        self.status = f"姿勢一致（最大ずれ {gap_deg:.1f}°）"
+        return True
+
+
 CAL_DIR = pathlib.Path.home() / ".cache/huggingface/lerobot/calibration"
 
 

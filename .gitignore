@@ -23,6 +23,7 @@ data/spatial_memory.json
 data/spatial_memory.json.tmp
 data/observation_log.md
 data/current_calibration.json
+data/so101_ports.json
 data/diag_report.json
 data/test_shots/
 data/perceive_log/

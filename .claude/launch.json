@@ -18,6 +18,15 @@
       "port": 8013
     },
     {
+      "name": "so101-follow",
+      "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "scripts/so101_cockpit_server.py",
+        "--auto-follow"
+      ],
+      "port": 8013
+    },
+    {
       "name": "so101-calib",
       "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
       "runtimeArgs": [

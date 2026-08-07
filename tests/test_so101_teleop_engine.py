@@ -18,6 +18,7 @@ from robots.so101.teleop_engine import (
     RELAX_ORDER,
     classify_voltage, classify_temperature,
     VOLT_WARN_V, VOLT_DEMOTE_V, TEMP_WARN_C, TEMP_DEMOTE_C,
+    AutoFollowGate, deg_to_ticks, pose_gaps, max_pose_gap, AUTO_FOLLOW_TOL_DEG,
 )
 
 
@@ -342,6 +343,91 @@ class TestTripWireThresholds(unittest.TestCase):
         # collapse (a demote would never be preceded by a warn).
         self.assertLess(VOLT_DEMOTE_V, VOLT_WARN_V)
         self.assertGreater(TEMP_DEMOTE_C, TEMP_WARN_C)
+
+
+# ---------------------------------------------------------------------------
+def pose(**over):
+    """A both-arms pose: every joint at 2048 unless overridden (in ticks)."""
+    p = {n: 2048 for n in JOINTS}
+    p.update(over)
+    return p
+
+
+class TestPoseGap(unittest.TestCase):
+    def test_worst_joint_is_reported(self):
+        joint, gap = max_pose_gap(pose(elbow_flex=2148, gripper=2078), pose())
+        self.assertEqual(joint, "elbow_flex")
+        self.assertEqual(gap, 100)
+
+    def test_gap_is_unsigned(self):
+        self.assertEqual(pose_gaps(pose(wrist_roll=1948), pose())["wrist_roll"], 100)
+
+    def test_identical_poses_have_no_gap(self):
+        self.assertEqual(max_pose_gap(pose(), pose()), ("shoulder_pan", 0))
+
+    def test_missing_joints_are_skipped_not_faked(self):
+        self.assertEqual(max_pose_gap({}, {}), (None, 0))
+
+
+class TestAutoFollowGate(unittest.TestCase):
+    def make(self, **kw):
+        kw.setdefault("tol_ticks", deg_to_ticks(20.0))
+        kw.setdefault("hold_cycles", 3)
+        return AutoFollowGate(**kw)
+
+    def feed(self, gate, leader, follower, times):
+        """Run `times` identical cycles, returning each engage decision."""
+        return [gate.update(leader, follower) for _ in range(times)]
+
+    def test_engages_after_the_hold_period_once_the_arms_agree(self):
+        gate = self.make()
+        # first cycle has no previous leader sample, so stillness is unknown-good
+        self.assertEqual(self.feed(gate, pose(), pose(), 3), [False, False, True])
+
+    def test_a_gap_beyond_tolerance_never_engages(self):
+        gate = self.make()
+        far = pose(shoulder_lift=2048 + deg_to_ticks(45))
+        self.assertNotIn(True, self.feed(gate, far, pose(), 20))
+        self.assertIn("shoulder_lift", gate.status)   # tells the operator where
+
+    def test_a_leader_swinging_through_the_pose_does_not_engage(self):
+        gate = self.make()
+        moving = deg_to_ticks(10)      # per-cycle motion, well over the still limit
+        engaged = [gate.update(pose(wrist_flex=2048 + i * moving), pose())
+                   for i in range(3)]
+        self.assertNotIn(True, engaged)
+        self.assertIn("動いています", gate.status)
+
+    def test_the_hold_restarts_when_the_arms_drift_apart(self):
+        gate = self.make()
+        self.feed(gate, pose(), pose(), 2)                 # nearly there
+        gate.update(pose(elbow_flex=2048 + deg_to_ticks(40)), pose())   # broken
+        self.assertEqual(gate.held, 0)
+        self.assertEqual(self.feed(gate, pose(), pose(), 2), [False, False])
+
+    def test_engaging_is_a_one_shot_per_reset(self):
+        # the cockpit disarms on engage; a re-armed gate must earn it again
+        gate = self.make()
+        self.feed(gate, pose(), pose(), 3)
+        gate.reset()
+        self.assertEqual(gate.held, 0)
+        self.assertEqual(self.feed(gate, pose(), pose(), 3), [False, False, True])
+
+    def test_tolerance_boundary_is_inclusive(self):
+        gate = self.make(tol_ticks=100, hold_cycles=1)
+        self.assertTrue(gate.update(pose(gripper=2148), pose()))
+        gate.reset()
+        self.assertFalse(gate.update(pose(gripper=2149), pose()))
+
+    def test_status_reports_the_gap_in_degrees(self):
+        gate = self.make()
+        gate.update(pose(elbow_flex=2048 + deg_to_ticks(45)), pose())
+        self.assertIn("45.0°", gate.status)
+
+    def test_defaults_are_a_usable_window(self):
+        gate = AutoFollowGate()
+        self.assertEqual(gate.tol_ticks, deg_to_ticks(AUTO_FOLLOW_TOL_DEG))
+        self.assertLess(gate.still_ticks, gate.tol_ticks)
 
 
 if __name__ == "__main__":

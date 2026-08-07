@@ -11,8 +11,14 @@
     hand     :8001  python  scripts\server.py --offline --real-hand        (COM9 5-finger hand)
     home     :8010  python  scripts\home_server.py                         (launcher)
 
-  SO-101 follow (teleop) is NOT auto-enabled — turn it on from the cockpit toggle
-  (safety: no unattended motion at boot).
+  SO-101 follow (teleop) is NOT auto-enabled by default — turn it on from the
+  cockpit toggle (safety: no unattended motion at boot). -AutoFollow arms it
+  instead: the cockpit starts following by itself once the leader is brought onto
+  the follower's pose. The cockpit identifies both COM ports by measurement and
+  waits for the USB, so it can be started before the arms are plugged in.
+
+.PARAMETER AutoFollow
+  Arm SO-101 follow mode at boot (engages on pose match, not immediately).
 
 .PARAMETER NoDeploy
   Start the servers but skip the Quest deploy step.
@@ -21,9 +27,10 @@
   Pass --dry-run to deploy_hand.py (print the adb/CDP plan, touch no device).
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File scripts\teleop_all.ps1
+  powershell -ExecutionPolicy Bypass -File scripts\teleop_all.ps1 -AutoFollow
 #>
 param(
+  [switch]$AutoFollow,
   [switch]$NoDeploy,
   [switch]$DryRunDeploy
 )
@@ -73,7 +80,9 @@ Write-Host "== VR teleop suite bring-up ==" -ForegroundColor White
 # 1. SO-101 cockpit (needs the lerobot venv). Skips itself if the venv is absent.
 $venvPy = Join-Path $root '.venv-so101\Scripts\python.exe'
 if (Test-Path $venvPy) {
-  Start-Server -Name 'cockpit' -Port 8013 -Exe $venvPy -ExeArgs @('scripts\so101_cockpit_server.py')
+  $cockpitArgs = @('scripts\so101_cockpit_server.py')
+  if ($AutoFollow) { $cockpitArgs += '--auto-follow' }
+  Start-Server -Name 'cockpit' -Port 8013 -Exe $venvPy -ExeArgs $cockpitArgs
 } else {
   if (Test-PortListening -Port 8013) {
     Write-Host "  [skip ] cockpit  already up on :8013" -ForegroundColor DarkGray
@@ -126,5 +135,10 @@ Write-Host "  hand teleop (/hand) http://localhost:8001/hand"
 Write-Host "  SO-101 cockpit      http://localhost:8013/"
 Write-Host ""
 Write-Host "  On each Quest: open the tab, tap 「VR 開始」, show your right hand." -ForegroundColor White
-Write-Host "  SO-101 follow (teleop) ON  =  toggle it in the cockpit (:8013) — not auto-started." -ForegroundColor White
+if ($AutoFollow) {
+  Write-Host "  SO-101 follow: ARMED — リーダーをフォロワーの姿勢に合わせると自動で追従を開始します。" -ForegroundColor White
+} else {
+  Write-Host "  SO-101 follow (teleop) ON  =  toggle it in the cockpit (:8013) — not auto-started." -ForegroundColor White
+  Write-Host "  （挿したらすぐ追従させたいときは -AutoFollow を付けて起動）" -ForegroundColor DarkGray
+}
 Write-Host "  Two headsets share /hand/fingers latest-wins (no exclusion). See docs/VR_TELEOP.md."

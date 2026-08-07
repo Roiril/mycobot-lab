@@ -133,7 +133,8 @@ h2 .arm-name{color:var(--text);font-size:var(--fs-sm)}
 
   <div id="teleopRow">
     <button id="teleopBtn" class="toggle">追従モード</button>
-    <span class="desc">ON でフォロワーがリーダーを追従（トルク上限・15°/step クランプ付き）。
+    <button id="autoBtn" class="toggle" title="リーダーをフォロワーの姿勢に合わせると自動で追従を開始">自動追従</button>
+    <span id="teleopDesc" class="desc">ON でフォロワーがリーダーを追従（トルク上限・15°/step クランプ付き）。
       OFF でその場の姿勢を保持。個別ジョグは OFF のときだけ有効。</span>
     <span class="spacer"></span>
     <div id="profileGroup">
@@ -155,7 +156,7 @@ h2 .arm-name{color:var(--text);font-size:var(--fs-sm)}
 
   <div id="arms">
     <div class="panel" id="leaderPanel">
-      <h2><span class="arm-name">🎮 リーダー（COM14 / 7.4V系）</span><span id="leaderVolt" class="badge gray">--V</span></h2>
+      <h2><span class="arm-name">🎮 リーダー（<span id="leaderPort">検出中</span> / 7.4V系）</span><span id="leaderVolt" class="badge gray">--V</span></h2>
       <div id="leaderJoints"></div>
       <div class="armfoot">
         <button class="sm" data-arm="leader" data-tq="0">全脱力</button>
@@ -164,7 +165,7 @@ h2 .arm-name{color:var(--text);font-size:var(--fs-sm)}
       </div>
     </div>
     <div class="panel" id="followerPanel">
-      <h2><span class="arm-name">🦾 フォロワー（COM13 / 12V）</span><span id="followerVolt" class="badge gray">--V</span></h2>
+      <h2><span class="arm-name">🦾 フォロワー（<span id="followerPort">検出中</span> / 12V）</span><span id="followerVolt" class="badge gray">--V</span></h2>
       <div id="followerJoints"></div>
       <div class="armfoot">
         <button class="sm" data-arm="follower" data-tq="0">全脱力</button>
@@ -186,7 +187,8 @@ const JLABEL={shoulder_pan:"土台 pan",shoulder_lift:"肩 lift",elbow_flex:"肘
   wrist_flex:"手首 flex",wrist_roll:"手首 roll",gripper:"グリッパ"};
 const deg=r=>((r-2048)*360/4096);
 const fmt=r=>deg(r).toFixed(1);
-let ranges=null, teleop=false, dragging=null;
+let ranges=null, teleop=false, autoArmed=false, dragging=null;
+const TELEOP_DESC=document.getElementById("teleopDesc").textContent;
 
 function post(path,body){return fetch(path,{method:"POST",body:JSON.stringify(body||{})});}
 
@@ -215,6 +217,7 @@ function buildJoints(arm){
 buildJoints("leader"); buildJoints("follower");
 
 document.getElementById("teleopBtn").onclick=()=>post("/teleop",{on:!teleop});
+document.getElementById("autoBtn").onclick=()=>post("/auto_follow",{on:!autoArmed});
 document.getElementById("profFull").onclick=()=>post("/torque_profile",{profile:"full"});
 document.getElementById("profSafe").onclick=()=>post("/torque_profile",{profile:"safe"});
 document.getElementById("abortBtn").onclick=()=>post("/abort",{});
@@ -256,6 +259,27 @@ function paintArm(arm,data){
   document.getElementById(arm+"Meta").textContent=`max ${tmax}℃ / ${imax}mA`;
 }
 
+function paintPorts(st){
+  const p=st.ports||{};
+  for(const arm of ["leader","follower"]){
+    const el=document.getElementById(arm+"Port");
+    const dev=p[arm]||"検出中";
+    // 実測（電圧）で確定したポートだけ無印。記憶や手動指定は要確認として出す。
+    el.textContent=p[arm]?(p.confirmed?dev:dev+"?"):dev;
+    el.title=p.detail||"";
+  }
+}
+
+function paintAuto(st){
+  const a=st.auto_follow||{};
+  autoArmed=!!a.armed;
+  const btn=document.getElementById("autoBtn");
+  btn.classList.toggle("active",autoArmed);
+  btn.textContent=autoArmed?"自動追従 待機中":"自動追従";
+  document.getElementById("teleopDesc").textContent=
+    (autoArmed&&a.status)?a.status:TELEOP_DESC;
+}
+
 function paintProfile(st){
   const eng=st.engine||{};
   const prof=st.torque_profile||eng.torque_profile||"full";
@@ -277,8 +301,10 @@ async function poll(){
     ranges=st.ranges||ranges;
     teleop=st.teleop;
     const cb=document.getElementById("connBadge");
-    cb.textContent=st.connected?"接続OK":"バス断";
-    cb.className="badge "+(st.connected?"ok":"err");
+    // ポート未検出はまだ「切れた」のではなく「まだ挿さっていない」
+    const waiting=!st.connected&&!(st.ports&&st.ports.leader);
+    cb.textContent=st.connected?"接続OK":(waiting?"USB 待機中":"バス断");
+    cb.className="badge "+(st.connected?"ok":(waiting?"warn":"err"));
     const tb=document.getElementById("teleopBadge");
     tb.textContent=st.teleop?"追従 ON":"追従 OFF";
     tb.className="badge "+(st.teleop?"accent":"gray");
@@ -287,6 +313,8 @@ async function poll(){
     btn.textContent=st.teleop?"追従モード ON":"追従モード";
     document.querySelectorAll("#followerJoints input[type=range]").forEach(s=>s.disabled=st.teleop);
     paintProfile(st);
+    paintPorts(st);
+    paintAuto(st);
     if(st.leader)paintArm("leader",st.leader);
     if(st.follower)paintArm("follower",st.follower);
     document.getElementById("log").innerHTML=(st.log||[]).map(

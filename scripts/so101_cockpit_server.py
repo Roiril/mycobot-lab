@@ -17,7 +17,13 @@ safety pipeline lives in src/robots/so101/teleop_engine.py, shared with the CLI
 (scripts/so101_teleop.py) so there is one definition of the caps, smoothing and
 stepping logic.
 
+Both COM ports are identified by measurement (src/robots/so101/ports.py), not
+by number: the two arms carry the same USB chip, so a hard-coded pair silently
+swaps roles when Windows renumbers them. The worker waits for the cables, so the
+server can be started before anything is plugged in.
+
 Run:  .venv-so101\\Scripts\\python.exe scripts\\so101_cockpit_server.py
+      ... --auto-follow      # follow engages by itself once the arms agree
 Open: http://localhost:8013/
 """
 from __future__ import annotations
@@ -38,8 +44,10 @@ sys.path.insert(0, str(ROOT / "src"))
 from robots.so101.teleop_engine import (
     TeleopEngine, TeleopConfig, JOINTS, make_bus, load_ranges,
     classify_voltage, classify_temperature,
+    AutoFollowGate, deg_to_ticks, AUTO_FOLLOW_TOL_DEG, TICKS_PER_DEG,
     VOLT_WARN_V, VOLT_DEMOTE_V, TEMP_WARN_C, TEMP_DEMOTE_C,
 )
+from robots.so101 import ports as so101_ports
 
 HERE = pathlib.Path(__file__).resolve().parent
 UI_HTML = HERE / "so101_cockpit.html"
@@ -140,6 +148,10 @@ STATE = {
     "connected": False, "teleop": False, "error": "", "log": [],
     "leader": {}, "follower": {}, "hz": 0.0, "engine": {},
     "torque_profile": "full", "demote_reason": "",
+    "ports": {"leader": "", "follower": "", "source": "", "confirmed": False,
+              "detail": "検出中…"},
+    "auto_follow": {"enabled": False, "armed": False, "status": "無効",
+                    "gap_deg": 0.0, "gap_joint": "", "tol_deg": AUTO_FOLLOW_TOL_DEG},
 }
 
 
@@ -149,29 +161,79 @@ def log(msg: str):
         del STATE["log"][:-40]
 
 
-def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
+def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
+           auto_follow: bool = False, tol_deg: float = AUTO_FOLLOW_TOL_DEG,
+           stop: threading.Event = None):
     ranges = load_ranges(log)
     telemetry = {a: {n: {"pos": 0, "volt": 0.0, "temp": 0, "cur": 0, "torque": 0}
                      for n in JOINTS} for a in ("leader", "follower")}
     engine = None
     leader = follower = None
+    roles = None    # resolved so101_ports.Roles (which COM is which arm)
     slow_idx = 0    # round-robin (arm, joint) for slow telemetry reads
     cycle = 0
     # trip-wire edge state: last classified level so WARN/DEMOTE logs fire once
     # on transition instead of every round-robin pass through the same joint.
     trip = {"volt": "ok", "temp": {n: "ok" for n in JOINTS}}
 
+    # Auto-follow: `enabled` is the CLI choice (never changes), `armed` is the
+    # live state — it drops on any operator stop (toggle off / ABORT / relax) and
+    # on a bus dropout, so nothing re-engages motion behind the operator's back.
+    gate = AutoFollowGate(tol_ticks=deg_to_ticks(tol_deg))
+    auto = {"enabled": bool(auto_follow), "armed": bool(auto_follow)}
+    stopping = (lambda: False) if stop is None else stop.is_set
+
+    def publish_auto(status: str = None):
+        with LOCK:
+            STATE["auto_follow"] = {
+                "enabled": auto["enabled"], "armed": auto["armed"],
+                "status": status if status is not None else gate.status,
+                "gap_deg": round(gate.gap_ticks / TICKS_PER_DEG, 1),
+                "gap_joint": gate.gap_joint or "",
+                "tol_deg": tol_deg,
+            }
+
+    def disarm_auto(why: str):
+        if auto["armed"]:
+            auto["armed"] = False
+            gate.reset()
+            log(f"自動追従を解除（{why}）")
+        publish_auto("解除中 — 「追従モード」か「自動追従」で再開")
+
+    publish_auto("待機中" if auto["enabled"] else "無効")
+
+    def ensure_roles():
+        """Identify which COM port is which arm, waiting for the USB if needed."""
+        nonlocal roles
+        if roles is not None:
+            return
+        roles = so101_ports.wait_for_ports(leader_arg, follower_arg, log=log, poll=2.0,
+                                           should_stop=stopping)
+        with LOCK:
+            STATE["ports"] = {"leader": roles.leader, "follower": roles.follower,
+                              "source": roles.source, "confirmed": roles.confirmed,
+                              "detail": roles.detail}
+        if auto["armed"] and not roles.confirmed:
+            # A remembered (or asserted) mapping can be wrong if the cables were
+            # swapped, and a swapped mapping drives the LEADER. Require a human.
+            auto["armed"] = False
+            log("⚠ ポートを実測で確定できていないため自動追従は開始しません"
+                "（役割を確認して手動で ON にしてください）")
+            publish_auto("ポート未確定 — 手動で確認してください")
+
     def connect_all():
         nonlocal leader, follower, engine
-        leader = make_bus(leader_port)
+        ensure_roles()
+        leader = make_bus(roles.leader)
         leader.connect(handshake=False)
-        follower = make_bus(follower_port)
+        follower = make_bus(roles.follower)
         follower.connect(handshake=False)
         if engine is None:
             engine = TeleopEngine(leader, follower, ranges, config=cfg, log=log)
         else:
             engine.rebind(leader, follower)
         engine.apply_follower_caps()
+        gate.reset()
 
     def set_follower_torque(joint: str, on: bool):
         engine.set_follower_torque(joint, on)
@@ -180,15 +242,26 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
     # 初回接続はリトライループ（電圧エラーラッチ等は電源挿し直しで直るため、
     # プロセス再起動なしで復帰できるようにする）
     first_fail = True
-    while True:
+    fails = 0
+    while not stopping():
         try:
             connect_all()
             with LOCK:
                 STATE["connected"] = True
                 STATE["error"] = ""
             log("両アーム接続 OK")
+            if auto["armed"]:
+                log(f"自動追従: 待機中 — リーダーをフォロワーの姿勢に合わせると"
+                    f"（各関節 {tol_deg:g}° 以内）自動で追従を開始します")
             break
         except Exception as e:
+            if stopping():
+                return
+            fails += 1
+            if fails >= 2:
+                # COM numbers move when a cable is replugged; re-identify rather
+                # than retry a port that may no longer be the arm we think.
+                roles = None
             msg = str(e)
             if "Input voltage error" in msg:
                 # サーボ EEPROM の Max_Voltage(addr14)/Min_Voltage(addr15) を実電圧が
@@ -211,7 +284,7 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                     pass
             time.sleep(5.0)
 
-    while True:
+    while not stopping():
         cycle_start = time.perf_counter()
         try:
             # ---- commands -------------------------------------------------
@@ -227,9 +300,21 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                         for n in JOINTS:
                             telemetry["follower"][n]["torque"] = 1
                         log("追従モード ON")
+                        auto["armed"] = False      # already following
+                        publish_auto("追従中")
                     else:
                         engine.stop_teleop()       # freeze (torque stays on)
                         log("追従モード OFF（姿勢保持）")
+                        disarm_auto("手動 OFF")
+                elif op == "auto_follow":
+                    if bool(cmd.get("on")):
+                        auto["armed"] = True
+                        gate.reset()
+                        log(f"自動追従を待機 — リーダーをフォロワーの姿勢に"
+                            f"合わせると開始（各関節 {tol_deg:g}° 以内）")
+                        publish_auto()
+                    else:
+                        disarm_auto("手動解除")
                 elif op == "jog" and not engine.active:
                     n = cmd["joint"]
                     lo, hi = ranges[n]
@@ -265,6 +350,7 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                 elif op == "abort":
                     engine.stop_teleop()
                     log("⛔ ABORT — 追従停止・姿勢凍結")
+                    disarm_auto("ABORT")
                 elif op == "relax":
                     # 冷却モード: 追従OFF + フォロワー全関節トルクOFF（先端→根元）。
                     # freeze はしない（トルクを切るので姿勢保持は無意味）。
@@ -273,6 +359,7 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                     for n in JOINTS:
                         telemetry["follower"][n]["torque"] = 0
                     log("脱力完了。復帰は追従ON か各関節トルクスイッチで")
+                    disarm_auto("脱力")
 
             # ---- fast telemetry: leader positions (teleop input + display) -
             lead = engine.read_leader()
@@ -292,6 +379,19 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                 fpos = engine.read_follower_present()
                 for n in JOINTS:
                     telemetry["follower"][n]["pos"] = fpos[n]
+                # armed auto-follow: engage once the operator has brought the
+                # leader onto the follower's pose and holds it there, so follow
+                # mode starts from agreement instead of snapping across a gap.
+                if auto["armed"]:
+                    if gate.update(lead, fpos):
+                        engine.start_teleop()
+                        for n in JOINTS:
+                            telemetry["follower"][n]["torque"] = 1
+                        auto["armed"] = False
+                        log(f"▶ 自動追従 ON — {gate.status}")
+                        publish_auto("追従中")
+                    else:
+                        publish_auto()
 
             # ---- slow telemetry: V / temp / current, one motor per N cycles-
             if cycle % TELEMETRY_EVERY == 0:
@@ -351,6 +451,7 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
             with LOCK:
                 STATE["connected"] = False
                 STATE["error"] = str(e)
+            disarm_auto("バス断")
             if engine is not None:
                 engine.active = False
                 # a bus dropout is itself a brownout symptom: demote to safe so
@@ -373,6 +474,7 @@ def worker(leader_port: str, follower_port: str, cfg: TeleopConfig):
                 log("再接続 OK（追従モードは安全のため OFF）")
             except Exception as e2:
                 log(f"再接続失敗: {e2}")
+                roles = None      # cable may have moved: re-identify next try
                 time.sleep(2.0)
         except Exception as e:
             with LOCK:
@@ -426,7 +528,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         ops = {"/teleop": "teleop", "/jog": "jog", "/torque": "torque",
                "/torque_profile": "torque_profile", "/abort": "abort",
-               "/relax": "relax"}
+               "/relax": "relax", "/auto_follow": "auto_follow"}
         op = ops.get(path)
         if op is None:
             self._send(404, b'{"error":"not found"}')
@@ -486,19 +588,28 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--leader-port", default="COM14")
-    ap.add_argument("--follower-port", default="COM13")
+    ap.add_argument("--leader-port", default="auto",
+                    help="COM port of the leader arm, or 'auto' to identify it")
+    ap.add_argument("--follower-port", default="auto",
+                    help="COM port of the follower arm, or 'auto' to identify it")
     ap.add_argument("--http-port", type=int, default=8013)
     ap.add_argument("--fps", type=float, default=60.0, help="teleop target rate (Hz)")
+    ap.add_argument("--auto-follow", action="store_true",
+                    help="arm follow mode at boot: engages by itself once the "
+                         "leader is brought onto the follower's pose")
+    ap.add_argument("--auto-follow-tol-deg", type=float, default=AUTO_FOLLOW_TOL_DEG,
+                    help="per-joint agreement required before auto-engaging")
     args = ap.parse_args()
 
     cfg = TeleopConfig(target_hz=args.fps)
     threading.Thread(target=worker,
-                     args=(args.leader_port, args.follower_port, cfg),
+                     args=(args.leader_port, args.follower_port, cfg,
+                           args.auto_follow, args.auto_follow_tol_deg),
                      daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", args.http_port), Handler)
     print(f"[SO-101 COCKPIT] leader={args.leader_port} follower={args.follower_port} "
-          f"target={args.fps}Hz -> http://127.0.0.1:{args.http_port}/")
+          f"target={args.fps}Hz auto_follow={'ON' if args.auto_follow else 'OFF'}"
+          f" -> http://127.0.0.1:{args.http_port}/")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

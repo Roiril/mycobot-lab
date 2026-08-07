@@ -192,9 +192,9 @@ ui.html と同じ。PWA 対応（`<title>ロボットハンド操作` + manifest
 
 ハンド teleop と **SO-101 リーダー/フォロワー追従は独立に並行できる**。両者は別プロセス・別ハード：
 
-- SO-101 teleop は cockpit（:8013, `.venv-so101`）内で完結し **Quest 非依存**（PC 内の COM13/COM14 のみ）。
+- SO-101 teleop は cockpit（:8013, `.venv-so101`）内で完結し **Quest 非依存**（PC 内の 2 本の COM のみ。番号は固定せず電圧で判別 → [ports.py](../src/robots/so101/ports.py)）。
 - ハンドは hand server（:8001, `--offline --real-hand`）が COM9 の実5指ハンドを駆動。Quest の WebXR から操作。
-- 同時起動はワンコマンド [scripts/teleop_all.ps1](../scripts/teleop_all.ps1)（cockpit + hand + home を上げ、Quest 2台へ `/hand` を配備）。**SO-101 follow は自動 ON にしない** — 安全のためコックピットのトグルで明示的に開始する。
+- 同時起動はワンコマンド [scripts/teleop_all.ps1](../scripts/teleop_all.ps1)（cockpit + hand + home を上げ、Quest 2台へ `/hand` を配備）。**SO-101 follow は既定では自動 ON にしない** — コックピットのトグルで明示的に開始する。`-AutoFollow` を付けると待機状態で起動し、リーダーをフォロワーの姿勢に合わせた時点で追従が始まる（姿勢が離れたままでは開始しない）。
 
 ### 2台同時装着（Quest ×2）
 

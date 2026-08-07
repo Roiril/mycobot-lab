@@ -6,6 +6,10 @@ smoothing, last-goal stepping, brownout-safe staged torque). This drives the
 raw FeetechMotorsBus directly (no lerobot SO101Leader/Follower wrappers) so the
 follower path is byte-identical to the cockpit.
 
+Ports are identified by measurement (src/robots/so101/ports.py) rather than by
+number, and the run waits for the leader to be parked on the follower's pose
+before engaging, so following starts from agreement instead of a snap.
+
 Run:  .venv-so101\\Scripts\\python.exe scripts\\so101_teleop.py
 Stop: Ctrl+C (follower torque is released on exit)
 """
@@ -19,9 +23,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from robots.so101.teleop_engine import (
-    TeleopEngine, TeleopConfig, OneEuroConfig,
-    make_bus, load_ranges, TICKS_PER_DEG,
+    TeleopEngine, TeleopConfig, OneEuroConfig, AutoFollowGate, deg_to_ticks,
+    make_bus, load_ranges, TICKS_PER_DEG, AUTO_FOLLOW_TOL_DEG,
 )
+from robots.so101 import ports as so101_ports
 
 
 def _connect(leader_port: str, follower_port: str):
@@ -32,10 +37,32 @@ def _connect(leader_port: str, follower_port: str):
     return leader, follower
 
 
+def _wait_for_pose_match(engine: TeleopEngine, gate: AutoFollowGate) -> None:
+    """Hold until the leader is parked on the follower's pose.
+
+    Follow mode snaps the follower to the leader, so starting from a wide gap is
+    a violent move. Printing the worst joint tells the operator which way to
+    move the leader instead of leaving them guessing.
+    """
+    last = ""
+    while True:
+        lead = engine.read_leader()
+        foll = engine.read_follower_present()
+        if gate.update(lead, foll):
+            print(f"[teleop] {gate.status} — 追従開始")
+            return
+        if gate.status != last:
+            print(f"[teleop] {gate.status}")
+            last = gate.status
+        time.sleep(0.05)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--leader-port", default="COM14")
-    ap.add_argument("--follower-port", default="COM13")
+    ap.add_argument("--leader-port", default="auto",
+                    help="COM port of the leader arm, or 'auto' to identify it")
+    ap.add_argument("--follower-port", default="auto",
+                    help="COM port of the follower arm, or 'auto' to identify it")
     ap.add_argument("--fps", type=float, default=60.0, help="target loop rate (Hz)")
     ap.add_argument("--max-step", type=float, default=15.0,
                     help="max follower move per cycle, in degrees")
@@ -45,6 +72,10 @@ def main():
                     help="One-Euro beta; higher = less lag when moving fast")
     ap.add_argument("--torque-profile", choices=["full", "safe"], default="full",
                     help="follower torque caps: full (max, normal) | safe (demoted)")
+    ap.add_argument("--tol-deg", type=float, default=AUTO_FOLLOW_TOL_DEG,
+                    help="per-joint agreement required before follow starts")
+    ap.add_argument("--no-pose-gate", action="store_true",
+                    help="start following immediately, however far apart the arms are")
     args = ap.parse_args()
 
     cfg = TeleopConfig(
@@ -53,14 +84,19 @@ def main():
         torque_profile=args.torque_profile,
         one_euro=OneEuroConfig(min_cutoff=args.min_cutoff, beta=args.beta),
     )
-    ranges = load_ranges(log=lambda m: print(f"[teleop] {m}"))
+    say = lambda m: print(f"[teleop] {m}")            # noqa: E731
+    ranges = load_ranges(log=say)
 
-    leader, follower = _connect(args.leader_port, args.follower_port)
-    engine = TeleopEngine(leader, follower, ranges, config=cfg,
-                          log=lambda m: print(f"[teleop] {m}"))
+    # Identify the arms by measurement — the two boards share a USB id, so a
+    # fixed COM pair can silently swap and drive the leader.
+    roles = so101_ports.wait_for_ports(args.leader_port, args.follower_port, log=say)
+    leader, follower = _connect(roles.leader, roles.follower)
+    engine = TeleopEngine(leader, follower, ranges, config=cfg, log=say)
+    if not args.no_pose_gate:
+        _wait_for_pose_match(engine, AutoFollowGate(tol_ticks=deg_to_ticks(args.tol_deg)))
     engine.start_teleop()
 
-    print(f"[teleop] leader={args.leader_port} follower={args.follower_port} "
+    print(f"[teleop] leader={roles.leader} follower={roles.follower} "
           f"target={args.fps}Hz max_step={args.max_step}deg "
           f"({cfg.max_step_ticks}tk) min_cutoff={args.min_cutoff} beta={args.beta} "
           f"torque_profile={args.torque_profile}")
@@ -88,7 +124,7 @@ def main():
                         pass
                 time.sleep(0.5)
                 try:
-                    leader, follower = _connect(args.leader_port, args.follower_port)
+                    leader, follower = _connect(roles.leader, roles.follower)
                     engine.rebind(leader, follower)
                     engine.start_teleop()
                     print("[teleop] reconnected")

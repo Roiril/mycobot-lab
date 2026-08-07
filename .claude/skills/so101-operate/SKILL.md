@@ -30,6 +30,27 @@ SO-101 は myCobot とは**完全に別系統**（lerobot / 別 venv / 別サー
 
 UTF-8 強制（cp932 文字化け防止）: コマンド前に `PYTHONIOENCODING=utf-8`。
 
+## 1.5 リーダー→フォロワー追従（挿したらすぐ動かす）
+
+```powershell
+.venv-so101\Scripts\python.exe scripts\so101_cockpit_server.py --auto-follow   # → :8013
+# 3ロボットまとめて: powershell -ExecutionPolicy Bypass -File scripts\teleop_all.ps1 -AutoFollow
+```
+
+- **USB を挿す前に起動してよい**。ポートが見つかるまで 2 秒おきに再検出して待つ（コックピットの
+  バッジが「USB 待機中」）。
+- **COM 番号は書かない**。2台とも同じ CH343 なので番号は入れ替わりうる。
+  `src/robots/so101/ports.py` が各ポートのサーボ電圧を読んで **12V=フォロワー / 7.4V系=リーダー**
+  と判定する。判別できなければ**動かさずに拒否**する（取り違えるとリーダーにトルクが入る）。
+  確定した対応は `data/so101_ports.json` に USB 位置で記憶し、電圧で決まらない時だけ
+  フォールバックに使う（この時は自動追従しない＝手動確認が要る）。
+- `--auto-follow` は**即座に追従を始めない**。リーダーをフォロワーの姿勢に合わせて静止させると
+  （全関節 20° 以内）そこで追従が始まる。離れた姿勢のまま ON にすると突進するため。
+  ずれている間はコックピットに「最大ずれ 34.2° / elbow_flex」と出るので、その関節を合わせる。
+- 追従を止める操作（トグル OFF・ABORT・脱力・バス断）は**自動追従も解除**する。
+  再開はコックピットの「自動追従」ボタン。許容角は `--auto-follow-tol-deg`。
+- CLI 版も同じ（`scripts/so101_teleop.py`。姿勢合わせを飛ばすなら `--no-pose-gate`）。
+
 ## 2. 実機を起動して動かす
 
 ```powershell

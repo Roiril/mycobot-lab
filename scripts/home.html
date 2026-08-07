@@ -75,8 +75,8 @@ footer code{font-family:var(--font-mono)}
   </header>
   <div id="cards"></div>
   <footer>
-    ⚠ 排他まとめ: <code>:8001</code> は launch 構成のうち1つだけ / SO-101 の COM13 は
-    「統合サーバ(real)・校正・コックピット・CLI teleop」のどれか1つだけが掴める（コックピットは COM14 も）。
+    ⚠ 排他まとめ: <code>:8001</code> は launch 構成のうち1つだけ / SO-101 のフォロワー COM は
+    「統合サーバ(real)・校正・コックピット・CLI teleop」のどれか1つだけが掴める（コックピットはリーダー側も掴む）。
     このホーム自体は <code>python scripts/home_server.py</code>（:8010、どの env でも可）。
   </footer>
 </div>
@@ -97,9 +97,9 @@ const CARDS=[
  {sec:"SO-101 リーダー/フォロワー（.venv-so101 必須）"},
  {name:"SO-101 コックピット",icon:"🎮",probe:["8013"],
   urls:{ "8013":"http://localhost:8013/" },
-  desc:"リーダー/フォロワー全モーター監視・追従モード・個別ジョグ・トルク・ABORT。",
-  cmd:".venv-so101\\Scripts\\python.exe scripts\\so101_cockpit_server.py",
-  note:"COM13 + COM14 を排他占有（統合サーバ real / 校正と同時起動不可）"},
+  desc:"リーダー/フォロワー全モーター監視・追従モード・個別ジョグ・トルク・ABORT。COM は電圧で自動判別（12V=フォロワー / 7.4V系=リーダー）、USB 未接続なら挿すまで待つ。",
+  cmd:".venv-so101\\Scripts\\python.exe scripts\\so101_cockpit_server.py --auto-follow",
+  note:"--auto-follow を付けると、リーダーをフォロワーの姿勢に合わせた時点で追従が自動で始まる。両アームの COM を排他占有（統合サーバ real / 校正と同時起動不可）"},
  {name:"SO-101 校正 GUI",icon:"📐",probe:["8012"],
   urls:{ "8012":"http://localhost:8012/" },
   desc:"中立セット → 全関節スイープ記録 → lerobot 校正ファイル保存（ライブ進捗バー）。",
