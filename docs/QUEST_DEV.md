@@ -91,6 +91,9 @@ S=2G0YC1ZF7S06BW
 ```
 
 - **順番が大事**: USB が生きているうちに tcpip → connect → reverse まで通し、**確認してから抜く**。
+- ⚠ **USB を抜くと Wi-Fi 側に張った reverse も消える**（2026-08-07 実測）。先に Wi-Fi へ移してあっても
+  抜いた直後は `reverse --list` が空になるので、**抜いたあとにもう一度張り直す**:
+  `"$ADB" -s <ip>:5555 reverse tcp:8001 tcp:8001`。張り直せば以降はケーブル無しで維持される。
 - 疎通確認に `adb shell curl` / `toybox wget` は使えない（Quest に無い）。**PC 側で
   `Get-NetTCPConnection -LocalPort 8001` を見る**（トンネル経由なので相手は 127.0.0.1 に見える）か、
   `hand_launch` の戻りが `already_native` になることで前面動作を確認する。
