@@ -192,6 +192,17 @@ class TestSickMotorDoesNotFreezeTheCockpit(unittest.TestCase):
             # its healthy neighbours stay live
             self.assertFalse(st["follower"]["shoulder_pan"].get("stale"))
 
+    def test_a_whole_arm_going_silent_is_reported_as_disconnected(self):
+        # isolating one sick motor must not hide an unplugged cable: every joint
+        # silent means the arm is gone, and saying "接続OK" then is a lie
+        with WorkerHarness(auto_follow=True) as h:
+            self.assertIsNotNone(h.wait_until(lambda s: s["teleop"]))
+            h.follower.sick.update(JOINTS)
+            st = h.wait_until(lambda s: not s["connected"], timeout=6.0)
+            self.assertIsNotNone(st, "a fully silent arm still reported connected")
+            self.assertFalse(st["teleop"], "kept following an unreachable arm")
+            self.assertIn("follower", st["error"])
+
     def test_the_repeated_error_does_not_flush_the_log(self):
         with WorkerHarness() as h:
             self.assertIsNotNone(h.wait_until(lambda s: s["connected"]))

@@ -469,10 +469,21 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
                 slow_idx += 1
             cycle += 1
 
+            # Isolating a sick motor (above) must not paper over a dead ARM: if
+            # every joint on one side has stopped answering, the cable is out,
+            # not one servo tripped. Say so instead of reporting "接続OK" while
+            # the follower is unreachable (2026-08-07: COM13 unplugged mid-run).
+            arm_down = [a for a in ("leader", "follower")
+                        if all(telem_fail.get((a, n), 0) for n in JOINTS)]
+            if arm_down and engine.active:
+                engine.active = False
+                log(f"⚠ {'/'.join(arm_down)} が全軸無応答 → 追従停止（ケーブルを確認）")
+                disarm_auto("アーム無応答")
+
             with LOCK:
                 STATE["teleop"] = engine.active
-                STATE["connected"] = True
-                STATE["error"] = ""
+                STATE["connected"] = not arm_down
+                STATE["error"] = (f"{'/'.join(arm_down)} が全軸無応答" if arm_down else "")
                 STATE["leader"] = json.loads(json.dumps(telemetry["leader"]))
                 STATE["follower"] = json.loads(json.dumps(telemetry["follower"]))
                 STATE["ranges"] = ranges
