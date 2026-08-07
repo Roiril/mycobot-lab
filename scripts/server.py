@@ -43,7 +43,9 @@ from arm.vision_hub import VisionHub, VirtualVisionHub  # noqa: E402
 from arm.spatial_memory import SpatialMemory, j1_to_sector  # noqa: E402
 from arm import gestures as gestures_mod  # noqa: E402
 from arm import poses as poses_mod  # noqa: E402
-from hand_driver import make_hand, VirtualHand as VirtualHand_hand, HandBase  # noqa: E402  ✋ HAND
+from hand_driver import (  # noqa: E402  ✋ HAND
+    make_hand, find_hand_port, VirtualHand as VirtualHand_hand, HandBase,
+)
 from arm.constants import (  # noqa: E402
     MAX_SPEED, DEFAULT_SPEED, DEFAULT_PORT, DEFAULT_CAM_INDEX, HOME_ANGLES, CAMERA_UPRIGHT_J6_DEG,
     ANGLE_DRIFT_TOL, TOOL_LENGTH, FLOOR_Z, LINK_RADIUS, TABLE_MARGIN, FK_TOOL_SLOP,
@@ -63,6 +65,67 @@ HUB: HubBase | None = None
 VISION: VisionHub | None = None
 MEMORY: SpatialMemory | None = None
 HAND: HandBase | None = None  # ✋ 5-finger hand (separate robot from the 🦾 arm)
+HAND_RESCAN_S = 5.0           # how often to look for the hand's USB coming back
+
+
+def hand_rescan_decision(current_offline: bool, current_port: str | None,
+                         attached: set, port_found: bool) -> str:
+    """What one rescan pass should do (pure): keep | drop-to-virtual | pick-up.
+
+    A driver holding a port that is no longer attached must be dropped, or
+    `/hand/status` keeps reporting `connected: true` for a link that is gone.
+    A virtual driver is upgraded as soon as a usable port shows up.
+    """
+    if not current_offline:
+        if current_port and current_port not in attached:
+            return "drop-to-virtual"
+        return "keep"
+    return "pick-up" if port_found else "keep"
+
+
+def _hand_rescan_loop(port_hint: str | None):
+    """Pick the hand's USB back up when it (re)appears — no server restart.
+
+    The FTDI adapter enumerates and drops independently of the ATOM, and the
+    driver only looks for a port when it is constructed. A hand plugged in after
+    boot therefore needed a manual restart, and a flaky adapter needed one per
+    drop (2026-08-07: five in one session). This closes that loop from both
+    sides: swap up to the real driver when a port appears, and fall back to
+    virtual when the port vanishes so `/hand/status` stops claiming a live link.
+    """
+    from serial.tools import list_ports as _lp
+    global HAND
+    while not SHUTTING_DOWN:
+        time.sleep(HAND_RESCAN_S)
+        cur = HAND
+        if cur is None:
+            continue
+        try:
+            attached = {p.device for p in _lp.comports()}
+            found = port_hint is not None or find_hand_port() is not None
+            action = hand_rescan_decision(cur.offline, cur.port, attached, found)
+            if action == "keep":
+                continue
+            if action == "drop-to-virtual":
+                log.warning("hand: %s が外れました → 仮想へ退避", cur.port)
+                HAND = VirtualHand_hand()
+                try:
+                    cur.shutdown()
+                except Exception:
+                    pass
+                continue
+            new = make_hand(port=port_hint)
+            if new.offline:                 # still nothing usable; keep virtual
+                continue
+            HAND = new
+            log.info("hand: %s を自動で拾いました（mcu_alive=%s）",
+                     new.port, new.mcu_alive)
+            try:
+                cur.shutdown()
+            except Exception:
+                pass
+        except Exception as e:              # a rescan must never kill the server
+            log.debug("hand rescan failed: %s", e)
 INDEX_HTML = ""
 _LAST_JOG_MONO = 0.0  # last /jog timestamp (monotonic) — throttles serial bus
 _LAST_HAND_MONO = 0.0  # last /hand/fingers timestamp — throttles hand serial bus
@@ -2328,6 +2391,8 @@ def main():
         # live, or offline + --real-hand (virtual arm + physical hand)
         HAND = make_hand(port=args.hand_port)
         log.info("hand: %s on %s", "connected" if not HAND.offline else "virtual", HAND.port)
+        threading.Thread(target=_hand_rescan_loop, args=(args.hand_port,),
+                         daemon=True).start()
 
     # SO-101: store CLI choice; actual init is lazy (first /so101/* request)
     SO101_DRIVER_KIND = args.so101_driver
