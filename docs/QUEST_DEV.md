@@ -74,6 +74,29 @@ python scripts/quest/qctl.py nav http://localhost:8001/hand --cdp 9224
 
 `--serial` を渡すと qctl が先に `adb -s <serial> forward tcp:<cdp> …` を張ってから接続する（2台目を単独で扱える）。`--serial` 無しは従来どおり（後方互換）。
 
+## ケーブルを抜いて使う（adb over Wi-Fi。2026-08-07 実機確認）
+
+**USB を抜くと `adb reverse` が消えて、ヘッドセットから PC の :8001 に届かなくなる**（指データが1件も来ない形で出る）。
+装着して動き回るなら転送を Wi-Fi 側へ移す。`adb reverse` は Wi-Fi トランスポートでも張れるので、
+**localhost:8001 の HTTPS 不要トリックはそのまま使える**。
+
+```bash
+ADB="C:/Users/kouga/AppData/Local/Programs/SideQuest/resources/app.asar.unpacked/build/platform-tools/adb.exe"
+S=2G0YC1ZF7S06BW
+"$ADB" -s $S shell "ip -f inet addr show wlan0"      # IP を読む（例 192.168.11.42）
+"$ADB" -s $S tcpip 5555                              # adbd を TCP モードで再起動（USB 側は一瞬切れる）
+"$ADB" connect 192.168.11.42:5555
+"$ADB" -s 192.168.11.42:5555 reverse tcp:8001 tcp:8001
+"$ADB" -s 192.168.11.42:5555 forward tcp:9224 localabstract:chrome_devtools_remote
+```
+
+- **順番が大事**: USB が生きているうちに tcpip → connect → reverse まで通し、**確認してから抜く**。
+- 疎通確認に `adb shell curl` / `toybox wget` は使えない（Quest に無い）。**PC 側で
+  `Get-NetTCPConnection -LocalPort 8001` を見る**（トンネル経由なので相手は 127.0.0.1 に見える）か、
+  `hand_launch` の戻りが `already_native` になることで前面動作を確認する。
+- ヘッドセットが再起動・長時間スリープすると TCP の adb は切れる。切れたら USB で挿し直して同じ手順。
+- `adb devices` に USB と Wi-Fi の**同じ実機が2行**出る。`launch-hand` は両方に投げるが実害はない。
+
 ## 修正→反映ループ（毎回これ）
 
 **コードを直したら必ず**この手順で反映する（[memory: quest-reload-protocol](../.claude/memory/feedback_quest_reload_protocol.md)、ユーザーが強く要請）。スラッシュコマンド [/quest-reload](../.claude/commands/quest-reload.md) で一発。
