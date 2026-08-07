@@ -231,7 +231,7 @@ document.querySelectorAll("[data-tq]").forEach(b=>{
 });
 
 function paintArm(arm,data){
-  let vmin=99, tmax=0, imax=0;
+  let vmin=99, tmax=0, imax=0; const stale=[];
   for(const n of JOINTS){
     const d=data[n]; if(!d) continue;
     const [lo,hi]=ranges?ranges[n]:[0,4095];
@@ -241,8 +241,10 @@ function paintArm(arm,data){
     document.getElementById(`${arm}-${n}-deg`).textContent=fmt(d.pos);
     document.getElementById(`${arm}-${n}-tq`).className="tq"+(d.torque?" on":"");
     const ex=document.getElementById(`${arm}-${n}-extra`);
-    ex.textContent=d.temp?` ${d.temp}℃`:"";
-    ex.className="u"+(d.temp>=50?" hot":"");
+    // stale = このモーターの読み取りが失敗し続けている。値は最後に読めた時のもの。
+    ex.textContent=(d.temp?` ${d.temp}℃`:"")+(d.stale?" (古)":"");
+    ex.className="u"+(d.stale?" vlow":(d.temp>=50?" hot":""));
+    if(d.stale)stale.push(n);
     if(arm==="follower"&&!dragging){
       const s=document.getElementById(`${arm}-${n}-slider`);
       if(s&&document.activeElement!==s)s.value=d.pos;
@@ -256,7 +258,8 @@ function paintArm(arm,data){
     const low=(arm==="follower"&&vmin<11)||(arm==="leader"&&vmin<5);
     vb.className="badge "+(low?"err":"ok");
   }
-  document.getElementById(arm+"Meta").textContent=`max ${tmax}℃ / ${imax}mA`;
+  document.getElementById(arm+"Meta").textContent=
+    `max ${tmax}℃ / ${imax}mA`+(stale.length?` ⚠ ${stale.join(",")} は古い値`:"");
 }
 
 function paintPorts(st){

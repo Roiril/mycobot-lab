@@ -49,6 +49,8 @@ class FakeBus:
         self.torque = {n: 0 for n in JOINTS}
         self.connected = False
         self.goals = []
+        # motors that error-packet every telemetry read (protection trip)
+        self.sick = set()
 
     # -- lifecycle
     def connect(self, handshake=True):
@@ -66,6 +68,10 @@ class FakeBus:
         self.present.update(values)
 
     def read(self, data_name, motor, normalize=False):
+        if motor in self.sick and data_name != "Present_Position":
+            raise RuntimeError(
+                f"Failed to read '{data_name}' on id_={motor}. "
+                "[RxPacketError] OverEle error!")
         if data_name == "Present_Position":
             return self.present[motor]
         if data_name == "Present_Voltage":
@@ -152,6 +158,49 @@ class TestPortWiring(unittest.TestCase):
             self.assertTrue(h.leader.connected and h.follower.connected)
             # only the follower is ever driven
             self.assertEqual(h.leader.goals, [])
+
+
+class TestSickMotorDoesNotFreezeTheCockpit(unittest.TestCase):
+    """A servo in a protection trip error-packets every telemetry read.
+
+    That used to escape the cycle before the STATE write, so the page froze on
+    the last good snapshot and showed a stale 51C / 345mA as if it were live
+    while the arm had actually cooled (2026-08-07). The bad motor must now cost
+    only its own fields.
+    """
+
+    def test_state_keeps_updating(self):
+        with WorkerHarness() as h:
+            self.assertIsNotNone(h.wait_until(lambda s: s["connected"]))
+            h.follower.sick.add("elbow_flex")
+            # move the leader: a live cockpit must reflect it
+            moved = NEUTRAL + 300
+            h.leader.present["shoulder_pan"] = moved
+            st = h.wait_until(
+                lambda s: s["leader"].get("shoulder_pan", {}).get("pos") == moved,
+                timeout=5.0)
+            self.assertIsNotNone(st, "STATE stopped updating while a motor was sick")
+
+    def test_the_sick_motor_is_flagged_stale(self):
+        with WorkerHarness() as h:
+            self.assertIsNotNone(h.wait_until(lambda s: s["connected"]))
+            h.follower.sick.add("elbow_flex")
+            st = h.wait_until(
+                lambda s: s["follower"].get("elbow_flex", {}).get("stale"),
+                timeout=5.0)
+            self.assertIsNotNone(st, "a frozen reading was never marked stale")
+            # its healthy neighbours stay live
+            self.assertFalse(st["follower"]["shoulder_pan"].get("stale"))
+
+    def test_the_repeated_error_does_not_flush_the_log(self):
+        with WorkerHarness() as h:
+            self.assertIsNotNone(h.wait_until(lambda s: s["connected"]))
+            h.follower.sick.add("elbow_flex")
+            time.sleep(1.5)          # ~50 failing reads at the idle rate
+            with COCKPIT.LOCK:
+                log = list(COCKPIT.STATE["log"])
+            self.assertTrue(any("接続 OK" in e["msg"] for e in log),
+                            "the connect line was flushed out by error spam")
 
 
 class TestAutoFollowArming(unittest.TestCase):

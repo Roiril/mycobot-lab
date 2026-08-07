@@ -157,8 +157,17 @@ STATE = {
 
 def log(msg: str):
     with LOCK:
-        STATE["log"].append({"t": time.strftime("%H:%M:%S"), "msg": msg})
-        del STATE["log"][:-40]
+        entries = STATE["log"]
+        # collapse repeats: a servo in a protection trip re-raises the same error
+        # twice a second, which otherwise flushes the 40-line buffer and takes
+        # every useful line (the ABORT, the demotion, the reconnect) with it.
+        if entries and entries[-1].get("raw") == msg:
+            entries[-1]["n"] = entries[-1].get("n", 1) + 1
+            entries[-1]["msg"] = f"{msg}（×{entries[-1]['n']}）"
+            entries[-1]["t"] = time.strftime("%H:%M:%S")
+            return
+        entries.append({"t": time.strftime("%H:%M:%S"), "msg": msg, "raw": msg})
+        del entries[:-40]
 
 
 def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
@@ -175,6 +184,9 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
     # trip-wire edge state: last classified level so WARN/DEMOTE logs fire once
     # on transition instead of every round-robin pass through the same joint.
     trip = {"volt": "ok", "temp": {n: "ok" for n in JOINTS}}
+    # (arm, joint) -> consecutive telemetry read failures. Non-empty means those
+    # displayed values are frozen at their last good read, not live.
+    telem_fail: dict = {}
 
     # Auto-follow: `enabled` is the CLI choice (never changes), `armed` is the
     # live state — it drops on any operator stop (toggle off / ABORT / relax) and
@@ -238,6 +250,43 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
     def set_follower_torque(joint: str, on: bool):
         engine.set_follower_torque(joint, on)
         telemetry["follower"][joint]["torque"] = 1 if on else 0
+
+    def read_slow_telemetry(arm: str, n: str, bus, t: dict):
+        """Read one motor's V / temp / current and run the follower trip-wires.
+
+        Raises if the motor refuses to answer (a servo in a protection trip
+        error-packets every read); the caller isolates that to this motor.
+        """
+        t["volt"] = bus.read("Present_Voltage", n, normalize=False) / 10
+        t["temp"] = bus.read("Present_Temperature", n, normalize=False)
+        t["cur"] = bus.read("Present_Current", n, normalize=False)
+        if arm == "leader":
+            t["torque"] = bus.read("Torque_Enable", n, normalize=False)
+            return
+        # trip-wire: watch the 12V follower for supply sag / overheat. Log on
+        # level transition (edge) so a persistent low reading doesn't spam.
+        # Demotion is one-way here — recovery is manual.
+        v = t["volt"]
+        if v and v > 1.0:                          # ignore stale/zero reads
+            vlvl = classify_voltage(v)
+            if vlvl != trip["volt"]:
+                if vlvl == "warn":
+                    log(f"⚠ フォロワー電圧低下 {v:.1f}V (< {VOLT_WARN_V}V)")
+                elif vlvl == "demote":
+                    log(f"⚠ 電源sag {v:.1f}V (< {VOLT_DEMOTE_V}V)"
+                        f" → safe プロファイルへ自動降格")
+                    if engine.torque_profile != "safe":
+                        engine.set_torque_profile("safe", reason=f"電源sag {v:.1f}V")
+                trip["volt"] = vlvl
+        tp = t["temp"]
+        tlvl = classify_temperature(tp)
+        if tlvl != trip["temp"][n]:
+            if tlvl == "warn":
+                log(f"⚠ {n} 温度上昇 {tp}℃ (> {TEMP_WARN_C}℃)")
+            elif tlvl == "demote":
+                log(f"⚠ {n} 高温 {tp}℃ (> {TEMP_DEMOTE_C}℃) → この関節を safe 値へ降格")
+                engine.demote_joint(n, reason=f"{n} 高温 {tp}℃")
+            trip["temp"][n] = tlvl
 
     # 初回接続はリトライループ（電圧エラーラッチ等は電源挿し直しで直るため、
     # プロセス再起動なしで復帰できるようにする）
@@ -394,43 +443,29 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
                         publish_auto()
 
             # ---- slow telemetry: V / temp / current, one motor per N cycles-
+            # ⚠ Guarded per motor. A servo sitting in a protection trip answers
+            # every read with an error packet; letting that escape aborted the
+            # cycle before the STATE write, so the whole cockpit froze on the
+            # last good snapshot — the operator read a stale 51C / 345mA as live
+            # while the arm had actually cooled (2026-08-07). One sick motor now
+            # only marks its own fields stale.
             if cycle % TELEMETRY_EVERY == 0:
                 arm = ("leader", "follower")[slow_idx % 2]
                 n = JOINTS[(slow_idx // 2) % len(JOINTS)]
                 bus = leader if arm == "leader" else follower
                 t = telemetry[arm][n]
-                t["volt"] = bus.read("Present_Voltage", n, normalize=False) / 10
-                t["temp"] = bus.read("Present_Temperature", n, normalize=False)
-                t["cur"] = bus.read("Present_Current", n, normalize=False)
-                if arm == "leader":
-                    t["torque"] = bus.read("Torque_Enable", n, normalize=False)
-                elif arm == "follower":
-                    # trip-wire: watch the 12V follower for supply sag / overheat.
-                    # Log on level transition (edge) so a persistent low reading
-                    # doesn't spam. Demotion is one-way here — recovery is manual.
-                    v = t["volt"]
-                    if v and v > 1.0:                      # ignore stale/zero reads
-                        vlvl = classify_voltage(v)
-                        if vlvl != trip["volt"]:
-                            if vlvl == "warn":
-                                log(f"⚠ フォロワー電圧低下 {v:.1f}V (< {VOLT_WARN_V}V)")
-                            elif vlvl == "demote":
-                                log(f"⚠ 電源sag {v:.1f}V (< {VOLT_DEMOTE_V}V)"
-                                    f" → safe プロファイルへ自動降格")
-                                if engine.torque_profile != "safe":
-                                    engine.set_torque_profile(
-                                        "safe", reason=f"電源sag {v:.1f}V")
-                            trip["volt"] = vlvl
-                    tp = t["temp"]
-                    tlvl = classify_temperature(tp)
-                    if tlvl != trip["temp"][n]:
-                        if tlvl == "warn":
-                            log(f"⚠ {n} 温度上昇 {tp}℃ (> {TEMP_WARN_C}℃)")
-                        elif tlvl == "demote":
-                            log(f"⚠ {n} 高温 {tp}℃ (> {TEMP_DEMOTE_C}℃)"
-                                f" → この関節を safe 値へ降格")
-                            engine.demote_joint(n, reason=f"{n} 高温 {tp}℃")
-                        trip["temp"][n] = tlvl
+                try:
+                    read_slow_telemetry(arm, n, bus, t)
+                except Exception as e:
+                    fails = telem_fail.get((arm, n), 0) + 1
+                    telem_fail[(arm, n)] = fails
+                    t["stale"] = True
+                    if fails == 1:
+                        log(f"⚠ {arm} {n} のテレメトリ読めず（値は据え置き・古い表示）: {e}")
+                else:
+                    if telem_fail.pop((arm, n), 0):
+                        log(f"{arm} {n} のテレメトリ復帰")
+                    t["stale"] = False
                 slow_idx += 1
             cycle += 1
 
@@ -477,8 +512,14 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
                 roles = None      # cable may have moved: re-identify next try
                 time.sleep(2.0)
         except Exception as e:
+            # An unexpected error skips the STATE write above, so publish the
+            # fields the operator acts on — otherwise `teleop` reads stale-true
+            # and the page looks like it is still following when it is not.
             with LOCK:
                 STATE["error"] = str(e)
+                if engine is not None:
+                    STATE["teleop"] = engine.active
+                    STATE["torque_profile"] = engine.torque_profile
             log(f"エラー: {e}")
             time.sleep(0.5)
 
