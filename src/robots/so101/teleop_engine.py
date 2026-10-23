@@ -1,163 +1,80 @@
-"""SO-101 leader->follower teleop engine (shared by CLI + cockpit).
+"""SO-101 follower engine: leader->follower teleop, holding, jogging, cooling.
 
-Single source of truth for the smoothing + safety pipeline so the CLI
-(scripts/so101_teleop.py) and the cockpit server (scripts/so101_cockpit_server.py)
-run identical motion logic instead of two drifting copies.
+Shared by the cockpit (scripts/so101_cockpit_server.py) and the CLI
+(scripts/so101_teleop.py) so both run one motion pipeline.
 
-Design goals
-------------
-- **Smooth, low-latency follow**: a per-joint One-Euro filter (Casiez et al.,
-  CHI 2012) on the raw leader ticks removes encoder jitter at rest while adding
-  almost no lag during a fast hand move.
-- **last-goal stepping**: the follower's Present_Position is NOT read every
-  cycle. The per-cycle step clamp is measured against `last_goal` (what we last
-  commanded), which halves the serial I/O on the hot path. The follower present
-  is sampled only every `follower_read_every` cycles, for a divergence/lag
-  telemetry warning — it is deliberately NOT fed back into `last_goal`, because
-  rewinding the goal to a lagging follower would license a full MAX_STEP jump
-  next cycle (jerk).
-- **brownout-safe torque**: per-joint Torque_Limit / Acceleration / Goal_Velocity
-  are written BEFORE any torque enable, and torque is enabled one joint at a
-  time (staged inrush) — the 12V supply sags and drops the Feetech bus if every
-  servo torque-enables at once.
+One control cycle (`cycle()`)
+-----------------------------
+1. read the leader's positions (one sync read)
+2. read the follower's whole telemetry window (one sync read: position, speed,
+   load, voltage, temperature, status, current of all six servos)
+3. build the reference per joint: the One-Euro-filtered leader while following,
+   the hold / jog target otherwise, a slow straight line while retreating
+4. FollowerGovernor decides the goal per joint from reference + telemetry
+   (governor.py: end-stop margin, stuck / overworked -> hold, protection,
+   breaker, temperature, supply sag)
+5. write what changed - goal, speed, acceleration, torque limit - in ONE sync
+   write of registers 41..49
+
+Why writes only on change: a new position command clears the servo's overload
+and over-current flags. Streaming the same goal every cycle would keep
+resetting the firmware's own protections, so a still arm sends nothing.
+
+All follower and leader traffic goes through servo_io (status bits are data,
+never exceptions; a silent servo costs only itself). lerobot's bus is used to
+open the port and for calibration only.
 
 Pure vs I/O
 -----------
-The smoothing math (`OneEuroFilter`) and the decision logic
-(`TeleopEngine.compute_goals`) are pure and import nothing from lerobot, so they
-run and unit-test on plain Python 3.10 with no hardware. Everything that touches
-a serial bus is isolated in the I/O methods. lerobot / scservo imports (only in
-the CLI/cockpit callers) stay lazy.
-
-Bus contract (duck-typed, satisfied by lerobot.motors.feetech.FeetechMotorsBus)
--------------------------------------------------------------------------------
-- ``sync_read(data_name, *, normalize=False, num_retry=1) -> dict[str, int]``
-- ``sync_write(data_name, values: dict[str, int], *, normalize=False) -> None``
-- ``read(data_name, motor, *, normalize=False) -> int``
-- ``write(data_name, motor, value, *, normalize=False) -> None``
+OneEuroFilter, AutoFollowGate, compute_refs and the governor are pure and run
+on plain Python 3.10. lerobot is imported lazily (make_bus) so this module stays
+importable without it.
 """
 from __future__ import annotations
 
 import json
 import math
-import time
 import pathlib
+import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Deque, Dict, List, Optional, Tuple
 
-from . import profile
+from . import profile, servo_config, sts3215
+from .governor import FollowerGovernor, GovernorOutput, GovernorParams
+from .servo_io import Command, wrap_bus
+from .sts3215 import ServoState
 
 # --- Units --------------------------------------------------------------------
-# STS3215: 12-bit absolute encoder, 4096 ticks / rev -> 11.377 ticks/deg.
 TICKS_PER_REV = profile.HARDWARE["encoder_ticks"]          # 4096
 TICKS_PER_DEG = TICKS_PER_REV / 360.0                       # ~11.377
 
 # Joints mirrored, in Feetech motor order 1..6 (5-DoF arm + gripper).
 JOINTS: List[str] = list(profile.JOINT_NAMES) + [profile.GRIPPER_NAME]
 
-# --- Torque profiles (SINGLE definition; previously duplicated in
-#     so101_teleop.py and so101_cockpit_server.py) ---------------------------
-# Per-joint torque caps written to STS3215 Torque_Limit (register range 0..1000).
-# Two named profiles, selected by TeleopConfig.torque_profile:
-#
-#   "full" — every joint at the register max. The 12V/5A supply upgrade
-#            (2026-07) removed the brownout that forced the old low caps, so the
-#            follower no longer stalls / drops tracking under gravity + payload.
-#            This is the normal operating profile. The cockpit watchdog
-#            (so101_cockpit_server.py) is the safety net: it DEMOTES to "safe"
-#            on a measured supply sag / overheat / bus dropout (see the
-#            trip-wire thresholds below). Recovery from a demotion is manual.
-#
-#   "safe" — the conservative pre-upgrade caps, kept as the DEMOTION TARGET (not
-#            the normal profile). shoulder_lift / elbow_flex fight gravity and
-#            stall+overheat+latch if capped too low, so they stay higher; the
-#            rest stay low to cut total current draw on a sagging bus.
-#
-# NOTE: the "safe" numbers are provisional — a parallel power-budget study may
-# revise them. Every torque value lives in this one dict so a revision is a
-# single edit that both the CLI and the cockpit pick up.
-TORQUE_MAX = 1000       # STS3215 Torque_Limit register full-scale
-TORQUE_PROFILES: Dict[str, Dict[str, int]] = {
-    # "full" = arm joints uncapped, matching stock lerobot (which writes no
-    # Torque_Limit on the 5 arm joints). Gripper stays at 500: this follower's
-    # gripper EEPROM carries lerobot's burnout guard (Max_Torque=500,
-    # Protection_Current=250(=1.6A), Overload_Torque=25 — measured 2026-07-17),
-    # because a gripper holding an object is a sustained stall by design.
-    "full": {**{n: TORQUE_MAX for n in JOINTS}, "gripper": 500},
-    "safe": {
-        "shoulder_pan": 400,
-        "shoulder_lift": 700,
-        "elbow_flex": 700,
-        "wrist_flex": 400,
-        "wrist_roll": 400,
-        "gripper": 400,
-    },
-}
-DEFAULT_TORQUE_PROFILE = "full"
-
-# Back-compat alias: TORQUE_LIMITS was the single per-joint cap dict before
-# profiles existed. Kept pointing at "safe" so any lingering reference resolves
-# to the conservative caps rather than breaking.
-TORQUE_LIMITS: Dict[str, int] = TORQUE_PROFILES["safe"]
-
-ACCELERATION = 30       # gentle ramp, avoids current spikes
-GOAL_VELOCITY = 800     # raw units; fast enough for live tracking
-MAX_STEP_TICKS = 170    # per-cycle follower move clamp (~15 deg)
+MAX_STEP_TICKS = 170    # per-cycle reference jump guard (~15 deg): glitch filter only
 
 # --- Cooling relax (torque-off for heat shedding) -----------------------------
-# Order to drop follower torque, tip -> base (gripper first, shoulder_pan last).
-# De-energizing from the tip keeps the gravity-loaded base joints (shoulder_lift
-# / shoulder_pan) holding longest, so the arm settles instead of slamming down
-# when it goes limp. This is exactly reversed(JOINTS); asserted in the tests.
+# Tip -> base (gripper first, shoulder_pan last): the gravity-loaded roots hold
+# longest, so the arm settles instead of slamming down. Done with sync writes,
+# which have no reply and so cannot be stopped by a servo in protection.
 RELAX_ORDER: List[str] = list(reversed(JOINTS))
-RELAX_STAGGER_S = 0.05  # delay between per-joint torque-off (matches enable stagger)
-
-# --- Trip-wire thresholds (cockpit watchdog; PURE decision in classify_* below)
-# The follower is the 12V arm. STS3215 is nominal 12V and the Feetech bus
-# browns out / drops the connection when the supply sags under torque draw.
-# Two-stage voltage response (whole-arm scope):
-#   WARN  below VOLT_WARN_V  — log an early notice while still operating.
-#   DEMOTE below VOLT_DEMOTE_V — sag confirmed; demote the follower to "safe"
-#                               to cut current and keep the bus alive.
-VOLT_WARN_V = 11.0
-VOLT_DEMOTE_V = 10.5
-# Servo temperature (deg C). STS3215 self-protects around ~70 C; act earlier.
-# Temperature scope is PER-JOINT (only the hot joint is demoted).
-#   WARN   above TEMP_WARN_C  — log.
-#   DEMOTE above TEMP_DEMOTE_C — demote THAT joint's cap to its "safe" value.
-TEMP_WARN_C = 55
-TEMP_DEMOTE_C = 62
-
-
-def classify_voltage(volt: float) -> str:
-    """Pure follower-voltage trip classification -> "ok" | "warn" | "demote".
-
-    Callers must not pass a stale/zero reading (0 V would classify as demote);
-    guard with ``volt > 0`` at the call site.
-    """
-    if volt < VOLT_DEMOTE_V:
-        return "demote"
-    if volt < VOLT_WARN_V:
-        return "warn"
-    return "ok"
-
-
-def classify_temperature(temp: float) -> str:
-    """Pure per-joint temperature trip classification -> "ok" | "warn" | "demote"."""
-    if temp > TEMP_DEMOTE_C:
-        return "demote"
-    if temp > TEMP_WARN_C:
-        return "warn"
-    return "ok"
+RELAX_STAGGER_S = 0.05
 
 # --- Auto-follow gate (arm follow mode without a human clicking) --------------
-# Turning follow ON snaps the follower to wherever the leader currently is, at
-# up to MAX_STEP per cycle. That is violent if the two arms are far apart, so an
-# unattended start waits for the operator to bring the leader ONTO the follower's
-# pose first — the same thing a careful human does before clicking the toggle.
 AUTO_FOLLOW_TOL_DEG = 20.0     # per-joint agreement required before engaging
 AUTO_FOLLOW_STILL_DEG = 3.0    # leader must be roughly parked, not swinging through
 AUTO_FOLLOW_HOLD_CYCLES = 5    # consecutive good cycles (rejects a momentary crossing)
+
+RETREAT_DPS = 12.0             # speed of the automatic move to the cooling pose
+RETREAT_ARRIVE_DEG = 5.0       # "there" for the cooling pose
+RETREAT_WAIT_S = 3.0           # extra time a struggling joint gets before we stop asking
+# Profile bypass for a joint the governor is easing / holding: an eased goal
+# must reach the servo's setpoint now, not at the cruise speed.
+FAST_VELOCITY = 3000           # step/s (~260 deg/s, the 12 V no-load speed)
+FAST_ACCELERATION = 254        # x100 step/s^2, the register maximum
+SOFT_START_S = 1.5             # follow engage: speed ramps from 25 % to 100 %
+SOFT_START_FLOOR = 0.25
 
 
 def deg_to_ticks(deg: float) -> int:
@@ -170,16 +87,17 @@ def pose_gaps(leader_ticks: Dict[str, int], follower_ticks: Dict[str, int],
 
     Both arms report in the same homed tick domain (calibration writes
     Homing_Offset into each servo's EEPROM), which is what lets the engine feed
-    leader ticks straight into follower goals — so the difference is meaningful.
+    leader ticks straight into follower goals - so the difference is meaningful.
     """
     names = joints or JOINTS
     return {n: abs(int(leader_ticks[n]) - int(follower_ticks[n]))
-            for n in names if n in leader_ticks and n in follower_ticks}
+            for n in names if n in leader_ticks and n in follower_ticks
+            and leader_ticks[n] is not None and follower_ticks[n] is not None}
 
 
 def max_pose_gap(leader_ticks: Dict[str, int], follower_ticks: Dict[str, int],
                  joints: Optional[List[str]] = None) -> Tuple[Optional[str], int]:
-    """Worst-disagreeing joint and its gap in ticks (pure). ("", 0) if empty."""
+    """Worst-disagreeing joint and its gap in ticks (pure). (None, 0) if empty."""
     gaps = pose_gaps(leader_ticks, follower_ticks, joints)
     if not gaps:
         return None, 0
@@ -217,6 +135,15 @@ class AutoFollowGate:
 
     def update(self, leader_ticks: Dict[str, int],
                follower_ticks: Dict[str, int]) -> bool:
+        # every joint must be read on BOTH arms: an unread joint is an unchecked gap
+        missing = [n for n in self.joints
+                   if leader_ticks.get(n) is None or follower_ticks.get(n) is None]
+        if missing:
+            self.held = 0
+            self.gap_joint, self.gap_ticks = None, 0
+            self._prev_leader = None
+            self.status = f"姿勢を取得できません（{', '.join(missing)}）"
+            return False
         joint, gap = max_pose_gap(leader_ticks, follower_ticks, self.joints)
         self.gap_joint, self.gap_ticks = joint, gap
         if joint is None:
@@ -254,8 +181,8 @@ CAL_DIR = pathlib.Path.home() / ".cache/huggingface/lerobot/calibration"
 def make_bus(port: str):
     """Build a 6-motor Feetech bus for `port` (lazy lerobot import).
 
-    Kept here so the CLI and cockpit construct the bus identically. lerobot is
-    imported inside the call so this module stays importable on plain Py3.10.
+    Only used to open the serial port (and by the calibration tools): once
+    connected, the engine talks through servo_io.
     """
     from lerobot.motors.feetech import FeetechMotorsBus
     from lerobot.motors import Motor, MotorNormMode
@@ -358,11 +285,13 @@ class OneEuroFilter:
 class TeleopConfig:
     target_hz: float = 60.0
     max_step_ticks: int = MAX_STEP_TICKS
-    deadband_ticks: int = 2            # skip writes when the clamped step is tiny
-    follower_read_every: int = 30      # sample follower present every N cycles (~0.5s @60Hz)
+    goal_deadband_ticks: int = 1       # a goal that moved less is not re-sent
     torque_stagger_s: float = 0.05     # delay between per-joint torque enables
-    torque_profile: str = DEFAULT_TORQUE_PROFILE  # "full" (normal) | "safe" (demoted caps)
+    speed: str = "normal"              # servo_config.SPEED_PRESETS key
+    governor_mode: str = "active"      # "active" | "shadow" (labels only)
     one_euro: OneEuroConfig = field(default_factory=OneEuroConfig)
+    governor: GovernorParams = field(default_factory=GovernorParams)
+    session: servo_config.SessionSettings = field(default_factory=servo_config.SessionSettings)
 
     @property
     def period(self) -> float:
@@ -370,281 +299,503 @@ class TeleopConfig:
 
 
 class TeleopEngine:
-    """Owns the smoothing/last-goal state and the follower safety sequence.
+    """Owns the follower: references, governor, torque, and the write path.
 
-    Bus objects are injected (and can be re-bound after a reconnect). The engine
-    never opens or closes a port itself.
+    Bus objects are injected (any lerobot-like bus, a raw FeetechMotorsBus, or
+    a ServoIO such as the simulated follower) and can be re-bound after a
+    reconnect. The engine never opens or closes a port itself.
     """
 
     def __init__(self, leader_bus, follower_bus,
                  ranges: Dict[str, Tuple[int, int]],
                  config: Optional[TeleopConfig] = None,
                  joints: Optional[List[str]] = None,
-                 log: Optional[Callable[[str], None]] = None):
-        self.leader_bus = leader_bus
-        self.follower_bus = follower_bus
-        self.ranges = ranges
+                 log: Optional[Callable[[str], None]] = None,
+                 sleep: Callable[[float], None] = time.sleep):
         self.cfg = config or TeleopConfig()
         self.joints = joints or list(JOINTS)
+        self.ranges = ranges
         self._log = log or (lambda _m: None)
-
+        self._sleep = sleep
+        self.leader = wrap_bus(leader_bus, self.joints) if leader_bus is not None else None
+        self.follower = wrap_bus(follower_bus, self.joints)
+        self.governor = FollowerGovernor(self.joints, ranges, self.cfg.governor,
+                                         mode=self.cfg.governor_mode)
         self.filters: Dict[str, OneEuroFilter] = {
-            n: OneEuroFilter(self.cfg.one_euro, self.cfg.period) for n in self.joints
-        }
-        self.last_goal: Dict[str, int] = {n: 0 for n in self.joints}
-        self.active = False
-
-        # torque profile state (mutable at runtime via set_torque_profile).
-        # `joint_profile_override` holds per-joint demotions (temperature trip)
-        # layered on top of the global `torque_profile`; `demote_reason` is a
-        # human string surfaced in /state for the cockpit UI.
-        self.torque_profile = (self.cfg.torque_profile
-                               if self.cfg.torque_profile in TORQUE_PROFILES
-                               else DEFAULT_TORQUE_PROFILE)
-        self.joint_profile_override: Dict[str, str] = {}
-        self.demote_reason: str = ""
-
+            n: OneEuroFilter(self.cfg.one_euro, self.cfg.period) for n in self.joints}
+        self.active = False                # following the leader
+        self.retreating = False
+        self.torque_on: Dict[str, bool] = {n: False for n in self.joints}
+        self.hold_target: Dict[str, Optional[int]] = {n: None for n in self.joints}
+        self.last_ref: Dict[str, Optional[int]] = {n: None for n in self.joints}
+        self.speed = self.cfg.speed if self.cfg.speed in servo_config.SPEED_PRESETS else "normal"
+        self._engaged_at: Optional[float] = None
+        self._retreat: Optional[dict] = None
+        self._cool_target: Optional[Dict[str, int]] = None
+        self._sent: Dict[str, Command] = {}
+        self.states: Dict[str, ServoState] = {}
+        self.leader_pos: Dict[str, Optional[int]] = {}
+        self.last_out: Optional[GovernorOutput] = None
+        self.findings: List[servo_config.Finding] = []
+        self.p_effective: Dict[str, int] = {}
+        self.instrument_ok: Optional[bool] = None
+        self.instrument_detail = ""
         # metrics
-        self._cycle = 0
-        self._last_step_t: Optional[float] = None
-        self._measured_hz = 0.0
-        self.follower_lag_ticks = 0
+        self._cycle_ms: Deque[float] = deque(maxlen=300)
+        self._last_cycle_t: Optional[float] = None
+        self._hz = 0.0
 
     # -- bus lifecycle ---------------------------------------------------------
     def rebind(self, leader_bus, follower_bus) -> None:
-        """Point the engine at freshly reconnected buses (teleop must be off)."""
-        self.leader_bus = leader_bus
-        self.follower_bus = follower_bus
+        """Point the engine at freshly reconnected buses (following must be off)."""
+        self.leader = wrap_bus(leader_bus, self.joints) if leader_bus is not None else None
+        self.follower = wrap_bus(follower_bus, self.joints)
+        self._sent.clear()
 
-    def effective_limit(self, joint: str) -> int:
-        """Torque cap for `joint` = its per-joint override (if demoted) else the
-        global profile. Single place that resolves profile + override -> value.
-        """
-        prof = self.joint_profile_override.get(joint, self.torque_profile)
-        limits = TORQUE_PROFILES.get(prof, TORQUE_PROFILES[DEFAULT_TORQUE_PROFILE])
-        return limits[joint]
-
-    def apply_follower_caps(self) -> None:
-        """Write per-joint Torque_Limit / Acceleration / Goal_Velocity.
-
-        Uses the currently selected profile (+ per-joint overrides) via
-        `effective_limit`. Call while follower torque is DISABLED (before any
-        staged enable) so the caps are in effect before the servos draw current
-        — the brownout guard. Also safe to call live (profile switch / demote):
-        writing Torque_Limit mid-motion just changes the cap.
-        """
+    def sync_torque_state(self) -> Dict[str, bool]:
+        """Learn which follower joints are already energized (e.g. the cockpit
+        restarted while the arm was holding) and hold them where they are."""
+        st = self.follower.read_telemetry()
         for n in self.joints:
-            self.follower_bus.write("Torque_Limit", n, self.effective_limit(n), normalize=False)
-            self.follower_bus.write("Acceleration", n, ACCELERATION, normalize=False)
-            self.follower_bus.write("Goal_Velocity", n, GOAL_VELOCITY, normalize=False)
+            v, _err = self.follower.read_reg("Torque_Enable", n)
+            on = bool(v) if v is not None else False
+            self.torque_on[n] = on
+            if on and n in st and st[n].ok:
+                self.hold_target[n] = st[n].pos
+        self._sent.clear()
+        return dict(self.torque_on)
 
-    def set_torque_profile(self, profile: str, reason: str = "",
-                           apply: bool = True) -> None:
-        """Select the global torque profile.
+    def configure_follower(self) -> Dict[str, int]:
+        """Session settings + audit + instrument check. Call with torque off.
 
-        Switching to the default ("full") is treated as a manual RECOVERY: it
-        clears any per-joint demotions and the demote reason. Switching to a
-        non-default ("safe") is a demotion and records `reason`. `apply=False`
-        updates state only (used on the reconnect path, where the caller
-        re-applies caps right after reconnecting the bus).
+        P/D/I, acceleration, speed and torque limits are written with the EEPROM
+        lock closed, so they last for this power cycle only. The P actually in
+        effect is read back and handed to the governor (its gain is P/4).
         """
-        if profile not in TORQUE_PROFILES:
-            raise ValueError(f"unknown torque profile: {profile!r}")
-        self.torque_profile = profile
-        if profile == DEFAULT_TORQUE_PROFILE:
-            self.joint_profile_override.clear()
-            self.demote_reason = ""
-        else:
-            self.demote_reason = reason
-        if apply:
-            self.apply_follower_caps()
+        io = self.follower
+        table = servo_config.audit(io.read_reg, self.joints)
+        st = io.read_telemetry()
+        supply = max([s.volt for s in st.values() if s.ok] or [12.2])
+        self.findings = servo_config.findings(table, supply_v=supply)
+        for f in self.findings:
+            if f.level != "info":
+                self._log(f"⚠ 設定: {f.servo} {f.message}")
+        self.p_effective = servo_config.apply_session(
+            io.write_reg, io.read_reg, self.cfg.session, self.joints,
+            goal_velocity=self.goal_velocity(), log=self._log)
+        self.governor.p_coeff.update(self.p_effective)
+        bad = {n: p for n, p in self.p_effective.items() if p != self.cfg.session.p}
+        if bad:
+            self._log(f"⚠ P を {self.cfg.session.p} にできなかった関節: {bad}")
+        self.instrument_check()
+        return self.p_effective
 
-    def demote_joint(self, joint: str, reason: str = "", apply: bool = True) -> None:
-        """Demote a single joint's cap to its "safe" value (temperature trip).
+    def instrument_check(self, attempts: int = 3) -> bool:
+        """Does the one-shot telemetry read agree with single-register reads?
 
-        Layers on top of the global profile so an already-"safe" global profile
-        is unaffected. `apply=True` writes only this joint's Torque_Limit to
-        avoid re-touching the others mid-teleop.
+        Each joint is checked `attempts` times and fails only when most of them
+        fail: one dropped packet must not decide the session. On failure the
+        governor's force logic only labels (shadow mode); its protective parts
+        (protection freeze, breaker, temperature stop / retreat) stay active.
         """
-        self.joint_profile_override[joint] = "safe"
-        if reason:
-            self.demote_reason = reason
-        if apply:
-            self.follower_bus.write("Torque_Limit", joint,
-                                    self.effective_limit(joint), normalize=False)
+        io = self.follower
+        bad: Dict[str, List[str]] = {n: [] for n in self.joints}
+        for _ in range(max(1, attempts)):
+            st = io.read_telemetry()
+            for n in self.joints:
+                s = st.get(n)
+                if s is None or not s.ok:
+                    bad[n].append("一括読み出しに応答なし")
+                    continue
+                single, _err = io.read_reg("Present_Position", n)
+                if single is not None and abs(int(single) - s.pos) > 8:
+                    bad[n].append(f"位置が一致しません（{s.pos} / {single}）")
+                elif not (6.0 <= s.volt <= 14.5):
+                    bad[n].append(f"電圧 {s.volt:.1f}V が範囲外")
+                elif not (0 <= s.temp <= 90):
+                    bad[n].append(f"温度 {s.temp}℃ が範囲外")
+        need = max(1, attempts) // 2 + 1
+        problems = [f"{n}: {v[-1]}" for n, v in bad.items() if len(v) >= need]
+        self.instrument_ok = not problems
+        self.instrument_detail = "; ".join(problems)
+        if problems and self.cfg.governor_mode == "active":
+            self.governor.mode = "shadow"
+            self._log("⚠ 計器チェック不合格のため、力の自動調整は表示だけにします"
+                      "（保護・温度・遮断器は有効）: " + self.instrument_detail)
+        elif not problems:
+            self.governor.mode = self.cfg.governor_mode
+        return self.instrument_ok
 
-    # -- torque helpers --------------------------------------------------------
-    def set_follower_torque(self, joint: str, on: bool) -> None:
-        self.follower_bus.write("Torque_Enable", joint, 1 if on else 0, normalize=False)
+    # -- speed -------------------------------------------------------------------
+    def goal_velocity(self) -> int:
+        dps = servo_config.SPEED_PRESETS[self.speed]["dps"]
+        return servo_config.dps_to_goal_velocity(dps)
 
-    def enable_follower_torque_staged(self) -> None:
-        """Torque-enable the follower one joint at a time (inrush control)."""
+    def set_speed(self, preset: str) -> None:
+        if preset not in servo_config.SPEED_PRESETS:
+            raise ValueError(f"unknown speed preset: {preset!r}")
+        self.speed = preset
+
+    def _velocity_scale(self, now: float) -> float:
+        scale = 1.0
+        if self._engaged_at is not None:
+            r = (now - self._engaged_at) / SOFT_START_S
+            if r < 1.0:
+                scale = SOFT_START_FLOOR + (1.0 - SOFT_START_FLOOR) * max(0.0, r)
+        return scale
+
+    def _supply_scale(self) -> float:
+        return self.last_out.speed_scale if self.last_out is not None else 1.0
+
+    # -- torque ------------------------------------------------------------------
+    def _hold_here(self, joints: List[str]) -> List[str]:
+        """Make each joint's goal its present position (so enabling never jumps).
+
+        Returns the joints that got it. A joint that cannot be read right now
+        is left out - and must not be energized: its goal would be stale or 0.
+        """
+        st = self.follower.read_telemetry()
+        cmds = {}
+        for n in joints:
+            s = st.get(n)
+            if s is not None and s.ok:
+                cmds[n] = self._command(n, s.pos, 1.0)
+                self.hold_target[n] = s.pos
+        self.follower.write_commands(cmds)
+        self._sent.update(cmds)
+        return list(cmds)
+
+    def set_follower_torque(self, joint: str, on: bool) -> bool:
+        """Energize / relax one joint. Refused while following or retreating: a
+        joint switched on mid-follow would run straight to the leader's pose."""
+        if on and (self.active or self.retreating):
+            self._log(f"{joint}: 追従中は個別にトルクを入れられません（追従を止めてから）")
+            return False
+        if on and not self.torque_on.get(joint):
+            if joint not in self._hold_here([joint]):
+                self._log(f"{joint}: 位置が読めないのでトルクを入れません")
+                return False
+        self.follower.sync_write("Torque_Enable", {joint: 1 if on else 0})
+        self.torque_on[joint] = bool(on)
+        return True
+
+    def enable_follower_torque_staged(self) -> List[str]:
+        """Torque-enable one joint at a time (inrush control), only joints whose
+        present position was just written as their goal."""
+        held = self._hold_here(self.joints)
+        skipped = [n for n in self.joints if n not in held and not self.torque_on.get(n)]
+        if skipped:
+            self._log(f"⚠ 位置が読めない関節にはトルクを入れません: {', '.join(skipped)}")
         for n in self.joints:
-            self.set_follower_torque(n, True)
-            time.sleep(self.cfg.torque_stagger_s)
+            if n not in held:
+                continue
+            self.follower.sync_write("Torque_Enable", {n: 1})
+            self.torque_on[n] = True
+            if self.cfg.torque_stagger_s:
+                self._sleep(self.cfg.torque_stagger_s)
+        return held
 
     def relax_order(self) -> List[str]:
-        """Tip -> base torque-off order for this engine's joints (pure)."""
         return [n for n in RELAX_ORDER if n in self.joints]
 
     def relax_follower(self, delay: float = RELAX_STAGGER_S,
-                       sleep: Callable[[float], None] = time.sleep) -> List[str]:
-        """Cooling relax: cut ALL follower torque, tip -> base, so the arm can
-        shed heat instead of holding current.
+                       sleep: Optional[Callable[[float], None]] = None,
+                       verify: bool = True) -> List[str]:
+        """Cooling relax: cut all follower torque, tip -> base.
 
-        Teleop is forced off first — but NOT frozen: freezing (present->goal to
-        hold position) is meaningless once torque is removed, so it is skipped.
-        Joints are de-energized one at a time from the tip (`relax_order`) with
-        `delay` between each, so the gravity-loaded base joints stay energized
-        longest and the arm settles rather than slamming down.
-
-        The follower goes limp — the caller MUST have warned the operator to
-        support the arm first. Returns the order actually disabled (for
-        logging / tests). `sleep` is injectable so tests need not wall-clock.
+        Sync writes - a joint in protection cannot make this stop half way - then
+        each joint is read back and the write repeated where it did not land.
+        The follower goes limp: the caller must have warned the operator.
         """
+        sleep = sleep or self._sleep
         self.active = False
+        self.retreating = False
+        self._retreat = None
+        self._engaged_at = None
+        self.governor.cancel_retreat()
         order = self.relax_order()
         for i, n in enumerate(order):
-            self.set_follower_torque(n, False)
+            self.follower.sync_write("Torque_Enable", {n: 0})
+            self.torque_on[n] = False
             if delay and i < len(order) - 1:
                 sleep(delay)
+        if verify:
+            for _attempt in range(2):
+                still_on = []
+                for n in order:
+                    v, _err = self.follower.read_reg("Torque_Enable", n)
+                    if v is None or int(v) != 0:
+                        still_on.append(n)
+                if not still_on:
+                    break
+                for n in still_on:
+                    self.follower.sync_write("Torque_Enable", {n: 0})
+            else:
+                if still_on:
+                    self._log(f"⚠ 脱力を確認できない関節: {', '.join(still_on)}")
         return order
 
-    def freeze_follower(self) -> None:
-        """Hold the follower where it is: command present->goal on live joints."""
-        for n in self.joints:
-            try:
-                p = self.follower_bus.read("Present_Position", n, normalize=False)
-                self.follower_bus.write("Goal_Position", n, int(p), normalize=False)
-            except Exception:
-                pass
+    def freeze_here(self) -> None:
+        """Last resort when the cycle keeps failing: stop following and hold every
+        readable joint exactly where it is, with the profile bypassed."""
+        self.active = False
+        self.retreating = False
+        self._retreat = None
+        self._engaged_at = None
+        st = self.follower.read_telemetry()
+        cmds = {n: self._command(n, s.pos, 1.0, fast=True)
+                for n, s in st.items() if s.ok and self.torque_on.get(n)}
+        self.follower.write_commands(cmds)
+        self._sent.update(cmds)
+        for n, c in cmds.items():
+            self.hold_target[n] = c.goal
 
-    # -- teleop lifecycle ------------------------------------------------------
-    def read_follower_present(self) -> Dict[str, int]:
-        pos = self.follower_bus.sync_read("Present_Position", normalize=False, num_retry=1)
-        return {n: int(pos[n]) for n in self.joints}
-
-    def read_leader(self) -> Dict[str, int]:
-        pos = self.leader_bus.sync_read("Present_Position", normalize=False, num_retry=1)
-        return {n: int(pos[n]) for n in self.joints}
-
-    def reset_filters(self) -> None:
+    # -- modes -------------------------------------------------------------------
+    def start_teleop(self, now: Optional[float] = None) -> Tuple[bool, str]:
+        """Begin following. Refused while the breaker or a thermal stop holds."""
+        now = time.perf_counter() if now is None else now
+        self.governor.clear_breaker()               # the operator asked explicitly
+        if not self.governor.clear_thermal_stop():
+            return False, "温度が高いので追従を始められません。冷めるまで待ってください"
+        st = self.follower.read_telemetry()
+        self.states = st
+        unread = [n for n in self.joints if n not in st or not st[n].ok]
+        if unread:
+            return False, f"位置が読めない関節があります（{', '.join(unread)}）"
+        self.governor.reset(st)
         for f in self.filters.values():
             f.reset()
-
-    def start_teleop(self) -> None:
-        """Begin follow mode with the full safety sequence.
-
-        follower present -> last_goal ; reset filters ; caps (torque off) ;
-        staged torque enable ; go active. Order preserves the brownout guard
-        (caps written before any torque draw).
-        """
-        present = self.read_follower_present()
-        self.last_goal = dict(present)
-        self.reset_filters()
-        self.apply_follower_caps()
-        self.enable_follower_torque_staged()
-        self._cycle = 0
-        self._last_step_t = None
-        self.follower_lag_ticks = 0
+        self.last_ref = {n: st[n].pos for n in self.joints}
+        self.retreating = False
+        self._retreat = None
+        self._cool_target = None
+        if not all(self.torque_on.values()):
+            self.enable_follower_torque_staged()
+            if len([n for n in self.joints if self.torque_on.get(n)]) < len(self.joints):
+                return False, "トルクを入れられない関節があります"
+        self._engaged_at = now
         self.active = True
+        return True, ""
 
     def stop_teleop(self) -> None:
+        """Stop following (or a cooling move) and hold where the follower is now."""
+        if self.retreating:
+            self.governor.cancel_retreat()
         self.active = False
-        self.freeze_follower()
-
-    # -- hot path --------------------------------------------------------------
-    def compute_goals(self, leader_ticks: Dict[str, int],
-                      now: Optional[float] = None) -> Dict[str, int]:
-        """PURE decision step: filter -> range clamp -> last_goal +-step clamp ->
-        deadband. Returns only the joints to WRITE and advances `last_goal` for
-        them. No I/O.
-        """
-        if now is None:
-            now = time.perf_counter()
-        goals: Dict[str, int] = {}
+        self.retreating = False
+        self._retreat = None
+        self._engaged_at = None
         for n in self.joints:
-            raw = float(leader_ticks[n])
-            filt = self.filters[n].filter(raw, now)
-            lo, hi = self.ranges.get(n, (0, 4095))
-            tgt = min(hi, max(lo, filt))
-            last = self.last_goal[n]
-            step = max(-self.cfg.max_step_ticks,
-                       min(self.cfg.max_step_ticks, tgt - last))
-            newgoal = int(round(last + step))
-            if abs(newgoal - last) >= self.cfg.deadband_ticks:
-                goals[n] = newgoal
-                self.last_goal[n] = newgoal
-        return goals
+            s = self.states.get(n)
+            self.hold_target[n] = s.pos if (s is not None and s.ok) else self.hold_target[n]
 
-    def write_goals(self, goals: Dict[str, int]) -> None:
-        if goals:
-            self.follower_bus.sync_write("Goal_Position", goals, normalize=False)
+    def jog(self, joint: str, ticks: int) -> None:
+        """Move one joint while not following (the governor still applies)."""
+        if self.active or self.retreating:
+            return
+        if not self.torque_on.get(joint):
+            if not self.set_follower_torque(joint, True):
+                return
+        self.hold_target[joint] = int(ticks)
 
-    def _update_hz(self, now: float) -> None:
-        if self._last_step_t is not None:
-            dt = now - self._last_step_t
-            if dt > 0:
-                inst = 1.0 / dt
-                # EMA so the reported Hz is stable
-                self._measured_hz = (0.9 * self._measured_hz + 0.1 * inst
-                                     if self._measured_hz else inst)
-        self._last_step_t = now
+    def start_retreat(self, manual: bool = False) -> bool:
+        """Slow straight-line move to the gravity-neutral cooling pose.
 
-    def step(self, leader_ticks: Optional[Dict[str, int]] = None,
-             now: Optional[float] = None) -> dict:
-        """One teleop cycle: (read leader) -> compute -> write follower.
-
-        `leader_ticks` may be supplied by the caller (cockpit already reads the
-        leader for telemetry) to avoid a duplicate sync_read; if omitted the
-        engine reads it. Every `follower_read_every` cycles it also samples the
-        follower present position for a divergence warning (not fed into
-        last_goal). Returns a dict with 'leader', 'goals', and optionally
-        'follower' (present) for the caller's telemetry.
+        Automatic (thermal) retreats never energize the arm: if the operator
+        has relaxed any arm joint, the arm is already shedding heat and an
+        automatic move would bring torque back behind their back. The cooling
+        button (manual) may energize readable joints.
         """
-        if now is None:
-            now = time.perf_counter()
-        if leader_ticks is None:
-            leader_ticks = self.read_leader()
+        self.governor.take_retreat()
+        arm = [n for n in self.joints if n != profile.GRIPPER_NAME]
+        if not manual and not all(self.torque_on.get(n) for n in arm):
+            self._log("冷却姿勢への自動移動は、脱力中の関節があるので行いません")
+            return False
+        if manual and not all(self.torque_on.values()):
+            self.enable_follower_torque_staged()
+        st = self.follower.read_telemetry()
+        target = self.governor.retreat_pose_ticks(st)
+        start = {n: st[n].pos for n in target if self.torque_on.get(n)}
+        target = {n: target[n] for n in start}
+        if not start:
+            self._log("冷却姿勢へ動かせる関節がありません")
+            return False
+        span = max((abs(target[n] - start[n]) for n in start), default=0)
+        dur = max(0.5, span / (RETREAT_DPS * TICKS_PER_DEG))
+        self._retreat = {"start": start, "target": target, "t0": None, "dur": dur}
+        self.active = False
+        self.retreating = True
+        self._engaged_at = None
+        self._log(f"冷却姿勢へ移動します（約 {dur:.0f} 秒）")
+        return True
 
-        goals = self.compute_goals(leader_ticks, now)
-        self.write_goals(goals)
+    # -- references ----------------------------------------------------------------
+    def compute_refs(self, leader_ticks: Dict[str, Optional[int]], now: float
+                     ) -> Dict[str, Optional[int]]:
+        """PURE: filter the leader, then limit the per-cycle jump (glitch guard).
 
-        out: dict = {"leader": leader_ticks, "goals": goals}
+        The previous reference - not the follower's present position - is the
+        base for the jump limit, so a follower that lags (or is held) is never
+        handed a full jump to catch up in one cycle.
+        """
+        refs: Dict[str, Optional[int]] = {}
+        for n in self.joints:
+            raw = leader_ticks.get(n)
+            if raw is None:
+                refs[n] = self.last_ref.get(n)
+                continue
+            filt = self.filters[n].filter(float(raw), now)
+            last = self.last_ref.get(n)
+            if last is None:
+                ref = filt
+            else:
+                step = max(-self.cfg.max_step_ticks, min(self.cfg.max_step_ticks, filt - last))
+                ref = last + step
+            refs[n] = int(round(ref))
+            self.last_ref[n] = refs[n]
+        return refs
 
-        self._cycle += 1
-        if (self.cfg.follower_read_every > 0
-                and self._cycle % self.cfg.follower_read_every == 0):
-            try:
-                present = self.read_follower_present()
-                out["follower"] = present
-                self.follower_lag_ticks = max(
-                    abs(present[n] - self.last_goal[n]) for n in self.joints)
-            except Exception:
-                pass
+    def _retreat_refs(self, now: float) -> Tuple[Dict[str, Optional[int]], bool]:
+        r = self._retreat
+        if r["t0"] is None:
+            r["t0"] = now
+        s = min(1.0, (now - r["t0"]) / r["dur"])
+        s = s * s * (3.0 - 2.0 * s)                  # smooth start and stop
+        refs = {n: int(round(r["start"][n] + (r["target"][n] - r["start"][n]) * s))
+                for n in r["start"]}
+        return refs, s >= 1.0
 
-        self._update_hz(now)
-        return out
+    # -- the cycle -------------------------------------------------------------------
+    def _command(self, n: str, goal: int, vscale: float, fast: bool = False) -> Command:
+        ss = self.cfg.session
+        tl = ss.torque_limit_gripper if n == profile.GRIPPER_NAME else ss.torque_limit_arm
+        if fast:
+            return Command(goal=int(goal), velocity=FAST_VELOCITY,
+                           acceleration=FAST_ACCELERATION, torque_limit=tl)
+        supply = self._supply_scale()
+        vel = max(20, int(round(self.goal_velocity() * vscale * supply)))
+        if self.retreating:
+            vel = max(20, int(round(RETREAT_DPS * TICKS_PER_DEG * 1.5 * supply)))
+        acc = max(1, int(round(ss.acceleration * supply)))
+        return Command(goal=int(goal), velocity=vel, acceleration=acc, torque_limit=tl)
 
-    # -- introspection ---------------------------------------------------------
+    def _changed(self, n: str, c: Command) -> bool:
+        prev = self._sent.get(n)
+        if prev is None:
+            return True
+        return (abs(prev.goal - c.goal) >= self.cfg.goal_deadband_ticks
+                or prev.velocity != c.velocity or prev.acceleration != c.acceleration
+                or prev.torque_limit != c.torque_limit)
+
+    def cycle(self, now: Optional[float] = None) -> dict:
+        """One control cycle. Returns what the cockpit displays."""
+        now = time.perf_counter() if now is None else now
+        t0 = time.perf_counter()
+        if self.leader is not None:
+            self.leader_pos = self.leader.read_positions(self.joints)
+        st = self.follower.read_telemetry(self.joints)
+        self.states = st
+
+        if self.active:
+            refs = self.compute_refs(self.leader_pos, now)
+        elif self.retreating and self._retreat is not None:
+            refs, done = self._retreat_refs(now)
+            if done:
+                # finished only when the arm is actually there; a joint that cannot
+                # lift its load gets a little time, then we stop asking (and say so)
+                r = self._retreat
+                far = [n for n in refs if n in st and st[n].ok
+                       and abs(st[n].pos - refs[n]) > RETREAT_ARRIVE_DEG * TICKS_PER_DEG]
+                late = now - (r["t0"] + r["dur"])
+                if not far or late > RETREAT_WAIT_S:
+                    self.retreating = False
+                    self._retreat = None
+                    if not far:
+                        for n, v in refs.items():
+                            self.hold_target[n] = v
+                        self._cool_target = dict(refs)
+                        self._log("冷却姿勢に着きました。冷めるまでこの姿勢で保持します")
+                    else:
+                        for n in self.joints:
+                            if n in st and st[n].ok:
+                                self.hold_target[n] = st[n].pos
+                        self._cool_target = None
+                        self._log("⚠ 冷却姿勢まで動かせませんでした（"
+                                  + ", ".join(far) + "）。重い物を外すか、腕を支えて下ろしてください")
+        else:
+            refs = {}
+            for n in self.joints:
+                if self.hold_target.get(n) is None and n in st and st[n].ok:
+                    self.hold_target[n] = st[n].pos
+                refs[n] = self.hold_target.get(n)
+
+        out = self.governor.step(refs, st, self.torque_on, now)
+        self.last_out = out
+
+        if self.active and not out.follow_allowed:
+            self._log(f"追従を止めました: {out.stop_reason}")
+            self.stop_teleop()
+            for n, g in out.goals.items():
+                self.hold_target[n] = g
+        if out.retreat and not self.retreating:
+            self.start_retreat(manual=False)
+        if not self.active and not self.retreating:
+            # a frozen joint stays where the governor froze it once we stop following
+            for n, js in out.joints.items():
+                if js.state in ("hold", "protect") and js.goal is not None:
+                    self.hold_target[n] = js.goal
+        # once the arm has left the cooling pose it may need the move again
+        cool = getattr(self, "_cool_target", None)
+        if cool and not self.retreating:
+            off = [abs(st[n].pos - cool[n]) for n in ("shoulder_lift", "elbow_flex", "wrist_flex")
+                   if n in cool and n in st and st[n].ok]
+            if off and max(off) > 10.0 * TICKS_PER_DEG:
+                self.governor.rearm_retreat()
+                self._cool_target = None
+
+        vscale = self._velocity_scale(now)
+        cmds = {}
+        for n, goal in out.goals.items():
+            js = out.joints.get(n)
+            c = self._command(n, goal, vscale, fast=bool(js is not None and js.fast))
+            if self._changed(n, c) or (js is not None and js.resend):
+                cmds[n] = c
+        if cmds:
+            self.follower.write_commands(cmds)
+            self._sent.update(cmds)
+
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        self._cycle_ms.append(dt_ms)
+        if self._last_cycle_t is not None and now > self._last_cycle_t:
+            inst = 1.0 / (now - self._last_cycle_t)
+            self._hz = 0.9 * self._hz + 0.1 * inst if self._hz else inst
+        self._last_cycle_t = now
+        return {"leader": self.leader_pos, "follower": st, "governor": out,
+                "written": sorted(cmds)}
+
+    # -- introspection -----------------------------------------------------------------
     @property
     def measured_hz(self) -> float:
-        return round(self._measured_hz, 1)
+        return round(self._hz, 1)
 
     def metrics(self) -> dict:
-        oe = self.cfg.one_euro
+        ms = sorted(self._cycle_ms)
+        p50 = ms[len(ms) // 2] if ms else 0.0
+        p99 = ms[min(len(ms) - 1, int(len(ms) * 0.99))] if ms else 0.0
+        io_stats = getattr(self.follower, "stats", {}) or {}
         return {
             "measured_hz": self.measured_hz,
             "target_hz": self.cfg.target_hz,
-            "max_step_ticks": self.cfg.max_step_ticks,
-            "deadband_ticks": self.cfg.deadband_ticks,
-            "follower_lag_ticks": self.follower_lag_ticks,
-            "torque_profile": self.torque_profile,
-            "joint_overrides": dict(self.joint_profile_override),
-            "demote_reason": self.demote_reason,
-            "one_euro": {
-                "min_cutoff": oe.min_cutoff,
-                "beta": oe.beta,
-                "d_cutoff": oe.d_cutoff,
-            },
+            "cycle_ms_p50": round(p50, 2),
+            "cycle_ms_p99": round(p99, 2),
+            "io_timeouts": io_stats.get("timeouts", 0),
+            "io_missing": dict(io_stats.get("missing", {})),
+            "speed": self.speed,
+            "governor_mode": self.governor.mode,
+            "instrument_ok": self.instrument_ok,
+            "instrument_detail": self.instrument_detail,
+            "p_effective": dict(self.p_effective),
+            "one_euro": {"min_cutoff": self.cfg.one_euro.min_cutoff,
+                         "beta": self.cfg.one_euro.beta,
+                         "d_cutoff": self.cfg.one_euro.d_cutoff},
         }

@@ -18,6 +18,15 @@
       "port": 8013
     },
     {
+      "name": "so101-cockpit-sim",
+      "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "scripts/so101_cockpit_server.py",
+        "--sim"
+      ],
+      "port": 8023
+    },
+    {
       "name": "so101-follow",
       "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
       "runtimeArgs": [
