@@ -1,53 +1,54 @@
 """SO-101 leader/follower cockpit server (run with .venv-so101 / Python 3.12).
 
 Browser GUI for the leader->follower rig: live state of every motor on both
-arms (position, voltage, temperature, current, torque), a teleop-mode toggle
-(follower mirrors leader through the shared teleop engine — One-Euro smoothing,
-last-goal stepping, brownout-safe staged torque), per-joint jog sliders and
-torque switches for the follower, and ABORT.
+arms, follow mode (manual or automatic once the arms agree), per-joint jog and
+torque for the follower, speed presets, the cooling pose, relax and ABORT.
 
-Separate page (not a ui.html workspace tab) for the same reason as the calib
-GUI: it must own BOTH COM ports exclusively and runs on the lerobot venv,
-which conflicts with scripts/server.py's real driver on the follower port.
+What runs underneath (src/robots/so101/):
+- teleop_engine.TeleopEngine: one control cycle = leader positions + the
+  follower's whole telemetry window + governor decision + one sync write of
+  what changed
+- governor.FollowerGovernor: keeps goals off the end stops, eases off a joint
+  that is pressing on something, keeps holding a weight, freezes a joint whose
+  firmware protection tripped, opens a breaker on repeated trips, stops and
+  cools the arm when it gets hot, slows down on supply sag
+- servo_io: fault-tolerant protocol I/O (status bits are data, a silent servo
+  costs only itself); the follower and leader ports are used through it only
 
-Single worker thread owns both Feetech buses (serial is not thread-safe);
-HTTP handlers only enqueue commands and read a shared snapshot. Transient bus
-dropouts (12V supply sag) are logged and reconnected, not fatal. The motion +
-safety pipeline lives in src/robots/so101/teleop_engine.py, shared with the CLI
-(scripts/so101_teleop.py) so there is one definition of the caps, smoothing and
-stepping logic.
-
-Both COM ports are identified by measurement (src/robots/so101/ports.py), not
-by number: the two arms carry the same USB chip, so a hard-coded pair silently
-swaps roles when Windows renumbers them. The worker waits for the cables, so the
-server can be started before anything is plugged in.
+A single worker thread owns both buses (serial is not thread-safe); HTTP
+handlers only enqueue commands and read a shared snapshot. Bus dropouts are
+logged and reconnected, not fatal. Both COM ports are identified by measurement
+(src/robots/so101/ports.py): the two arms carry the same USB chip.
 
 Run:  .venv-so101\\Scripts\\python.exe scripts\\so101_cockpit_server.py
       ... --auto-follow      # follow engages by itself once the arms agree
-Open: http://localhost:8013/
+      ... --sim              # simulated arm (MuJoCo + STS3215 model) on :8023
+Open: http://localhost:8013/  (simulation: http://localhost:8023/)
 """
 from __future__ import annotations
-import sys
-import json
-import time
-import queue
+
 import argparse
+import json
+import math
 import pathlib
+import queue
+import sys
 import threading
+import time
 import urllib.request
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from robots.so101.teleop_engine import (
-    TeleopEngine, TeleopConfig, JOINTS, make_bus, load_ranges,
-    classify_voltage, classify_temperature,
-    AutoFollowGate, deg_to_ticks, AUTO_FOLLOW_TOL_DEG, TICKS_PER_DEG,
-    VOLT_WARN_V, VOLT_DEMOTE_V, TEMP_WARN_C, TEMP_DEMOTE_C,
+from robots.so101 import servo_config  # noqa: E402
+from robots.so101 import ports as so101_ports  # noqa: E402
+from robots.so101.teleop_engine import (  # noqa: E402
+    AUTO_FOLLOW_TOL_DEG, JOINTS, TICKS_PER_DEG, AutoFollowGate, TeleopConfig,
+    TeleopEngine, deg_to_ticks, load_ranges, make_bus,
 )
-from robots.so101 import ports as so101_ports
 
 HERE = pathlib.Path(__file__).resolve().parent
 UI_HTML = HERE / "so101_cockpit.html"
@@ -138,16 +139,22 @@ def _quest_launch_message(result: dict) -> str:
         head = "HMD でページを開きました。ヘッドセット内で「VR 開始」をタップしてください。"
     return head + ("  " + " / ".join(parts) if parts else "")
 
-# How often (in worker cycles) to read one slow telemetry field (V/temp/current).
-# Kept off the teleop hot path so smoothing latency is unaffected.
-TELEMETRY_EVERY = 6
+
+# How often (cycles) the leader's slow telemetry (voltage / temperature) is read.
+LEADER_TELEMETRY_EVERY = 30
+# A follower whose every joint has been silent this many cycles is unplugged.
+ARM_DOWN_CYCLES = 30
+# Operator messages stay up at least this long, so a passing state is readable.
+MESSAGE_HOLD_S = 3.0
+CURRENT_PEAK_WINDOW_S = 2.0
 
 LOCK = threading.Lock()
 CMDQ: "queue.Queue" = queue.Queue()
 STATE = {
-    "connected": False, "teleop": False, "error": "", "log": [],
-    "leader": {}, "follower": {}, "hz": 0.0, "engine": {},
-    "torque_profile": "full", "demote_reason": "",
+    "source": "hw", "connected": False, "teleop": False, "retreating": False,
+    "error": "", "log": [], "leader": {}, "follower": {}, "arm": {}, "hz": 0.0,
+    "engine": {}, "findings": [], "ranges": {},
+    "speed_presets": {k: v["label"] for k, v in servo_config.SPEED_PRESETS.items()},
     "ports": {"leader": "", "follower": "", "source": "", "confirmed": False,
               "detail": "検出中…"},
     "auto_follow": {"enabled": False, "armed": False, "status": "無効",
@@ -158,42 +165,108 @@ STATE = {
 def log(msg: str):
     with LOCK:
         entries = STATE["log"]
-        # collapse repeats: a servo in a protection trip re-raises the same error
-        # twice a second, which otherwise flushes the 40-line buffer and takes
-        # every useful line (the ABORT, the demotion, the reconnect) with it.
+        # collapse repeats so one noisy servo cannot flush the useful lines
         if entries and entries[-1].get("raw") == msg:
             entries[-1]["n"] = entries[-1].get("n", 1) + 1
             entries[-1]["msg"] = f"{msg}（×{entries[-1]['n']}）"
             entries[-1]["t"] = time.strftime("%H:%M:%S")
             return
         entries.append({"t": time.strftime("%H:%M:%S"), "msg": msg, "raw": msg})
-        del entries[:-40]
+        del entries[:-60]
+
+
+# ---------------------------------------------------------------------------
+# simulation backend
+# ---------------------------------------------------------------------------
+SIM_RANGES = {
+    "shoulder_pan": (874, 3159), "shoulder_lift": (815, 3145), "elbow_flex": (859, 3065),
+    "wrist_flex": (911, 3193), "wrist_roll": (0, 4095), "gripper": (1605, 3086),
+}
+
+
+def sim_demo_path(t: float) -> dict:
+    """A 30 s loop for the simulated leader: sweep, press into the table, lift,
+    reach out and hold. Shows tracking, HOLD and recovery in the cockpit."""
+    t = t % 30.0
+
+    def blend(a, b, t0, t1):
+        s = 0.0 if t <= t0 else 1.0 if t >= t1 else (t - t0) / (t1 - t0)
+        s = s * s * (3 - 2 * s)
+        return {k: a[k] + (b[k] - a[k]) * s for k in a}
+
+    above = {"shoulder_pan": 0.0, "shoulder_lift": -20.0, "elbow_flex": 30.0, "wrist_flex": 60.0}
+    pressed = {"shoulder_pan": 0.0, "shoulder_lift": 50.0, "elbow_flex": 10.0, "wrist_flex": 40.0}
+    reach = {"shoulder_pan": 0.0, "shoulder_lift": 30.0, "elbow_flex": -40.0, "wrist_flex": 10.0}
+    if t < 6.0:
+        p = dict(above)
+        p["shoulder_pan"] = 25.0 * math.sin(t * math.pi / 3.0)
+    elif t < 14.0:
+        p = blend(above, pressed, 6.0, 9.0)
+    elif t < 18.0:
+        p = blend(pressed, above, 14.0, 17.0)
+    else:
+        p = blend(above, reach, 18.0, 21.0)
+        p["shoulder_pan"] = 15.0 * math.sin((t - 18.0) * math.pi / 6.0)
+    p["gripper"] = 0.0
+    return p
+
+
+class SimBackend:
+    def __init__(self, ranges):
+        from robots.so101.sim.servo_sim import ScriptedLeaderBus, SimArm, SimFollowerBus, World
+        self.arm = SimArm(ranges=ranges, world=World(table_z_m=0.0),
+                          start_deg=[0.0, -20.0, 30.0, 60.0, 0.0])
+        self.follower = SimFollowerBus(self.arm, realtime=True)
+        self.leader = ScriptedLeaderBus(ranges, sim_demo_path)
+        # the arm starts energized, holding its pose: a limp simulated arm would
+        # fall through the table (only the gripper collides with it)
+        self.follower.sync_write("Torque_Enable", {n: 1 for n in self.follower.names})
+
+
+# ---------------------------------------------------------------------------
+# worker
+# ---------------------------------------------------------------------------
+def _drain(q: "queue.Queue") -> list:
+    """All pending commands, safety first, latest jog per joint only."""
+    cmds = []
+    while True:
+        try:
+            cmds.append(q.get_nowait())
+        except queue.Empty:
+            break
+    urgent = [c for c in cmds if c.get("op") in ("abort", "relax")]
+    jogs = {}
+    rest = []
+    for c in cmds:
+        op = c.get("op")
+        if op == "jog":
+            jogs[c.get("joint")] = c
+        elif op not in ("abort", "relax"):
+            rest.append(c)
+    return urgent + rest + list(jogs.values())
 
 
 def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
            auto_follow: bool = False, tol_deg: float = AUTO_FOLLOW_TOL_DEG,
-           stop: threading.Event = None):
-    ranges = load_ranges(log)
-    telemetry = {a: {n: {"pos": 0, "volt": 0.0, "temp": 0, "cur": 0, "torque": 0}
-                     for n in JOINTS} for a in ("leader", "follower")}
+           stop: threading.Event = None, sim: bool = False):
+    stopping = (lambda: False) if stop is None else stop.is_set
+    ranges = SIM_RANGES if sim else load_ranges(log)
+    backend = SimBackend(ranges) if sim else None
     engine = None
-    leader = follower = None
-    roles = None    # resolved so101_ports.Roles (which COM is which arm)
-    slow_idx = 0    # round-robin (arm, joint) for slow telemetry reads
-    cycle = 0
-    # trip-wire edge state: last classified level so WARN/DEMOTE logs fire once
-    # on transition instead of every round-robin pass through the same joint.
-    trip = {"volt": "ok", "temp": {n: "ok" for n in JOINTS}}
-    # (arm, joint) -> consecutive telemetry read failures. Non-empty means those
-    # displayed values are frozen at their last good read, not live.
-    telem_fail: dict = {}
-
-    # Auto-follow: `enabled` is the CLI choice (never changes), `armed` is the
-    # live state — it drops on any operator stop (toggle off / ABORT / relax) and
-    # on a bus dropout, so nothing re-engages motion behind the operator's back.
+    leader_bus = follower_bus = None
+    roles = None
     gate = AutoFollowGate(tol_ticks=deg_to_ticks(tol_deg))
     auto = {"enabled": bool(auto_follow), "armed": bool(auto_follow)}
-    stopping = (lambda: False) if stop is None else stop.is_set
+    leader_view = {n: {"pos": None, "torque": 0, "volt": 0.0, "temp": 0, "stale": True}
+                   for n in JOINTS}
+    peaks = {n: deque() for n in JOINTS}          # (t, |I|) for the 2 s current peak
+    held_msg = {"text": "", "level": "info", "until": 0.0}
+    silent_cycles = 0
+    cycle = 0
+
+    with LOCK:
+        STATE["source"] = "sim" if sim else "hw"
+        STATE["ranges"] = ranges
 
     def publish_auto(status: str = None):
         with LOCK:
@@ -201,8 +274,7 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
                 "enabled": auto["enabled"], "armed": auto["armed"],
                 "status": status if status is not None else gate.status,
                 "gap_deg": round(gate.gap_ticks / TICKS_PER_DEG, 1),
-                "gap_joint": gate.gap_joint or "",
-                "tol_deg": tol_deg,
+                "gap_joint": gate.gap_joint or "", "tol_deg": tol_deg,
             }
 
     def disarm_auto(why: str):
@@ -215,81 +287,184 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
     publish_auto("待機中" if auto["enabled"] else "無効")
 
     def ensure_roles():
-        """Identify which COM port is which arm, waiting for the USB if needed."""
         nonlocal roles
         if roles is not None:
             return
-        roles = so101_ports.wait_for_ports(leader_arg, follower_arg, log=log, poll=2.0,
-                                           should_stop=stopping)
+        if sim:
+            roles = so101_ports.Roles(leader="sim", follower="sim", source="sim",
+                                      detail="シミュレーション（実機ではありません）")
+        else:
+            roles = so101_ports.wait_for_ports(leader_arg, follower_arg, log=log, poll=2.0,
+                                               should_stop=stopping)
+        confirmed = roles.confirmed or sim       # the simulated arms cannot be swapped
         with LOCK:
             STATE["ports"] = {"leader": roles.leader, "follower": roles.follower,
-                              "source": roles.source, "confirmed": roles.confirmed,
+                              "source": roles.source, "confirmed": confirmed,
                               "detail": roles.detail}
-        if auto["armed"] and not roles.confirmed:
-            # A remembered (or asserted) mapping can be wrong if the cables were
-            # swapped, and a swapped mapping drives the LEADER. Require a human.
+        if auto["armed"] and not confirmed:
+            # a remembered mapping can be wrong if the cables were swapped, and
+            # a swapped mapping drives the LEADER: require a human
             auto["armed"] = False
             log("⚠ ポートを実測で確定できていないため自動追従は開始しません"
                 "（役割を確認して手動で ON にしてください）")
             publish_auto("ポート未確定 — 手動で確認してください")
 
     def connect_all():
-        nonlocal leader, follower, engine
+        nonlocal leader_bus, follower_bus, engine
         ensure_roles()
-        leader = make_bus(roles.leader)
-        leader.connect(handshake=False)
-        follower = make_bus(roles.follower)
-        follower.connect(handshake=False)
-        if engine is None:
-            engine = TeleopEngine(leader, follower, ranges, config=cfg, log=log)
+        if sim:
+            leader_bus, follower_bus = backend.leader, backend.follower
         else:
-            engine.rebind(leader, follower)
-        engine.apply_follower_caps()
+            leader_bus = make_bus(roles.leader)
+            leader_bus.connect(handshake=False)
+            follower_bus = make_bus(roles.follower)
+            follower_bus.connect(handshake=False)
+        if engine is None:
+            engine = TeleopEngine(leader_bus, follower_bus, ranges, config=cfg, log=log)
+        else:
+            engine.rebind(leader_bus, follower_bus)
+        # an unplugged follower must fail fast, not after a 180-register audit
+        if not any(s.ok for s in engine.follower.read_telemetry().values()):
+            raise ConnectionError("follower が応答しません（ケーブル・12V を確認）")
+        engine.sync_torque_state()
+        engine.configure_follower()
         gate.reset()
+        with LOCK:
+            STATE["findings"] = [f.__dict__ for f in engine.findings]
 
-    def set_follower_torque(joint: str, on: bool):
-        engine.set_follower_torque(joint, on)
-        telemetry["follower"][joint]["torque"] = 1 if on else 0
-
-    def read_slow_telemetry(arm: str, n: str, bus, t: dict):
-        """Read one motor's V / temp / current and run the follower trip-wires.
-
-        Raises if the motor refuses to answer (a servo in a protection trip
-        error-packets every read); the caller isolates that to this motor.
-        """
-        t["volt"] = bus.read("Present_Voltage", n, normalize=False) / 10
-        t["temp"] = bus.read("Present_Temperature", n, normalize=False)
-        t["cur"] = bus.read("Present_Current", n, normalize=False)
-        if arm == "leader":
-            t["torque"] = bus.read("Torque_Enable", n, normalize=False)
+    def close_buses():
+        if sim:
             return
-        # trip-wire: watch the 12V follower for supply sag / overheat. Log on
-        # level transition (edge) so a persistent low reading doesn't spam.
-        # Demotion is one-way here — recovery is manual.
-        v = t["volt"]
-        if v and v > 1.0:                          # ignore stale/zero reads
-            vlvl = classify_voltage(v)
-            if vlvl != trip["volt"]:
-                if vlvl == "warn":
-                    log(f"⚠ フォロワー電圧低下 {v:.1f}V (< {VOLT_WARN_V}V)")
-                elif vlvl == "demote":
-                    log(f"⚠ 電源sag {v:.1f}V (< {VOLT_DEMOTE_V}V)"
-                        f" → safe プロファイルへ自動降格")
-                    if engine.torque_profile != "safe":
-                        engine.set_torque_profile("safe", reason=f"電源sag {v:.1f}V")
-                trip["volt"] = vlvl
-        tp = t["temp"]
-        tlvl = classify_temperature(tp)
-        if tlvl != trip["temp"][n]:
-            if tlvl == "warn":
-                log(f"⚠ {n} 温度上昇 {tp}℃ (> {TEMP_WARN_C}℃)")
-            elif tlvl == "demote":
-                log(f"⚠ {n} 高温 {tp}℃ (> {TEMP_DEMOTE_C}℃) → この関節を safe 値へ降格")
-                engine.demote_joint(n, reason=f"{n} 高温 {tp}℃")
-            trip["temp"][n] = tlvl
+        for b in (leader_bus, follower_bus):
+            try:
+                if b is not None:
+                    b.disconnect(disable_torque=False)
+            except Exception:
+                pass
 
-    # 初回接続はリトライループ（電圧エラーラッチ等は電源挿し直しで直るため、
-    # プロセス再起動なしで復帰できるようにする）
+    def handle(cmd: dict):
+        op = cmd.get("op")
+        if op == "abort":
+            engine.stop_teleop()
+            log("⛔ ABORT — 追従停止・その場で保持")
+            disarm_auto("ABORT")
+        elif op == "relax":
+            log("🧊 脱力（冷却）— アームを支えてください")
+            engine.relax_follower()
+            log("脱力完了。復帰は追従ON か各関節トルクスイッチで")
+            disarm_auto("脱力")
+        elif op == "teleop":
+            if bool(cmd.get("on")):
+                ok, why = engine.start_teleop()
+                if ok:
+                    log("追従モード ON")
+                    auto["armed"] = False
+                    publish_auto("追従中")
+                else:
+                    log(f"追従を開始できません: {why}")
+            else:
+                engine.stop_teleop()
+                log("追従モード OFF（姿勢保持）")
+                disarm_auto("手動 OFF")
+        elif op == "auto_follow":
+            if bool(cmd.get("on")):
+                auto["armed"] = True
+                gate.reset()
+                log(f"自動追従を待機 — リーダーをフォロワーの姿勢に合わせると開始"
+                    f"（各関節 {tol_deg:g}° 以内）")
+                publish_auto()
+            else:
+                disarm_auto("手動解除")
+        elif op == "jog":
+            n = cmd.get("joint")
+            if n in JOINTS and not engine.active:
+                lo, hi = ranges[n]
+                engine.jog(n, max(lo, min(hi, int(cmd.get("pos", 0)))))
+        elif op == "torque":
+            n = cmd.get("joint")
+            arm = cmd.get("arm", "follower")
+            on = bool(cmd.get("on"))
+            names = JOINTS if n == "all" else ([n] if n in JOINTS else [])
+            if arm == "follower":
+                if n == "all" and not on:
+                    engine.relax_follower()
+                elif n == "all" and on:
+                    engine.enable_follower_torque_staged()
+                else:
+                    for j in names:
+                        engine.set_follower_torque(j, on)
+            elif engine.leader is not None:
+                engine.leader.sync_write("Torque_Enable", {j: 1 if on else 0 for j in names})
+                for j in names:
+                    leader_view[j]["torque"] = 1 if on else 0
+            log(f"{arm} {n} torque {'ON' if on else 'OFF'}")
+        elif op == "speed":
+            try:
+                engine.set_speed(str(cmd.get("preset")))
+                log(f"速度: {servo_config.SPEED_PRESETS[engine.speed]['label']}")
+            except ValueError as e:
+                log(f"不正な速度: {e}")
+        elif op == "retreat":
+            engine.start_retreat()
+            disarm_auto("冷却姿勢")
+        elif op == "torque_profile":
+            log("トルクプロファイルは廃止しました（負荷と温度による自動調整に置き換え）")
+
+    def publish(res: dict, now: float):
+        out = res["governor"]
+        fol = {}
+        for n in JOINTS:
+            s = res["follower"].get(n)
+            js = out.joints.get(n)
+            if s is None or js is None:
+                continue
+            dq = peaks[n]
+            dq.append((now, abs(s.current)))
+            while dq and now - dq[0][0] > CURRENT_PEAK_WINDOW_S:
+                dq.popleft()
+            fol[n] = {
+                "pos": s.pos, "goal": js.goal, "torque": 1 if engine.torque_on.get(n) else 0,
+                "state": js.state, "reason": js.reason, "duty": round(js.duty),
+                "current": round(abs(s.current), 2),
+                "current_max": round(max(v for _, v in dq), 2) if dq else 0.0,
+                "temp": s.temp, "volt": round(s.volt, 1), "faults": list(s.faults),
+                "stale": (not s.ok) and s.age > 3, "gravity": round(js.gravity),
+            }
+        lpos = res.get("leader") or {}
+        for n in JOINTS:
+            if lpos.get(n) is not None:
+                leader_view[n]["pos"] = lpos[n]
+                leader_view[n]["stale"] = False
+            elif n in lpos:
+                leader_view[n]["stale"] = True
+        # hold an operator message for a few seconds so a passing state is readable
+        if out.message:
+            if out.message != held_msg["text"]:
+                held_msg.update(text=out.message, level=out.message_level,
+                                until=now + MESSAGE_HOLD_S)
+            else:
+                held_msg["until"] = now + MESSAGE_HOLD_S
+        elif now > held_msg["until"]:
+            held_msg.update(text="", level="info")
+        currents = [abs(s.current) for s in res["follower"].values() if s.ok]
+        with LOCK:
+            STATE["connected"] = True
+            STATE["error"] = ""
+            STATE["teleop"] = engine.active
+            STATE["retreating"] = engine.retreating
+            STATE["follower"] = fol
+            STATE["leader"] = json.loads(json.dumps(leader_view))
+            STATE["arm"] = {
+                "supply_v": out.supply_v, "current_sum": round(sum(currents), 2),
+                "thermal": out.thermal, "follow_allowed": out.follow_allowed,
+                "stop_reason": out.stop_reason, "speed": engine.speed,
+                "speed_scale": out.speed_scale, "message": held_msg["text"],
+                "message_level": held_msg["level"], "breaker": engine.governor.breaker,
+            }
+            STATE["hz"] = engine.measured_hz
+            STATE["engine"] = engine.metrics()
+
+    # ---- connect (retrying: a latched voltage error clears on a power cycle) ----
     first_fail = True
     fails = 0
     while not stopping():
@@ -298,7 +473,7 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
             with LOCK:
                 STATE["connected"] = True
                 STATE["error"] = ""
-            log("両アーム接続 OK")
+            log("両アーム接続 OK" + ("（シミュレーション）" if sim else ""))
             if auto["armed"]:
                 log(f"自動追従: 待機中 — リーダーをフォロワーの姿勢に合わせると"
                     f"（各関節 {tol_deg:g}° 以内）自動で追従を開始します")
@@ -308,14 +483,9 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
                 return
             fails += 1
             if fails >= 2:
-                # COM numbers move when a cable is replugged; re-identify rather
-                # than retry a port that may no longer be the arm we think.
-                roles = None
+                roles = None          # COM numbers move on replug: re-identify
             msg = str(e)
             if "Input voltage error" in msg:
-                # サーボ EEPROM の Max_Voltage(addr14)/Min_Voltage(addr15) を実電圧が
-                # 外れると出る。電源再投入では消えない（設定側の問題）。2026-07-17 に
-                # id3/4/5 が Max=12.0V のまま実測 12.2V で恒久エラーになった実績あり。
                 msg += ("（電圧リミット外れ: 電源ではなくサーボ設定側の可能性大。"
                         "scripts/so101_check_voltage_limits.py で Max/Min_Voltage と"
                         "実電圧を突き合わせてください）")
@@ -325,218 +495,82 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
                 log(f"接続失敗: {msg}")
                 log("5秒ごとに再接続を試みます")
                 first_fail = False
-            for b in (leader, follower):
-                try:
-                    if b is not None:
-                        b.disconnect(disable_torque=False)
-                except Exception:
-                    pass
+            close_buses()
             time.sleep(5.0)
 
     while not stopping():
         cycle_start = time.perf_counter()
         try:
-            # ---- commands -------------------------------------------------
-            try:
-                cmd = CMDQ.get_nowait()
-            except queue.Empty:
-                cmd = None
-            if cmd:
-                op = cmd.get("op")
-                if op == "teleop":
-                    if bool(cmd["on"]):
-                        engine.start_teleop()      # staged torque enable inside
-                        for n in JOINTS:
-                            telemetry["follower"][n]["torque"] = 1
-                        log("追従モード ON")
-                        auto["armed"] = False      # already following
-                        publish_auto("追従中")
-                    else:
-                        engine.stop_teleop()       # freeze (torque stays on)
-                        log("追従モード OFF（姿勢保持）")
-                        disarm_auto("手動 OFF")
-                elif op == "auto_follow":
-                    if bool(cmd.get("on")):
-                        auto["armed"] = True
-                        gate.reset()
-                        log(f"自動追従を待機 — リーダーをフォロワーの姿勢に"
-                            f"合わせると開始（各関節 {tol_deg:g}° 以内）")
-                        publish_auto()
-                    else:
-                        disarm_auto("手動解除")
-                elif op == "jog" and not engine.active:
-                    n = cmd["joint"]
-                    lo, hi = ranges[n]
-                    tgt = max(lo, min(hi, int(cmd["pos"])))
-                    set_follower_torque(n, True)
-                    follower.write("Goal_Position", n, tgt, normalize=False)
-                    engine.last_goal[n] = tgt
-                elif op == "torque":
-                    n = cmd["joint"]
-                    arm = cmd.get("arm", "follower")
-                    names = JOINTS if n == "all" else [n]
-                    for j in names:
-                        if arm == "follower":
-                            set_follower_torque(j, bool(cmd["on"]))
-                        else:
-                            leader.write("Torque_Enable", j, 1 if cmd["on"] else 0,
-                                         normalize=False)
-                            telemetry["leader"][j]["torque"] = 1 if cmd["on"] else 0
-                    log(f"{arm} {n} torque {'ON' if cmd['on'] else 'OFF'}")
-                elif op == "torque_profile":
-                    prof = str(cmd.get("profile", "full"))
-                    try:
-                        # applies live (even mid-teleop). "full" is a manual
-                        # recovery: clears any watchdog demotion + per-joint holds.
-                        engine.set_torque_profile(prof, reason="手動切替")
-                        if prof == "full":
-                            trip["volt"] = "ok"
-                            trip["temp"] = {n: "ok" for n in JOINTS}
-                        log(f"トルクプロファイル → {prof}"
-                            f"{'（手動復帰）' if prof == 'full' else '（手動降格）'}")
-                    except ValueError as e:
-                        log(f"不正なトルクプロファイル: {e}")
-                elif op == "abort":
-                    engine.stop_teleop()
-                    log("⛔ ABORT — 追従停止・姿勢凍結")
-                    disarm_auto("ABORT")
-                elif op == "relax":
-                    # 冷却モード: 追従OFF + フォロワー全関節トルクOFF（先端→根元）。
-                    # freeze はしない（トルクを切るので姿勢保持は無意味）。
-                    log("🧊 脱力（冷却モード）— アームを支えてください")
-                    engine.relax_follower()
-                    for n in JOINTS:
-                        telemetry["follower"][n]["torque"] = 0
-                    log("脱力完了。復帰は追従ON か各関節トルクスイッチで")
-                    disarm_auto("脱力")
+            for cmd in _drain(CMDQ):
+                handle(cmd)
 
-            # ---- fast telemetry: leader positions (teleop input + display) -
-            lead = engine.read_leader()
-            for n in JOINTS:
-                telemetry["leader"][n]["pos"] = lead[n]
+            res = engine.cycle()
+            now = time.perf_counter()
 
-            # ---- teleop step (follower present NOT read every cycle) -------
-            if engine.active:
-                res = engine.step(leader_ticks=lead)
-                for n in JOINTS:                       # display commanded goal
-                    telemetry["follower"][n]["pos"] = engine.last_goal[n]
-                if "follower" in res:                  # periodic present sample
-                    for n in JOINTS:
-                        telemetry["follower"][n]["pos"] = res["follower"][n]
-            else:
-                # idle: keep follower display live with an actual present read
-                fpos = engine.read_follower_present()
-                for n in JOINTS:
-                    telemetry["follower"][n]["pos"] = fpos[n]
-                # armed auto-follow: engage once the operator has brought the
-                # leader onto the follower's pose and holds it there, so follow
-                # mode starts from agreement instead of snapping across a gap.
-                if auto["armed"]:
-                    if gate.update(lead, fpos):
-                        engine.start_teleop()
-                        for n in JOINTS:
-                            telemetry["follower"][n]["torque"] = 1
+            # armed auto-follow: engage once the operator has parked the leader
+            # on the follower's pose, so follow starts from agreement
+            if auto["armed"] and not engine.active and not engine.retreating:
+                lead = {n: v for n, v in (res.get("leader") or {}).items() if v is not None}
+                foll = {n: s.pos for n, s in res["follower"].items() if s.ok}
+                if gate.update(lead, foll):
+                    ok, why = engine.start_teleop()
+                    if ok:
                         auto["armed"] = False
                         log(f"▶ 自動追従 ON — {gate.status}")
                         publish_auto("追従中")
                     else:
-                        publish_auto()
-
-            # ---- slow telemetry: V / temp / current, one motor per N cycles-
-            # ⚠ Guarded per motor. A servo sitting in a protection trip answers
-            # every read with an error packet; letting that escape aborted the
-            # cycle before the STATE write, so the whole cockpit froze on the
-            # last good snapshot — the operator read a stale 51C / 345mA as live
-            # while the arm had actually cooled (2026-08-07). One sick motor now
-            # only marks its own fields stale.
-            if cycle % TELEMETRY_EVERY == 0:
-                arm = ("leader", "follower")[slow_idx % 2]
-                n = JOINTS[(slow_idx // 2) % len(JOINTS)]
-                bus = leader if arm == "leader" else follower
-                t = telemetry[arm][n]
-                try:
-                    read_slow_telemetry(arm, n, bus, t)
-                except Exception as e:
-                    fails = telem_fail.get((arm, n), 0) + 1
-                    telem_fail[(arm, n)] = fails
-                    t["stale"] = True
-                    if fails == 1:
-                        log(f"⚠ {arm} {n} のテレメトリ読めず（値は据え置き・古い表示）: {e}")
+                        log(f"自動追従を開始できません: {why}")
+                        disarm_auto(why)
                 else:
-                    if telem_fail.pop((arm, n), 0):
-                        log(f"{arm} {n} のテレメトリ復帰")
-                    t["stale"] = False
-                slow_idx += 1
-            cycle += 1
+                    publish_auto()
 
-            # Isolating a sick motor (above) must not paper over a dead ARM: if
-            # every joint on one side has stopped answering, the cable is out,
-            # not one servo tripped. Say so instead of reporting "接続OK" while
-            # the follower is unreachable (2026-08-07: COM13 unplugged mid-run).
-            arm_down = [a for a in ("leader", "follower")
-                        if all(telem_fail.get((a, n), 0) for n in JOINTS)]
-            if arm_down and engine.active:
-                engine.active = False
-                log(f"⚠ {'/'.join(arm_down)} が全軸無応答 → 追従停止（ケーブルを確認）")
-                disarm_auto("アーム無応答")
-
-            with LOCK:
-                STATE["teleop"] = engine.active
-                STATE["connected"] = not arm_down
-                STATE["error"] = (f"{'/'.join(arm_down)} が全軸無応答" if arm_down else "")
-                STATE["leader"] = json.loads(json.dumps(telemetry["leader"]))
-                STATE["follower"] = json.loads(json.dumps(telemetry["follower"]))
-                STATE["ranges"] = ranges
-                STATE["hz"] = engine.measured_hz
-                STATE["engine"] = engine.metrics()
-                STATE["torque_profile"] = engine.torque_profile
-                STATE["demote_reason"] = engine.demote_reason
-        except ConnectionError as e:
-            # supply sag / bus dropout: log, reconnect, keep serving
-            log(f"バス断: {e}")
-            with LOCK:
-                STATE["connected"] = False
-                STATE["error"] = str(e)
-            disarm_auto("バス断")
-            if engine is not None:
-                engine.active = False
-                # a bus dropout is itself a brownout symptom: demote to safe so
-                # the reconnected follower comes back with reduced draw. state
-                # only (apply=False) — connect_all re-applies caps on reconnect.
-                if engine.torque_profile != "safe":
-                    engine.set_torque_profile(
-                        "safe", reason="バス断（brownout の徴候）", apply=False)
-                    trip["volt"] = "demote"
-                    log("バス断のため safe プロファイルへ降格（復帰は手動）")
-            for b in (leader, follower):
+            if cycle % LEADER_TELEMETRY_EVERY == 0 and engine.leader is not None:
                 try:
-                    if b is not None:
-                        b.disconnect(disable_torque=False)
+                    lt = engine.leader.read_telemetry()
+                    for n, s in lt.items():
+                        if s.ok:
+                            leader_view[n].update(volt=round(s.volt, 1), temp=s.temp)
                 except Exception:
                     pass
-            time.sleep(1.0)
-            try:
-                connect_all()
-                log("再接続 OK（追従モードは安全のため OFF）")
-            except Exception as e2:
-                log(f"再接続失敗: {e2}")
-                roles = None      # cable may have moved: re-identify next try
-                time.sleep(2.0)
+            cycle += 1
+
+            # an unplugged follower: every joint silent for a while
+            if all((not s.ok) for s in res["follower"].values()):
+                silent_cycles += 1
+            else:
+                silent_cycles = 0
+            if silent_cycles >= ARM_DOWN_CYCLES:
+                raise ConnectionError("follower が全軸無応答（ケーブルを確認）")
+
+            publish(res, now)
         except Exception as e:
-            # An unexpected error skips the STATE write above, so publish the
-            # fields the operator acts on — otherwise `teleop` reads stale-true
-            # and the page looks like it is still following when it is not.
+            # bus dropout / unplugged cable / serial error: stop, report, reconnect
+            is_bus = isinstance(e, (ConnectionError, OSError)) or "Serial" in type(e).__name__
+            log(("バス断: " if is_bus else "エラー: ") + str(e))
+            if engine is not None and (engine.active or engine.retreating):
+                engine.stop_teleop()
             with LOCK:
+                STATE["connected"] = False if is_bus else STATE["connected"]
                 STATE["error"] = str(e)
                 if engine is not None:
                     STATE["teleop"] = engine.active
-                    STATE["torque_profile"] = engine.torque_profile
-            log(f"エラー: {e}")
-            time.sleep(0.5)
+                    STATE["retreating"] = engine.retreating
+            disarm_auto("バス断" if is_bus else "エラー")
+            if is_bus:
+                silent_cycles = 0
+                close_buses()
+                time.sleep(1.0)
+                try:
+                    connect_all()
+                    log("再接続 OK（追従モードは安全のため OFF）")
+                except Exception as e2:
+                    log(f"再接続失敗: {e2}")
+                    roles = None
+                    time.sleep(2.0)
+            else:
+                time.sleep(0.5)
 
-        # 締切基準でペースを取る（固定 sleep だと実 I/O 時間の分だけ周期が漂う）。
-        # teleop 中は target_hz、idle 時は 30ms 相当に落としてバスを空ける。
-        period = cfg.period if (engine and engine.active) else 0.03
+        period = cfg.period if (engine and (engine.active or engine.retreating)) else 1.0 / 30.0
         time.sleep(max(0.0, cycle_start + period - time.perf_counter()))
 
 
@@ -560,7 +594,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, UI_HTML.read_bytes(), "text/html; charset=utf-8")
         elif path == "/state":
             with LOCK:
-                self._send(200, json.dumps(STATE).encode("utf-8"))
+                body = json.dumps(STATE, ensure_ascii=False)
+            self._send(200, body.encode("utf-8"))
         elif path == "/hand-status":
             # server-side proxy to the hand server (:8001) so the browser avoids
             # a cross-origin call. Independent of the SO-101 serial worker.
@@ -580,7 +615,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         ops = {"/teleop": "teleop", "/jog": "jog", "/torque": "torque",
                "/torque_profile": "torque_profile", "/abort": "abort",
-               "/relax": "relax", "/auto_follow": "auto_follow"}
+               "/relax": "relax", "/auto_follow": "auto_follow", "/speed": "speed",
+               "/retreat": "retreat"}
         op = ops.get(path)
         if op is None:
             self._send(404, b'{"error":"not found"}')
@@ -644,24 +680,32 @@ def main():
                     help="COM port of the leader arm, or 'auto' to identify it")
     ap.add_argument("--follower-port", default="auto",
                     help="COM port of the follower arm, or 'auto' to identify it")
-    ap.add_argument("--http-port", type=int, default=8013)
-    ap.add_argument("--fps", type=float, default=60.0, help="teleop target rate (Hz)")
+    ap.add_argument("--http-port", type=int, default=None,
+                    help="default 8013 (8023 with --sim)")
+    ap.add_argument("--fps", type=float, default=60.0, help="control rate while moving (Hz)")
+    ap.add_argument("--speed", choices=list(servo_config.SPEED_PRESETS), default="normal")
+    ap.add_argument("--governor", choices=["active", "shadow"], default="active",
+                    help="shadow: show what the governor would do, command the plain reference")
     ap.add_argument("--auto-follow", action="store_true",
                     help="arm follow mode at boot: engages by itself once the "
                          "leader is brought onto the follower's pose")
     ap.add_argument("--auto-follow-tol-deg", type=float, default=AUTO_FOLLOW_TOL_DEG,
                     help="per-joint agreement required before auto-engaging")
+    ap.add_argument("--sim", action="store_true",
+                    help="simulated follower (MuJoCo + STS3215 model) and a scripted leader")
     args = ap.parse_args()
 
-    cfg = TeleopConfig(target_hz=args.fps)
+    http_port = args.http_port or (8023 if args.sim else 8013)
+    cfg = TeleopConfig(target_hz=args.fps, speed=args.speed, governor_mode=args.governor)
     threading.Thread(target=worker,
                      args=(args.leader_port, args.follower_port, cfg,
                            args.auto_follow, args.auto_follow_tol_deg),
-                     daemon=True).start()
-    srv = ThreadingHTTPServer(("127.0.0.1", args.http_port), Handler)
-    print(f"[SO-101 COCKPIT] leader={args.leader_port} follower={args.follower_port} "
-          f"target={args.fps}Hz auto_follow={'ON' if args.auto_follow else 'OFF'}"
-          f" -> http://127.0.0.1:{args.http_port}/")
+                     kwargs={"sim": args.sim}, daemon=True).start()
+    srv = ThreadingHTTPServer(("127.0.0.1", http_port), Handler)
+    print(f"[SO-101 COCKPIT{' SIM' if args.sim else ''}] leader={args.leader_port} "
+          f"follower={args.follower_port} target={args.fps}Hz speed={args.speed} "
+          f"governor={args.governor} auto_follow={'ON' if args.auto_follow else 'OFF'}"
+          f" -> http://127.0.0.1:{http_port}/")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

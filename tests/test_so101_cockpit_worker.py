@@ -40,16 +40,19 @@ VOLT_RAW = {"leader": 74, "follower": 122}      # 0.1V units
 
 
 class FakeBus:
-    """Stand-in for FeetechMotorsBus: records writes, answers telemetry."""
+    """Stand-in for a lerobot FeetechMotorsBus (no raw serial port, so the
+    engine reaches it through servo_io.LegacyBusIO): records writes by
+    register, answers telemetry, and can have servos go silent."""
 
     def __init__(self, port, present=None, volt_raw=122):
         self.port = port
         self.present = dict(present) if present else {n: NEUTRAL for n in JOINTS}
         self.volt_raw = volt_raw
         self.torque = {n: 0 for n in JOINTS}
+        self.regs = {n: {} for n in JOINTS}
         self.connected = False
         self.goals = []
-        # motors that error-packet every telemetry read (protection trip)
+        # servos that no longer answer at all (cable out / dead servo)
         self.sick = set()
 
     # -- lifecycle
@@ -61,30 +64,48 @@ class FakeBus:
 
     # -- io
     def sync_read(self, data_name, normalize=False, num_retry=1):
-        return dict(self.present)
+        if self.sick:
+            raise ConnectionError("[TxRxResult] There is no status packet!")
+        if data_name == "Present_Position":
+            return dict(self.present)
+        return {n: self.read(data_name, n) for n in JOINTS}
 
     def sync_write(self, data_name, values, normalize=False):
-        self.goals.append(dict(values))
-        self.present.update(values)
+        if data_name == "Goal_Position":
+            self.goals.append(dict(values))
+            for n, v in values.items():
+                if self.torque.get(n):
+                    self.present[n] = v
+        elif data_name == "Torque_Enable":
+            self.torque.update(values)
+        else:
+            for n, v in values.items():
+                self.regs[n][data_name] = v
 
     def read(self, data_name, motor, normalize=False):
-        if motor in self.sick and data_name != "Present_Position":
-            raise RuntimeError(
-                f"Failed to read '{data_name}' on id_={motor}. "
-                "[RxPacketError] OverEle error!")
+        if motor in self.sick:
+            raise ConnectionError("[TxRxResult] There is no status packet!")
         if data_name == "Present_Position":
             return self.present[motor]
         if data_name == "Present_Voltage":
             return self.volt_raw
+        if data_name == "Present_Temperature":
+            return 30
         if data_name == "Torque_Enable":
             return self.torque[motor]
-        return 0
+        if data_name == "P_Coefficient":
+            return self.regs[motor].get(data_name, 16)
+        return self.regs[motor].get(data_name, 0)
 
     def write(self, data_name, motor, value, normalize=False):
+        if motor in self.sick:
+            raise ConnectionError("[TxRxResult] There is no status packet!")
         if data_name == "Torque_Enable":
             self.torque[motor] = value
         elif data_name == "Goal_Position":
             self.present[motor] = value
+        else:
+            self.regs[motor][data_name] = value
 
 
 class WorkerHarness:
@@ -161,12 +182,13 @@ class TestPortWiring(unittest.TestCase):
 
 
 class TestSickMotorDoesNotFreezeTheCockpit(unittest.TestCase):
-    """A servo in a protection trip error-packets every telemetry read.
+    """A servo that stops answering must cost only its own fields.
 
-    That used to escape the cycle before the STATE write, so the page froze on
-    the last good snapshot and showed a stale 51C / 345mA as if it were live
-    while the arm had actually cooled (2026-08-07). The bad motor must now cost
-    only its own fields.
+    On 2026-08-07 one bad servo escaped the cycle before the STATE write, so the
+    page froze on the last good snapshot and showed a stale 51C / 345 (raw, i.e.
+    2.2 A) as if it were live while the arm had actually cooled. A servo in
+    protection now answers normally (servo_io reports its status bits as data);
+    a silent one is marked stale; a whole silent arm is a disconnect.
     """
 
     def test_state_keeps_updating(self):
@@ -230,8 +252,10 @@ class TestAutoFollowArming(unittest.TestCase):
             self.assertAlmostEqual(st["auto_follow"]["gap_deg"], 45.0, delta=0.2)
             self.assertEqual(st["auto_follow"]["gap_joint"], "elbow_flex")
             self.assertTrue(st["auto_follow"]["armed"], "should stay armed, waiting")
-            # ... and the follower is not being commanded meanwhile
-            self.assertEqual(h.follower.goals, [])
+            # ... and the follower is not driven anywhere meanwhile: the only
+            # goals it gets are its own positions (kept so torque-on never jumps)
+            self.assertTrue(all(g[n] == NEUTRAL for g in h.follower.goals for n in g))
+            self.assertFalse(any(h.follower.torque.values()))
 
     def test_off_by_default(self):
         with WorkerHarness() as h:
@@ -287,6 +311,100 @@ class TestAutoFollowArming(unittest.TestCase):
             with COCKPIT.LOCK:
                 self.assertFalse(COCKPIT.STATE["teleop"],
                                  "started motion from an unconfirmed port mapping")
+
+
+class TestCommandQueue(unittest.TestCase):
+    def test_abort_jumps_ahead_of_queued_jogs(self):
+        # dragging a slider floods /jog; an ABORT pressed meanwhile must not wait
+        q = COCKPIT.queue.Queue()
+        for i in range(20):
+            q.put({"op": "jog", "joint": "elbow_flex", "pos": 2000 + i})
+        q.put({"op": "abort"})
+        order = [c["op"] for c in COCKPIT._drain(q)]
+        self.assertEqual(order[0], "abort")
+
+    def test_only_the_latest_jog_per_joint_is_kept(self):
+        q = COCKPIT.queue.Queue()
+        for i in range(5):
+            q.put({"op": "jog", "joint": "elbow_flex", "pos": 2000 + i})
+        q.put({"op": "jog", "joint": "wrist_flex", "pos": 1500})
+        jogs = [c for c in COCKPIT._drain(q) if c["op"] == "jog"]
+        self.assertEqual(len(jogs), 2)
+        self.assertEqual(next(c["pos"] for c in jogs if c["joint"] == "elbow_flex"), 2004)
+
+
+class TestGovernedState(unittest.TestCase):
+    def test_follower_entries_carry_the_governor_view(self):
+        with WorkerHarness() as h:
+            st = h.wait_until(lambda s: s["follower"].get("elbow_flex", {}).get("state"))
+            self.assertIsNotNone(st)
+            e = st["follower"]["elbow_flex"]
+            for key in ("state", "reason", "duty", "current", "current_max", "goal", "temp"):
+                self.assertIn(key, e)
+            self.assertIn("thermal", st["arm"])
+            self.assertEqual(st["source"], "hw")
+
+    def test_speed_preset_command(self):
+        with WorkerHarness() as h:
+            self.assertIsNotNone(h.wait_until(lambda s: s["connected"]))
+            COCKPIT.CMDQ.put({"op": "speed", "preset": "slow"})
+            self.assertIsNotNone(h.wait_until(lambda s: s["arm"].get("speed") == "slow"))
+
+    def test_the_retired_torque_profile_says_so(self):
+        with WorkerHarness() as h:
+            self.assertIsNotNone(h.wait_until(lambda s: s["connected"]))
+            COCKPIT.CMDQ.put({"op": "torque_profile", "profile": "safe"})
+            st = h.wait_until(lambda s: any("廃止" in e["msg"] for e in s["log"]))
+            self.assertIsNotNone(st, "a retired command was silently ignored")
+
+    def test_session_settings_reach_the_follower(self):
+        with WorkerHarness() as h:
+            self.assertIsNotNone(h.wait_until(lambda s: s["connected"]))
+            time.sleep(0.2)
+            self.assertEqual(h.follower.regs["elbow_flex"].get("P_Coefficient"), 16)
+            self.assertEqual(h.follower.regs["elbow_flex"].get("I_Coefficient"), 0)
+            self.assertEqual(h.follower.regs["elbow_flex"].get("Lock"), 1)
+
+
+try:
+    import mujoco  # noqa: F401
+    _HAVE_MUJOCO = True
+except ImportError:  # pragma: no cover
+    _HAVE_MUJOCO = False
+
+
+@unittest.skipUnless(_HAVE_MUJOCO, "mujoco not installed (optional sim dep)")
+class TestSimMode(unittest.TestCase):
+    def test_the_simulated_cockpit_connects_and_follows(self):
+        stop = threading.Event()
+        saved = dict(COCKPIT.STATE)
+        COCKPIT.STATE["log"] = []
+        th = threading.Thread(target=COCKPIT.worker,
+                              args=("auto", "auto", TeleopConfig(torque_stagger_s=0.0)),
+                              kwargs={"stop": stop, "sim": True}, daemon=True)
+        th.start()
+        try:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                with COCKPIT.LOCK:
+                    if COCKPIT.STATE["connected"] and COCKPIT.STATE["follower"]:
+                        break
+                time.sleep(0.05)
+            with COCKPIT.LOCK:
+                self.assertEqual(COCKPIT.STATE["source"], "sim")
+                self.assertTrue(COCKPIT.STATE["ports"]["confirmed"])
+            COCKPIT.CMDQ.put({"op": "teleop", "on": True})
+            deadline = time.monotonic() + 5.0
+            following = False
+            while time.monotonic() < deadline and not following:
+                with COCKPIT.LOCK:
+                    following = COCKPIT.STATE["teleop"]
+                time.sleep(0.05)
+            self.assertTrue(following)
+        finally:
+            stop.set()
+            th.join(timeout=5.0)
+            COCKPIT.STATE.update(saved)
 
 
 if __name__ == "__main__":

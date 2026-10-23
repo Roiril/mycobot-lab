@@ -1,60 +1,102 @@
-"""SO-101 teleop engine: pure smoothing + stepping logic.
+"""SO-101 follower engine: references, write path, torque, modes.
 
-Runs on plain Python 3.10 (no lerobot, no hardware) — the engine's lerobot
-imports are lazy and only the pure paths are exercised here via a FakeBus.
+Runs on plain Python 3.10 (no lerobot, no hardware): the buses are fakes that
+speak the ServoIO interface, plus one integration test on the simulated arm
+(skipped without mujoco).
 
-Run: python -m unittest tests.test_so101_teleop_engine
+Run: python -m unittest discover tests -p "test_so101_teleop_engine.py"
 """
-import sys
 import pathlib
+import sys
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from robots.so101.teleop_engine import (
-    OneEuroFilter, OneEuroConfig, TeleopEngine, TeleopConfig, JOINTS,
-    TORQUE_PROFILES, DEFAULT_TORQUE_PROFILE, TORQUE_MAX,
-    RELAX_ORDER,
-    classify_voltage, classify_temperature,
-    VOLT_WARN_V, VOLT_DEMOTE_V, TEMP_WARN_C, TEMP_DEMOTE_C,
-    AutoFollowGate, deg_to_ticks, pose_gaps, max_pose_gap, AUTO_FOLLOW_TOL_DEG,
+from robots.so101 import servo_config, sts3215  # noqa: E402
+from robots.so101.servo_io import Command  # noqa: E402
+from robots.so101.sts3215 import ServoState  # noqa: E402
+from robots.so101.teleop_engine import (  # noqa: E402
+    AUTO_FOLLOW_TOL_DEG, JOINTS, RELAX_ORDER, AutoFollowGate, OneEuroConfig, OneEuroFilter,
+    TeleopConfig, TeleopEngine, deg_to_ticks, max_pose_gap, pose_gaps,
 )
 
+try:
+    import mujoco  # noqa: F401
+    _HAVE_MUJOCO = True
+except ImportError:  # pragma: no cover
+    _HAVE_MUJOCO = False
 
-class FakeBus:
-    """In-memory stand-in for FeetechMotorsBus (records writes, echoes goals)."""
 
-    def __init__(self, present=None):
-        self.present = dict(present) if present else {n: 0 for n in JOINTS}
-        self.writes = []          # (data_name, motor, value)
-        self.sync_writes = []     # list of goal dicts
+class FakeIO:
+    """ServoIO stand-in: servos reach their goal at once (unless pinned)."""
+
+    def __init__(self, present=None, volt=12.2):
+        self.names = list(JOINTS)
+        self.pos = dict(present) if present else {n: 2048 for n in JOINTS}
+        self.volt = volt
+        self.temp = {n: 30 for n in JOINTS}
+        self.load = {n: 0 for n in JOINTS}
+        self.faults = {n: 0 for n in JOINTS}
         self.torque = {n: 0 for n in JOINTS}
+        self.regs = {n: {"P_Coefficient": 32, "I_Coefficient": 0, "Max_Voltage_Limit": 140,
+                         "Max_Temperature_Limit": 70, "Operating_Mode": 0,
+                         "Unloading_Condition": 44} for n in JOINTS}
+        self.pinned = set()               # joints that do not move (obstacle)
+        self.commands = []                # list of {joint: Command}
+        self.sync = []                    # (reg, values)
+        self.sick = set()                 # joints whose acknowledged writes fail
+        self.refuse_p = set()
 
-    def sync_read(self, data_name, normalize=False, num_retry=1):
-        return dict(self.present)
+    def read_telemetry(self, names=None):
+        out = {}
+        for n in (names or self.names):
+            s = ServoState(ok=True, pos=self.pos[n], volt=self.volt, temp=self.temp[n],
+                           load=self.load[n], status=self.faults[n])
+            s.faults = sts3215.status_names(self.faults[n])
+            out[n] = s
+        return out
 
-    def sync_write(self, data_name, values, normalize=False):
-        self.sync_writes.append(dict(values))
-        for k, v in values.items():      # follower "reaches" the goal instantly
-            self.present[k] = v
+    def read_positions(self, names=None):
+        return {n: self.pos[n] for n in (names or self.names)}
 
-    def read(self, data_name, motor, normalize=False):
-        if data_name == "Present_Position":
-            return self.present[motor]
-        return 0
+    def sync_write(self, reg, values):
+        self.sync.append((reg, dict(values)))
+        if reg == "Torque_Enable":
+            self.torque.update(values)
 
-    def write(self, data_name, motor, value, normalize=False):
-        self.writes.append((data_name, motor, value))
-        if data_name == "Torque_Enable":
-            self.torque[motor] = value
+    def write_commands(self, cmds):
+        self.commands.append(dict(cmds))
+        for n, c in cmds.items():
+            if n not in self.pinned and self.torque.get(n):
+                self.pos[n] = c.goal
+
+    def read_reg(self, reg, name):
+        if reg == "Present_Position":
+            return self.pos[name], 0
+        return self.regs[name].get(reg, 0), 0
+
+    def write_reg(self, reg, name, value):
+        if name in self.sick:
+            return False, 0x20
+        if reg == "P_Coefficient" and name in self.refuse_p:
+            return False, 0
+        self.regs[name][reg] = int(value)
+        return True, 0
 
 
-def make_engine(ranges=None, present=None, **cfg_kw):
+class FakeLeader(FakeIO):
+    pass
+
+
+def make_engine(present=None, leader=None, **cfg_kw):
     cfg = TeleopConfig(torque_stagger_s=0.0, **cfg_kw)
-    ranges = ranges or {n: (0, 4095) for n in JOINTS}
-    lead, foll = FakeBus(), FakeBus(present)
-    return TeleopEngine(lead, foll, ranges, config=cfg), lead, foll
+    ranges = {n: (1000, 3100) for n in JOINTS}
+    ranges["wrist_roll"] = (0, 4095)
+    lead = FakeLeader(leader or present)
+    foll = FakeIO(present)
+    eng = TeleopEngine(lead, foll, ranges, config=cfg, sleep=lambda s: None)
+    return eng, lead, foll
 
 
 # ---------------------------------------------------------------------------
@@ -71,283 +113,258 @@ class TestOneEuroFilter(unittest.TestCase):
         self.assertAlmostEqual(out, 2000.0, delta=1.0)
 
     def test_rejects_jitter(self):
-        """Alternating +-8 tick noise on a constant is attenuated."""
         f = OneEuroFilter(OneEuroConfig(), nominal_dt=1 / 60)
         base, dev_in, dev_out = 1500.0, 0.0, 0.0
         for i in range(400):
             noisy = base + (8.0 if i % 2 else -8.0)
             out = f.filter(noisy, i / 60)
-            if i > 100:                    # after settling
+            if i > 100:
                 dev_in += abs(noisy - base)
                 dev_out += abs(out - base)
-        self.assertLess(dev_out, dev_in * 0.3)   # >70% jitter removed
+        self.assertLess(dev_out, dev_in * 0.3)
 
     def test_low_lag_on_fast_ramp(self):
-        """A 1000 tick/s ramp (~90 deg/s) tracks within a few ticks at steady state."""
         f = OneEuroFilter(OneEuroConfig(), nominal_dt=1 / 60)
         dt, vel = 1 / 60, 1000.0
         out = 0.0
         for i in range(120):
-            x = vel * i * dt
-            out = f.filter(x, i * dt)
-        x_final = vel * 119 * dt
-        # lag ~ vel/(2*pi*cutoff); cutoff ~ 1 + 0.01*1000 = 11Hz -> ~14 ticks
-        self.assertLess(abs(out - x_final), 25.0)
+            out = f.filter(vel * i * dt, i * dt)
+        self.assertLess(abs(out - vel * 119 * dt), 25.0)
 
 
 # ---------------------------------------------------------------------------
-class TestComputeGoals(unittest.TestCase):
-    def test_step_clamp_far_target(self):
+class TestReferences(unittest.TestCase):
+    def test_jump_guard_is_relative_to_the_previous_reference(self):
         eng, _, _ = make_engine(max_step_ticks=170)
-        eng.last_goal = {n: 0 for n in JOINTS}
-        goals = eng.compute_goals({n: 2000 for n in JOINTS}, now=0.0)
-        for n in JOINTS:
-            self.assertEqual(goals[n], 170)          # clamped to +max_step
-            self.assertEqual(eng.last_goal[n], 170)
+        eng.last_ref = {n: 1500 for n in JOINTS}
+        refs = eng.compute_refs({n: 2800 for n in JOINTS}, now=0.0)
+        self.assertTrue(all(refs[n] == 1670 for n in JOINTS))
 
-    def test_deadband_skips_write(self):
-        eng, _, _ = make_engine(deadband_ticks=2)
-        eng.last_goal = {n: 1000 for n in JOINTS}
-        goals = eng.compute_goals({n: 1001 for n in JOINTS}, now=0.0)
-        self.assertEqual(goals, {})                   # 1-tick move skipped
-        for n in JOINTS:
-            self.assertEqual(eng.last_goal[n], 1000)  # unchanged
-
-    def test_range_clamp(self):
-        ranges = {n: (500, 1500) for n in JOINTS}
-        eng, _, _ = make_engine(ranges=ranges, max_step_ticks=170)
-        eng.last_goal = {n: 1400 for n in JOINTS}
-        goals = eng.compute_goals({n: 3000 for n in JOINTS}, now=0.0)
-        for n in JOINTS:
-            self.assertEqual(goals[n], 1500)          # range cap, not 1400+170
-            self.assertEqual(eng.last_goal[n], 1500)
-
-    def test_converges_over_cycles(self):
-        eng, _, _ = make_engine(max_step_ticks=170, deadband_ticks=2)
-        eng.last_goal = {n: 0 for n in JOINTS}
-        target = 1000
-        for i in range(50):
-            eng.compute_goals({n: target for n in JOINTS}, now=i / 60)
-        for n in JOINTS:
-            self.assertAlmostEqual(eng.last_goal[n], target, delta=2)
-
-    def test_last_goal_not_reset_by_present(self):
-        """Present-position drift must not move last_goal (only compute does)."""
-        eng, _, _ = make_engine()
-        eng.last_goal = {n: 800 for n in JOINTS}
-        eng.follower_bus.present = {n: 200 for n in JOINTS}   # follower lagging
-        goals = eng.compute_goals({n: 800 for n in JOINTS}, now=0.0)
-        self.assertEqual(goals, {})                   # already at goal
-        for n in JOINTS:
-            self.assertEqual(eng.last_goal[n], 800)   # not rewound to 200
-
-
-# ---------------------------------------------------------------------------
-class TestEngineIO(unittest.TestCase):
-    def test_start_teleop_seeds_and_enables(self):
-        present = {n: 512 for n in JOINTS}
-        eng, lead, foll = make_engine(present=present)
-        eng.start_teleop()
-        self.assertTrue(eng.active)
-        self.assertEqual(eng.last_goal, present)                  # seeded from follower
-        for n in JOINTS:                                          # caps written
-            self.assertIn(("Torque_Limit", n, ec_limit(n)), foll.writes)
-            self.assertEqual(foll.torque[n], 1)                   # staged torque on
-
-    def test_caps_written_before_torque(self):
-        eng, lead, foll = make_engine()
-        eng.start_teleop()
-        first_torque = next(i for i, w in enumerate(foll.writes)
-                            if w[0] == "Torque_Enable")
-        last_cap = max(i for i, w in enumerate(foll.writes)
-                       if w[0] in ("Torque_Limit", "Acceleration", "Goal_Velocity"))
-        self.assertLess(last_cap, first_torque)       # all caps precede any enable
-
-    def test_step_writes_only_changed_joints(self):
-        eng, lead, foll = make_engine(deadband_ticks=2)
-        eng.start_teleop()
-        foll.sync_writes.clear()
-        lead.present = {n: 2000 for n in JOINTS}       # leader jumps
-        eng.step(now=1.0)
-        self.assertEqual(len(foll.sync_writes), 1)
-        self.assertTrue(foll.sync_writes[0])           # non-empty goal dict
-
-    def test_periodic_follower_read(self):
-        eng, lead, foll = make_engine(follower_read_every=2)
-        eng.start_teleop()
-        lead.present = {n: 100 for n in JOINTS}
-        eng.step(now=1.0)                              # cycle 1: no follower read
-        res = eng.step(now=2.0)                        # cycle 2: follower read
-        self.assertIn("follower", res)
-        self.assertIsInstance(eng.follower_lag_ticks, int)
-
-    def test_measured_hz(self):
-        eng, lead, foll = make_engine()
-        eng.start_teleop()
-        for i in range(10):
-            eng.step(now=i / 60.0)                     # 60 Hz spacing
-        self.assertAlmostEqual(eng.measured_hz, 60.0, delta=5.0)
-
-
-def ec_limit(joint):
-    # start_teleop applies the config's profile; make_engine uses the default.
-    return TORQUE_PROFILES[DEFAULT_TORQUE_PROFILE][joint]
-
-
-# ---------------------------------------------------------------------------
-class TestTorqueProfiles(unittest.TestCase):
-    def test_default_profile_is_full(self):
-        self.assertEqual(DEFAULT_TORQUE_PROFILE, "full")
-        eng, _, _ = make_engine()
-        self.assertEqual(eng.torque_profile, "full")
-        for n in JOINTS:
-            if n == "gripper":
-                # gripper keeps lerobot's burnout guard (EEPROM Max_Torque=500)
-                self.assertEqual(eng.effective_limit(n), 500)
-            else:
-                self.assertEqual(eng.effective_limit(n), TORQUE_MAX)
-
-    def test_config_selects_profile(self):
-        eng, _, _ = make_engine(torque_profile="safe")
-        self.assertEqual(eng.torque_profile, "safe")
-        for n in JOINTS:
-            self.assertEqual(eng.effective_limit(n), TORQUE_PROFILES["safe"][n])
-
-    def test_bad_config_profile_falls_back_to_default(self):
-        eng, _, _ = make_engine(torque_profile="bogus")
-        self.assertEqual(eng.torque_profile, DEFAULT_TORQUE_PROFILE)
-
-    def test_apply_caps_writes_effective_profile(self):
-        eng, _, foll = make_engine(torque_profile="safe")
-        eng.apply_follower_caps()
-        for n in JOINTS:
-            self.assertIn(("Torque_Limit", n, TORQUE_PROFILES["safe"][n]), foll.writes)
-
-    def test_set_profile_writes_new_caps_live(self):
-        eng, _, foll = make_engine()                      # full
-        foll.writes.clear()
-        eng.set_torque_profile("safe", reason="test")
-        self.assertEqual(eng.torque_profile, "safe")
-        self.assertEqual(eng.demote_reason, "test")
-        for n in JOINTS:
-            self.assertIn(("Torque_Limit", n, TORQUE_PROFILES["safe"][n]), foll.writes)
-
-    def test_set_profile_no_apply_is_state_only(self):
+    def test_a_lagging_follower_does_not_rewind_the_reference(self):
         eng, _, foll = make_engine()
-        foll.writes.clear()
-        eng.set_torque_profile("safe", reason="r", apply=False)
-        self.assertEqual(eng.torque_profile, "safe")
-        self.assertEqual(foll.writes, [])                 # no bus I/O
+        eng.last_ref = {n: 1800 for n in JOINTS}
+        foll.pos = {n: 1200 for n in JOINTS}            # follower far behind
+        refs = eng.compute_refs({n: 1800 for n in JOINTS}, now=0.0)
+        self.assertTrue(all(refs[n] == 1800 for n in JOINTS))
 
-    def test_full_recovery_clears_overrides_and_reason(self):
+    def test_a_missing_leader_joint_keeps_its_last_reference(self):
         eng, _, _ = make_engine()
-        eng.set_torque_profile("safe", reason="sag")
-        eng.demote_joint("elbow_flex", reason="hot")
-        self.assertTrue(eng.joint_profile_override)
-        eng.set_torque_profile("full")                    # manual recovery
-        self.assertEqual(eng.torque_profile, "full")
-        self.assertEqual(eng.joint_profile_override, {})
-        self.assertEqual(eng.demote_reason, "")
+        eng.last_ref = {n: 1500 for n in JOINTS}
+        refs = eng.compute_refs({**{n: 1500 for n in JOINTS}, "wrist_flex": None}, now=0.0)
+        self.assertEqual(refs["wrist_flex"], 1500)
 
-    def test_demote_joint_is_per_joint(self):
-        eng, _, foll = make_engine()                      # global full
-        foll.writes.clear()
-        eng.demote_joint("elbow_flex", reason="hot")
-        self.assertEqual(eng.effective_limit("elbow_flex"),
-                         TORQUE_PROFILES["safe"]["elbow_flex"])
-        self.assertEqual(eng.effective_limit("shoulder_pan"), TORQUE_MAX)  # unaffected
-        # only the demoted joint's cap is written
-        self.assertEqual(foll.writes,
-                         [("Torque_Limit", "elbow_flex",
-                           TORQUE_PROFILES["safe"]["elbow_flex"])])
 
-    def test_unknown_profile_raises(self):
+class TestSessionAndChecks(unittest.TestCase):
+    def test_connect_writes_pdi_with_the_lock_closed_and_reads_p_back(self):
+        eng, _, foll = make_engine()
+        p = eng.configure_follower()
+        for n in JOINTS:
+            self.assertEqual(foll.regs[n]["Lock"], 1)
+            self.assertEqual(foll.regs[n]["P_Coefficient"], 16)
+            self.assertEqual(foll.regs[n]["I_Coefficient"], 0)
+        self.assertEqual(p["elbow_flex"], 16)
+        self.assertEqual(eng.governor.p_coeff["elbow_flex"], 16)
+
+    def test_a_refused_p_is_reported_and_used_as_is(self):
+        eng, _, foll = make_engine()
+        foll.refuse_p.add("elbow_flex")               # stays at 32
+        p = eng.configure_follower()
+        self.assertEqual(p["elbow_flex"], 32)
+        self.assertEqual(eng.governor.p_coeff["elbow_flex"], 32)
+
+    def test_a_failed_instrument_check_demotes_the_governor_to_labels_only(self):
+        eng, _, foll = make_engine()
+        foll.volt = 3.0                                # nonsense reading
+        eng.configure_follower()
+        self.assertFalse(eng.instrument_ok)
+        self.assertEqual(eng.governor.mode, "shadow")
+
+    def test_audit_findings_are_kept(self):
+        eng, _, foll = make_engine()
+        foll.regs["elbow_flex"]["Max_Voltage_Limit"] = 120     # the 07-17 case
+        eng.configure_follower()
+        self.assertTrue(any(f.servo == "elbow_flex" and f.register == "Max_Voltage_Limit"
+                            for f in eng.findings))
+
+
+class TestTorqueAndFollow(unittest.TestCase):
+    def test_start_holds_here_before_any_torque_enable(self):
+        eng, _, foll = make_engine(present={n: 1800 for n in JOINTS})
+        ok, _ = eng.start_teleop(now=0.0)
+        self.assertTrue(ok and eng.active)
+        first_torque = next(i for i, (r, _) in enumerate(foll.sync) if r == "Torque_Enable")
+        self.assertTrue(foll.commands, "no hold command before torque")
+        self.assertTrue(all(c.goal == 1800 for c in foll.commands[0].values()))
+        self.assertEqual(first_torque, 0)              # holds are commands, then torque
+        self.assertTrue(all(foll.torque[n] == 1 for n in JOINTS))
+
+    def test_following_moves_the_follower_toward_the_leader(self):
+        eng, lead, foll = make_engine(present={n: 2000 for n in JOINTS})
+        eng.start_teleop(now=0.0)
+        lead.pos["shoulder_pan"] = 2100
+        for i in range(60):
+            eng.cycle(now=0.02 + i / 60)
+        self.assertGreater(foll.pos["shoulder_pan"], 2080)
+
+    def test_a_still_arm_sends_nothing(self):
+        # a new position command clears the servo's overload flag: streaming the
+        # same goal would keep resetting the firmware's own protection
+        eng, lead, foll = make_engine()
+        eng.start_teleop(now=0.0)
+        for i in range(10):
+            eng.cycle(now=2.0 + i / 60)            # past the 1.5 s soft start
+        n_before = len(foll.commands)
+        for i in range(30):
+            eng.cycle(now=3.0 + i / 60)
+        self.assertEqual(len(foll.commands), n_before)
+
+    def test_soft_start_ramps_the_speed(self):
+        eng, lead, foll = make_engine()
+        eng.start_teleop(now=0.0)
+        lead.pos["elbow_flex"] = 2400
+        eng.cycle(now=0.05)
+        early = [c["elbow_flex"].velocity for c in foll.commands if "elbow_flex" in c][-1]
+        for i in range(120):
+            lead.pos["elbow_flex"] = 2400 + (i % 2) * 40
+            eng.cycle(now=0.1 + i / 60)
+        late = [c["elbow_flex"].velocity for c in foll.commands if "elbow_flex" in c][-1]
+        self.assertLess(early, late)
+        self.assertEqual(late, eng.goal_velocity())
+
+    def test_speed_presets(self):
         eng, _, _ = make_engine()
+        eng.set_speed("slow")
+        slow = eng.goal_velocity()
+        eng.set_speed("fast")
+        self.assertGreater(eng.goal_velocity(), slow)
         with self.assertRaises(ValueError):
-            eng.set_torque_profile("nope")
+            eng.set_speed("ludicrous")
 
-    def test_metrics_expose_profile(self):
-        eng, _, _ = make_engine()
-        eng.set_torque_profile("safe", reason="sag")
-        eng.demote_joint("wrist_flex", reason="hot")
-        m = eng.metrics()
-        self.assertEqual(m["torque_profile"], "safe")
-        self.assertEqual(m["joint_overrides"], {"wrist_flex": "safe"})
-        self.assertIn(m["demote_reason"], ("sag", "hot"))
+    def test_jog_moves_one_joint_while_idle(self):
+        eng, _, foll = make_engine()
+        eng.jog("wrist_flex", 2300)
+        eng.cycle(now=0.0)
+        self.assertEqual(foll.pos["wrist_flex"], 2300)
+        self.assertEqual(foll.torque["wrist_flex"], 1)
+
+    def test_stop_holds_where_the_follower_is(self):
+        eng, lead, foll = make_engine()
+        eng.start_teleop(now=0.0)
+        lead.pos["shoulder_pan"] = 2300
+        for i in range(30):
+            eng.cycle(now=0.02 + i / 60)
+        eng.stop_teleop()
+        here = foll.pos["shoulder_pan"]
+        lead.pos["shoulder_pan"] = 1500                # leader keeps moving
+        for i in range(30):
+            eng.cycle(now=2.0 + i / 60)
+        self.assertEqual(foll.pos["shoulder_pan"], here)
 
 
-# ---------------------------------------------------------------------------
-class TestRelaxFollower(unittest.TestCase):
+class TestRelax(unittest.TestCase):
     def test_relax_order_is_tip_to_base(self):
-        # tip -> base = reversed motor order; base joint disabled last so the
-        # gravity-loaded roots hold longest.
         self.assertEqual(RELAX_ORDER, list(reversed(JOINTS)))
         self.assertEqual(RELAX_ORDER[0], "gripper")
         self.assertEqual(RELAX_ORDER[-1], "shoulder_pan")
-        self.assertEqual(set(RELAX_ORDER), set(JOINTS))   # every joint covered
 
-    def test_relax_disables_all_in_order(self):
+    def test_relax_cuts_every_joint_even_with_a_tripped_servo(self):
+        # acknowledged writes to a servo in protection fail; sync writes cannot
         eng, _, foll = make_engine()
-        calls = []
-        order = eng.relax_follower(delay=0.0, sleep=lambda s: calls.append(s))
+        eng.start_teleop(now=0.0)
+        foll.sick.add("elbow_flex")
+        order = eng.relax_follower(delay=0.0)
         self.assertEqual(order, list(reversed(JOINTS)))
-        # exactly one Torque_Enable=0 write per joint, in tip->base order
-        offs = [w[1] for w in foll.writes
-                if w[0] == "Torque_Enable" and w[2] == 0]
+        offs = [list(v)[0] for r, v in foll.sync if r == "Torque_Enable" and 0 in v.values()]
         self.assertEqual(offs, list(reversed(JOINTS)))
-        for n in JOINTS:
-            self.assertEqual(foll.torque[n], 0)
-
-    def test_relax_forces_teleop_off(self):
-        eng, lead, foll = make_engine(present={n: 512 for n in JOINTS})
-        eng.start_teleop()
-        self.assertTrue(eng.active)
-        eng.relax_follower(delay=0.0)
+        self.assertTrue(all(foll.torque[n] == 0 for n in JOINTS))
         self.assertFalse(eng.active)
 
     def test_relax_staggers_between_joints_only(self):
         eng, _, _ = make_engine()
         sleeps = []
         eng.relax_follower(delay=0.05, sleep=lambda s: sleeps.append(s))
-        # 6 joints -> 5 inter-joint delays (no trailing sleep after the last)
         self.assertEqual(sleeps, [0.05] * (len(JOINTS) - 1))
 
-    def test_relax_does_not_freeze(self):
-        # freeze writes Goal_Position (present->goal); relax must not, since
-        # torque is being removed and holding position is meaningless.
-        eng, _, foll = make_engine()
-        eng.relax_follower(delay=0.0)
-        self.assertFalse(any(w[0] == "Goal_Position" for w in foll.writes))
+
+class TestGovernorInTheLoop(unittest.TestCase):
+    def test_a_pinned_joint_pushing_hard_is_eased_and_held(self):
+        eng, lead, foll = make_engine(present={n: 2000 for n in JOINTS})
+        eng.start_teleop(now=0.0)
+        foll.pinned.add("elbow_flex")
+        lead.pos["elbow_flex"] = 2200
+        t = 0.02
+        for _ in range(int(2.5 * 60)):
+            foll.load["elbow_flex"] = 700 if eng.governor._j["elbow_flex"].state == "track" else 250
+            eng.cycle(now=t)
+            t += 1 / 60
+        js = eng.last_out.joints["elbow_flex"]
+        self.assertEqual(js.state, "hold")
+        self.assertLess(js.goal, 2200)
+
+    def test_a_thermal_stop_ends_following(self):
+        eng, lead, foll = make_engine()
+        eng.start_teleop(now=0.0)
+        foll.temp["shoulder_lift"] = 67
+        eng.cycle(now=0.1)
+        self.assertFalse(eng.active)
+        ok, why = eng.start_teleop(now=0.2)
+        self.assertFalse(ok)
+        self.assertIn("温度", why)
+
+    def test_a_retreat_moves_to_the_cooling_pose_then_holds(self):
+        eng, lead, foll = make_engine(present={n: 2050 for n in JOINTS})
+        eng.start_teleop(now=0.0)
+        foll.temp["elbow_flex"] = 69
+        t = 0.02
+        for _ in range(60 * 20):
+            eng.cycle(now=t)
+            t += 1 / 60
+            if not eng.retreating and t > 1.0:
+                break
+        target = eng.governor.retreat_pose_ticks(foll.read_telemetry())
+        self.assertAlmostEqual(foll.pos["elbow_flex"], target["elbow_flex"], delta=3)
+        self.assertFalse(eng.retreating)
+
+    def test_metrics_are_published(self):
+        eng, _, _ = make_engine()
+        eng.cycle(now=0.0)
+        m = eng.metrics()
+        for key in ("measured_hz", "cycle_ms_p99", "speed", "governor_mode"):
+            self.assertIn(key, m)
 
 
-# ---------------------------------------------------------------------------
-class TestTripWireThresholds(unittest.TestCase):
-    def test_voltage_bands(self):
-        self.assertEqual(classify_voltage(12.4), "ok")
-        self.assertEqual(classify_voltage(VOLT_WARN_V), "ok")        # boundary: not < warn
-        self.assertEqual(classify_voltage(VOLT_WARN_V - 0.1), "warn")
-        self.assertEqual(classify_voltage(VOLT_DEMOTE_V), "warn")    # boundary: not < demote
-        self.assertEqual(classify_voltage(VOLT_DEMOTE_V - 0.1), "demote")
-        self.assertEqual(classify_voltage(9.0), "demote")
-
-    def test_temperature_bands(self):
-        self.assertEqual(classify_temperature(40), "ok")
-        self.assertEqual(classify_temperature(TEMP_WARN_C), "ok")        # boundary: not > warn
-        self.assertEqual(classify_temperature(TEMP_WARN_C + 1), "warn")
-        self.assertEqual(classify_temperature(TEMP_DEMOTE_C), "warn")    # boundary: not > demote
-        self.assertEqual(classify_temperature(TEMP_DEMOTE_C + 1), "demote")
-        self.assertEqual(classify_temperature(70), "demote")
-
-    def test_threshold_ordering(self):
-        # demote must trip at a more severe reading than warn, or the bands
-        # collapse (a demote would never be preceded by a warn).
-        self.assertLess(VOLT_DEMOTE_V, VOLT_WARN_V)
-        self.assertGreater(TEMP_DEMOTE_C, TEMP_WARN_C)
+@unittest.skipUnless(_HAVE_MUJOCO, "mujoco not installed (optional sim dep)")
+class TestOnTheSimulatedArm(unittest.TestCase):
+    def test_follows_a_moving_leader_without_tripping(self):
+        from robots.so101.sim.servo_sim import ScriptedLeaderBus, SimArm, SimFollowerBus
+        ranges = {"shoulder_pan": (874, 3159), "shoulder_lift": (815, 3145),
+                  "elbow_flex": (859, 3065), "wrist_flex": (911, 3193),
+                  "wrist_roll": (0, 4095), "gripper": (1605, 3086)}
+        arm = SimArm(ranges=ranges, start_deg=[0, -30, 40, 20, 0])
+        bus = SimFollowerBus(arm, realtime=False)
+        import math
+        path = lambda t: {"shoulder_pan": 25 * math.sin(t), "shoulder_lift": -30 + 10 * math.sin(0.7 * t),
+                          "elbow_flex": 40, "wrist_flex": 20}
+        lead = ScriptedLeaderBus(ranges, path, clock=lambda: arm.t)
+        eng = TeleopEngine(lead, bus, ranges, config=TeleopConfig(torque_stagger_s=0.0),
+                           sleep=lambda s: None)
+        eng.configure_follower()
+        eng.start_teleop(now=0.0)
+        t = 0.0
+        worst = 0
+        while t < 6.0:
+            res = eng.cycle(now=t)
+            arm.advance(1 / 60)
+            t += 1 / 60
+            if t > 2.0:
+                worst = max(worst, abs(res["follower"]["shoulder_pan"].pos
+                                       - lead.ticks()["shoulder_pan"]))
+        self.assertTrue(all(not any(s.trips.values()) for s in arm.servos))
+        self.assertLess(worst, deg_to_ticks(8.0))      # lag of a 25 deg sweep at 45 deg/s
 
 
 # ---------------------------------------------------------------------------
 def pose(**over):
-    """A both-arms pose: every joint at 2048 unless overridden (in ticks)."""
     p = {n: 2048 for n in JOINTS}
     p.update(over)
     return p
@@ -356,8 +373,7 @@ def pose(**over):
 class TestPoseGap(unittest.TestCase):
     def test_worst_joint_is_reported(self):
         joint, gap = max_pose_gap(pose(elbow_flex=2148, gripper=2078), pose())
-        self.assertEqual(joint, "elbow_flex")
-        self.assertEqual(gap, 100)
+        self.assertEqual((joint, gap), ("elbow_flex", 100))
 
     def test_gap_is_unsigned(self):
         self.assertEqual(pose_gaps(pose(wrist_roll=1948), pose())["wrist_roll"], 100)
@@ -367,6 +383,7 @@ class TestPoseGap(unittest.TestCase):
 
     def test_missing_joints_are_skipped_not_faked(self):
         self.assertEqual(max_pose_gap({}, {}), (None, 0))
+        self.assertEqual(pose_gaps(pose(elbow_flex=None), pose()).get("elbow_flex"), None)
 
 
 class TestAutoFollowGate(unittest.TestCase):
@@ -376,37 +393,32 @@ class TestAutoFollowGate(unittest.TestCase):
         return AutoFollowGate(**kw)
 
     def feed(self, gate, leader, follower, times):
-        """Run `times` identical cycles, returning each engage decision."""
         return [gate.update(leader, follower) for _ in range(times)]
 
     def test_engages_after_the_hold_period_once_the_arms_agree(self):
-        gate = self.make()
-        # first cycle has no previous leader sample, so stillness is unknown-good
-        self.assertEqual(self.feed(gate, pose(), pose(), 3), [False, False, True])
+        self.assertEqual(self.feed(self.make(), pose(), pose(), 3), [False, False, True])
 
     def test_a_gap_beyond_tolerance_never_engages(self):
         gate = self.make()
         far = pose(shoulder_lift=2048 + deg_to_ticks(45))
         self.assertNotIn(True, self.feed(gate, far, pose(), 20))
-        self.assertIn("shoulder_lift", gate.status)   # tells the operator where
+        self.assertIn("shoulder_lift", gate.status)
 
     def test_a_leader_swinging_through_the_pose_does_not_engage(self):
         gate = self.make()
-        moving = deg_to_ticks(10)      # per-cycle motion, well over the still limit
-        engaged = [gate.update(pose(wrist_flex=2048 + i * moving), pose())
-                   for i in range(3)]
+        moving = deg_to_ticks(10)
+        engaged = [gate.update(pose(wrist_flex=2048 + i * moving), pose()) for i in range(3)]
         self.assertNotIn(True, engaged)
         self.assertIn("動いています", gate.status)
 
     def test_the_hold_restarts_when_the_arms_drift_apart(self):
         gate = self.make()
-        self.feed(gate, pose(), pose(), 2)                 # nearly there
-        gate.update(pose(elbow_flex=2048 + deg_to_ticks(40)), pose())   # broken
+        self.feed(gate, pose(), pose(), 2)
+        gate.update(pose(elbow_flex=2048 + deg_to_ticks(40)), pose())
         self.assertEqual(gate.held, 0)
         self.assertEqual(self.feed(gate, pose(), pose(), 2), [False, False])
 
     def test_engaging_is_a_one_shot_per_reset(self):
-        # the cockpit disarms on engage; a re-armed gate must earn it again
         gate = self.make()
         self.feed(gate, pose(), pose(), 3)
         gate.reset()
