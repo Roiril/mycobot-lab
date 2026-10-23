@@ -333,6 +333,43 @@ class TestCommandQueue(unittest.TestCase):
         self.assertEqual(next(c["pos"] for c in jogs if c["joint"] == "elbow_flex"), 2004)
 
 
+class TestStopSupersedesMotion(unittest.TestCase):
+    def test_follow_on_clicked_just_before_abort_does_not_run_after_it(self):
+        q = COCKPIT.queue.Queue()
+        q.put({"op": "teleop", "on": True})
+        q.put({"op": "retreat"})
+        q.put({"op": "speed", "preset": "slow"})
+        q.put({"op": "abort"})
+        q.put({"op": "jog", "joint": "elbow_flex", "pos": 2100})     # after the stop: kept
+        ops = [c["op"] for c in COCKPIT._drain(q)]
+        self.assertEqual(ops[0], "abort")
+        self.assertNotIn("teleop", ops)
+        self.assertNotIn("retreat", ops)
+        self.assertIn("speed", ops)
+        self.assertIn("jog", ops)
+
+
+class TestRepeatedFaultsFreezeTheArm(unittest.TestCase):
+    def test_a_cycle_that_keeps_failing_ends_limp_or_frozen(self):
+        with WorkerHarness() as h:
+            self.assertIsNotNone(h.wait_until(lambda s: s["connected"]))
+            COCKPIT.CMDQ.put({"op": "torque", "arm": "follower", "joint": "all", "on": True})
+            self.assertIsNotNone(h.wait_until(
+                lambda s: all(h.follower.torque[n] for n in JOINTS)))
+            original = h.follower.sync_write
+
+            def broken(data_name, values, normalize=False):
+                if data_name == "Goal_Position":
+                    raise ValueError("simulated bug in the write path")
+                return original(data_name, values, normalize=normalize)
+            h.follower.sync_write = broken
+            COCKPIT.CMDQ.put({"op": "jog", "joint": "elbow_flex", "pos": NEUTRAL + 200})
+            st = h.wait_until(lambda s: any("エラーが続く" in e["msg"] or "脱力しました" in e["msg"]
+                                            for e in s["log"]), timeout=6.0)
+            self.assertIsNotNone(st, "a repeating failure never stopped the arm")
+            self.assertTrue(any("詳細:" in e["msg"] for e in st["log"]), "no traceback logged")
+
+
 class TestGovernedState(unittest.TestCase):
     def test_follower_entries_carry_the_governor_view(self):
         with WorkerHarness() as h:

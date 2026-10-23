@@ -103,5 +103,20 @@ class TestSessionWrites(unittest.TestCase):
         self.assertEqual(p["shoulder_lift"], 16)
 
 
+class TestLockGuard(unittest.TestCase):
+    def test_pdi_are_not_written_when_the_lock_cannot_be_closed(self):
+        writes = []
+
+        def write(reg, n, v):
+            writes.append((reg, n))
+            return (False, 0) if (reg == "Lock" and n == "elbow_flex") else (True, 0)
+
+        servo_config.apply_session(write, lambda reg, n: (16, 0),
+                                   servo_config.SessionSettings(), JOINTS)
+        self.assertNotIn(("P_Coefficient", "elbow_flex"), writes)
+        self.assertIn(("Torque_Limit", "elbow_flex"), writes)      # RAM registers still go
+        self.assertIn(("P_Coefficient", "wrist_flex"), writes)
+
+
 if __name__ == "__main__":
     unittest.main()

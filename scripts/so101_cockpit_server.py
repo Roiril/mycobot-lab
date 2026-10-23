@@ -35,6 +35,7 @@ import queue
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -144,6 +145,8 @@ def _quest_launch_message(result: dict) -> str:
 LEADER_TELEMETRY_EVERY = 30
 # A follower whose every joint has been silent this many cycles is unplugged.
 ARM_DOWN_CYCLES = 30
+# Consecutive failing cycles (not bus errors) before the arm is frozen in place.
+FAULT_STREAK_FREEZE = 10
 # Operator messages stay up at least this long, so a passing state is readable.
 MESSAGE_HOLD_S = 3.0
 CURRENT_PEAK_WINDOW_S = 2.0
@@ -226,23 +229,34 @@ class SimBackend:
 # ---------------------------------------------------------------------------
 # worker
 # ---------------------------------------------------------------------------
+def _is_motion(cmd: dict) -> bool:
+    op = cmd.get("op")
+    if op in ("teleop", "auto_follow", "torque"):
+        return bool(cmd.get("on"))
+    return op in ("jog", "retreat")
+
+
 def _drain(q: "queue.Queue") -> list:
-    """All pending commands, safety first, latest jog per joint only."""
+    """All pending commands, safety first, latest jog per joint only.
+
+    A stop (ABORT / relax) supersedes every motion command queued before it -
+    "follow ON" clicked just before ABORT must not run after it.
+    """
     cmds = []
     while True:
         try:
             cmds.append(q.get_nowait())
         except queue.Empty:
             break
-    urgent = [c for c in cmds if c.get("op") in ("abort", "relax")]
+    last_stop = max((i for i, c in enumerate(cmds) if c.get("op") in ("abort", "relax")),
+                    default=-1)
+    kept = [c for i, c in enumerate(cmds) if not (i < last_stop and _is_motion(c))]
+    urgent = [c for c in kept if c.get("op") in ("abort", "relax")]
+    rest = [c for c in kept if c.get("op") not in ("abort", "relax", "jog")]
     jogs = {}
-    rest = []
-    for c in cmds:
-        op = c.get("op")
-        if op == "jog":
+    for c in kept:
+        if c.get("op") == "jog":
             jogs[c.get("joint")] = c
-        elif op not in ("abort", "relax"):
-            rest.append(c)
     return urgent + rest + list(jogs.values())
 
 
@@ -262,6 +276,8 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
     peaks = {n: deque() for n in JOINTS}          # (t, |I|) for the 2 s current peak
     held_msg = {"text": "", "level": "info", "until": 0.0}
     silent_cycles = 0
+    fault_streak = 0          # consecutive non-bus errors (a bug, not a cable)
+    fault_seen: set = set()
     cycle = 0
 
     with LOCK:
@@ -388,6 +404,9 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
             if arm == "follower":
                 if n == "all" and not on:
                     engine.relax_follower()
+                elif on and (engine.active or engine.retreating):
+                    log("追従中はトルクを個別に入れられません（追従を止めてから）")
+                    return
                 elif n == "all" and on:
                     engine.enable_follower_torque_staged()
                 else:
@@ -405,7 +424,7 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
             except ValueError as e:
                 log(f"不正な速度: {e}")
         elif op == "retreat":
-            engine.start_retreat()
+            engine.start_retreat(manual=True)
             disarm_auto("冷却姿勢")
         elif op == "torque_profile":
             log("トルクプロファイルは廃止しました（負荷と温度による自動調整に置き換え）")
@@ -423,7 +442,8 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
             while dq and now - dq[0][0] > CURRENT_PEAK_WINDOW_S:
                 dq.popleft()
             fol[n] = {
-                "pos": s.pos, "goal": js.goal, "torque": 1 if engine.torque_on.get(n) else 0,
+                "pos": s.pos, "goal": js.goal if js.goal is not None else s.pos,
+                "torque": 1 if engine.torque_on.get(n) else 0,
                 "state": js.state, "reason": js.reason, "duty": round(js.duty),
                 "current": round(abs(s.current), 2),
                 "current_max": round(max(v for _, v in dq), 2) if dq else 0.0,
@@ -543,10 +563,31 @@ def worker(leader_arg: str, follower_arg: str, cfg: TeleopConfig,
                 raise ConnectionError("follower が全軸無応答（ケーブルを確認）")
 
             publish(res, now)
+            fault_streak = 0
         except Exception as e:
             # bus dropout / unplugged cable / serial error: stop, report, reconnect
             is_bus = isinstance(e, (ConnectionError, OSError)) or "Serial" in type(e).__name__
             log(("バス断: " if is_bus else "エラー: ") + str(e))
+            if not is_bus:
+                fault_streak += 1
+                sig = f"{type(e).__name__}: {e}"
+                if sig not in fault_seen:            # the where, once per distinct error
+                    fault_seen.add(sig)
+                    log("詳細: " + " | ".join(
+                        traceback.format_exception(type(e), e, e.__traceback__)[-3:]
+                    ).replace("\n", " "))
+                if fault_streak == FAULT_STREAK_FREEZE and engine is not None:
+                    # the governor has not run for a while: nothing watches the arm.
+                    # Hold it where it is; if even that fails, let it go limp.
+                    try:
+                        engine.freeze_here()
+                        log("⚠ エラーが続くため、その場で固定しました（追従は OFF）")
+                    except Exception:
+                        try:
+                            engine.relax_follower()
+                            log("⚠ 固定もできないため脱力しました。アームを確認してください")
+                        except Exception as e3:
+                            log(f"⚠ 脱力もできません: {e3}")
             if engine is not None and (engine.active or engine.retreating):
                 engine.stop_teleop()
             with LOCK:

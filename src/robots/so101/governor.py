@@ -15,28 +15,28 @@ stop, or holding more than it can - keeps pushing, and the push only grows with
 the gap. Gravity alone needs at most 29 % (shoulder) / 15 % (elbow); the
 firmware's overload protection needs > 80 % for 2 s and the 2 A over-current
 trip ~74 % at stall. Sitting there is what tripped and overheated the elbow.
-The cure is to stop asking: when a joint is stuck and pushing harder than its
-own weight explains, its goal is frozen where it is. A P servo told to stay
-where it already is pushes with (almost) nothing, sags by its gravity droop and
-holds. That needs no knowledge of the gain k nor of any sign, which is why it is
-the v1 mechanism.
+The cure is to stop asking: a joint stuck short of its goal and pushing harder
+than its own weight explains gets its push scaled down (output ~ error, so
+scaling the error the servo sees scales its output - whatever the gain really
+is), and then we look: an obstacle keeps it where it is, a weight makes it sag.
 
 States per joint
 ----------------
 OFF      torque off: goal = present (enabling never jumps)
-STALE    no telemetry for a while: keep the last goal
+STALE    no telemetry for a while: keep the last goal. A joint never read since
+         (re)connect is not commanded at all
 TRACK    goal = reference, clamped a few degrees inside the calibrated range
-PROBE    stuck short of its goal and pushing harder than its own weight explains:
-         the error the servo sees is scaled down (output ~ error, so this scales
-         its push without knowing the gain) and we watch for 0.3 s
+PROBE    stuck short of its goal and pushing beyond its own weight (or working
+         very hard for a long time, moving or not): the push is scaled down and
+         we watch for 0.3 s
 HOLD     ...and it did not move: an obstacle. The eased goal is kept until the
          reference comes back
 LOAD     ...and it sagged: a weight. The old goal is restored at once (the arm
          does not drop) and the joint keeps tracking, labelled "heavy"
 GRIP     gripper closed on something: the same proportional ease to a squeeze
-PROTECT  a firmware protection bit is set: goal frozen where the joint is. The
-         engine sends only changed commands, so the freeze goes out once - and a
-         new position command is what clears overload / over-current
+PROTECT  a firmware protection bit is set: goal frozen where the joint is and
+         re-sent every second (a new position command clears overload /
+         over-current once the push is gone)
 
 Arm-level
 ---------
@@ -44,10 +44,14 @@ Arm-level
 - temperature: warn 55 C, alert 62 C, stop following 66 C, retreat to the
   gravity-neutral pose 68 C (the firmware cuts torque at 70 C and drops the arm)
 - supply sag: < 10.8 V for 0.3 s -> speed scale 0.6 until > 11.3 V for 2 s
+
+Shadow mode (the instrument check failed): the new force logic (probe / hold /
+load / grip) only labels and the plain reference is commanded. The protective
+parts - PROTECT, the breaker, the temperature stop and retreat - stay active:
+a wrong stop is the safe failure.
 """
 from __future__ import annotations
 
-import math
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Tuple
@@ -77,13 +81,22 @@ class GovernorParams:
     block_time_s: float = 0.5
     effort_duty: float = 700.0           # above this (or the current below) the block
     effort_current_a: float = 1.6        # timer runs twice as fast (80 %/2 s, 2 A/2 s trips)
+    # this hard for this long, moving or not -> ease. Set just under the firmware
+    # trips (80 % / 2 s, 2 A / 2 s): a legitimately heavy lift below them is the
+    # temperature governor's business, not a reason to let go mid-move.
+    over_duty: float = 780.0
+    over_current_a: float = 1.9
+    over_time_s: float = 1.0
     yield_over_gravity: float = 150.0    # eased push: own weight + this much contact
     yield_min_duty: float = 200.0
     probe_time_s: float = 0.3
     probe_sag_deg: float = 1.5           # moved this far away from the goal -> a weight
-    load_release_deg: float = 5.0        # a known weight is re-checked only after a new pose
+    hold_reclass_s: float = 2.0          # a slow sag found in HOLD this soon is a weight
+    load_extra_duty: float = 150.0       # a known weight is re-examined when the joint
+    load_harder_s: float = 0.5           # works this much harder for this long
     hold_release_deg: float = 2.0
     protect_clear_s: float = 1.0
+    protect_resend_s: float = 1.0
     breaker_count: int = 3
     breaker_window_s: float = 300.0
     temp_warn_c: float = 55.0
@@ -92,6 +105,7 @@ class GovernorParams:
     temp_retreat_c: float = 68.0
     temp_resume_c: float = 62.0
     temp_hysteresis_c: float = 2.0
+    thermal_dwell_s: float = 2.0         # cool down one level at a time, this slowly
     volt_low_v: float = 10.8
     volt_ok_v: float = 11.3
     volt_low_s: float = 0.3
@@ -107,15 +121,18 @@ class GovernorParams:
 # States whose goal must take effect at once: the servo's internal profile
 # would otherwise walk its setpoint back toward an eased goal at the normal
 # speed limit (seconds, at the soft-start speed) while it keeps pushing.
-FAST_STATES = ("probe", "hold", "load", "protect", "grip")
+# LOAD is fast only for the one cycle that restores the old goal.
+FAST_STATES = ("probe", "hold", "protect", "grip")
+SHADOW_LABEL_ONLY = ("probe", "hold", "load", "grip")
 
 
 @dataclass
 class JointStatus:
     state: str = "off"
     reason: str = ""
-    goal: int = 0
+    goal: Optional[int] = None           # None: nothing is sent to this joint this cycle
     fast: bool = False                   # bypass the servo's speed / acceleration limits
+    resend: bool = False                 # send even if unchanged (PROTECT keep-alive)
     ref: Optional[int] = None
     duty: float = 0.0                    # averaged |Present_Load|, permille
     current: float = 0.0                 # averaged |Present_Current|, A
@@ -127,7 +144,7 @@ class JointStatus:
 
 @dataclass
 class GovernorOutput:
-    goals: Dict[str, int]
+    goals: Dict[str, int]                # only the joints that get a command
     joints: Dict[str, JointStatus]
     follow_allowed: bool
     stop_reason: str
@@ -143,22 +160,30 @@ class GovernorOutput:
 class _Joint:
     state: str = "off"
     reason: str = ""
+    seen: bool = False                   # had a good read since the last reset
+    last_temp: int = 0
     goal: Optional[int] = None
     hold_goal: Optional[int] = None
     prev_goal: Optional[int] = None
     probe_pos: int = 0
     probe_expect: float = 0.0            # how far a weight would sag after the ease
     push_sign: int = 0
+    probe_duty: float = 0.0              # what it was putting out before we eased
+    load_duty: float = 0.0
+    fast_once: bool = False
     ready: bool = False                  # block timer fired this cycle
     pushing: bool = False                # also pressing (eases off with the others)
     duty: Deque[float] = field(default_factory=lambda: deque(maxlen=3))
     current: Deque[float] = field(default_factory=lambda: deque(maxlen=3))
     t_block: float = 0.0
+    t_over: float = 0.0
     t_grip: float = 0.0
     t_clear: float = 0.0
     t_probe: float = 0.0
+    t_hold: float = 0.0
     t_load: float = 0.0
-    last_faults: Tuple[str, ...] = ()
+    t_harder: float = 0.0
+    t_resend: float = 0.0
 
 
 class FollowerGovernor:
@@ -181,6 +206,7 @@ class FollowerGovernor:
         self.breaker = False
         self.breaker_reason = ""
         self.thermal = "ok"
+        self._t_thermal = 0.0            # time spent at the current level while cooler
         self._thermal_stop = False
         self._retreat_requested = False
         self._retreat_done = False
@@ -207,31 +233,42 @@ class FollowerGovernor:
         return int(round(min(hi2, max(lo2, ticks))))
 
     def gravity_duty(self, states: Dict[str, ServoState]) -> Dict[str, float]:
-        """Permille of stall each arm joint needs to hold the measured pose."""
+        """Permille of stall each arm joint needs to hold the measured pose
+        (zeros until every arm joint has been read: a pose with a never-read
+        joint in it is not a pose)."""
         out = {n: 0.0 for n in self.joints}
-        arm = [n for n in profile.JOINT_NAMES]
-        if not all(n in states for n in arm):
+        arm = list(profile.JOINT_NAMES)
+        if not all(n in states and self._seen(n, states[n]) for n in arm):
             return out
         pose = gravity.pose_from_ticks({n: states[n].pos for n in arm}, self.ranges)
-        jaw = 0.0
-        taus = gravity.holding_torques(pose, jaw_deg=jaw)
+        taus = gravity.holding_torques(pose, jaw_deg=0.0)
         for n, tau in zip(arm, taus):
             if n in out:
                 out[n] = abs(tau) / sts3215.STALL_TORQUE_NM * 1000.0
         return out
 
+    def _seen(self, n: str, st: ServoState) -> bool:
+        j = self._j.get(n)
+        return bool(st.ok or (j is not None and j.seen))
+
     def reset(self, states: Dict[str, ServoState]) -> None:
         """Forget holds; every joint starts from where it is (connect / engage)."""
         for n in self.joints:
             j = self._j[n]
-            pos = states[n].pos if n in states else None
-            j.state = "track" if pos is not None else "stale"
+            st = states.get(n)
+            good = st is not None and st.ok
+            j.seen = good
+            j.state = "track" if good else "stale"
             j.reason = ""
-            j.goal = pos
+            j.goal = st.pos if good else None
+            if good:
+                j.last_temp = st.temp
             j.hold_goal = None
             j.prev_goal = None
             j.push_sign = 0
-            j.t_block = j.t_grip = j.t_clear = j.t_probe = j.t_load = 0.0
+            j.fast_once = False
+            j.t_block = j.t_over = j.t_grip = j.t_clear = 0.0
+            j.t_probe = j.t_hold = j.t_load = j.t_resend = 0.0
             j.duty.clear()
             j.current.clear()
 
@@ -246,45 +283,59 @@ class FollowerGovernor:
             return False
         self._thermal_stop = False
         self._retreat_requested = False
+        self._retreat_done = False
         return True
 
-    # -- the cycle -------------------------------------------------------------
-    def ack_retreat(self) -> None:
-        """The engine finished the cooling move; do not ask again until the arm
-        has cooled back to the alert level and heats up once more."""
+    # -- cooling-pose bookkeeping (the engine runs the move) -----------------------
+    def take_retreat(self) -> None:
+        """The engine is starting the cooling move: the request is consumed, and
+        not raised again until the arm is re-armed (it left the pose, or cooled)."""
         self._retreat_requested = False
         self._retreat_done = True
 
+    def cancel_retreat(self) -> None:
+        """Operator stop (ABORT / relax): drop a pending request, do not re-raise."""
+        self.take_retreat()
+
+    def rearm_retreat(self) -> None:
+        """The arm left the cooling pose: it may need the move again."""
+        self._retreat_done = False
+
+    ack_retreat = take_retreat           # backward-compatible name
+
+    # -- the cycle -------------------------------------------------------------
     def step(self, refs: Dict[str, Optional[int]], states: Dict[str, ServoState],
              torque_on: Dict[str, bool], now: float) -> GovernorOutput:
         p = self.p
         dt = 0.0 if self._last_now is None else max(0.0, min(0.2, now - self._last_now))
         self._last_now = now
+        for n in self.joints:
+            st = states.get(n)
+            if st is not None and st.ok:
+                self._j[n].seen = True
+                self._j[n].last_temp = st.temp
         u_g = self.gravity_duty(states)
-        goals: Dict[str, int] = {}
         report: Dict[str, JointStatus] = {}
 
-        # ---- arm-level: temperature, supply ---------------------------------
-        temps = [states[n].temp for n in self.joints if n in states and states[n].ok]
+        # ---- arm-level: temperature (last known values count), supply ----------
+        temps = [self._j[n].last_temp for n in self.joints if self._j[n].seen]
         tmax = max(temps) if temps else 0
         self._tmax = tmax
-        self._update_thermal(tmax)
+        self._update_thermal(tmax, dt)
         volts = [states[n].volt for n in self.joints
                  if n in states and states[n].ok and states[n].volt > 1.0]
         vmin = min(volts) if volts else 0.0
         self._update_voltage(vmin, dt)
 
-        decided: Dict[str, Tuple[int, str, str]] = {}
+        decided: Dict[str, Tuple[Optional[int], str, str]] = {}
         ctx: Dict[str, tuple] = {}
         for n in self.joints:
             j = self._j[n]
-            st = states.get(n)
+            st = states.get(n) or ServoState()
             ref = refs.get(n)
             js = JointStatus(ref=ref)
-            if st is None:
-                st = ServoState()
             js.ok = st.ok
-            js.temp = st.temp
+            js.temp = j.last_temp
             js.faults = st.faults
             if st.ok:
                 j.duty.append(abs(st.load))
@@ -312,32 +363,35 @@ class FollowerGovernor:
                     decided[n] = self._enter_probe(n, j, st, ref, last_goal, duty,
                                                    u_g.get(n, 0.0))
 
+        goals: Dict[str, int] = {}
         for n in self.joints:
             j = self._j[n]
             st, ref, _duty = ctx[n]
             js = report[n]
             goal, state, reason = decided[n]
-            if self.mode == "shadow":
-                # labels only: command exactly what the legacy path would
-                if not torque_on.get(n, False) or ref is None:
-                    goal = st.pos if st.ok else (j.goal if j.goal is not None else st.pos)
-                else:
-                    goal = self.clamp_goal(n, ref)
-            j.goal = goal
-            goals[n] = int(goal)
-            js.goal, js.state, js.reason = int(goal), state, reason
-            js.fast = state in FAST_STATES and self.mode == "active"
+            if self.mode == "shadow" and state in SHADOW_LABEL_ONLY and ref is not None:
+                # labels only for the unvalidated force logic: command the plain reference
+                goal = self.clamp_goal(n, ref)
+            fast = (state in FAST_STATES or j.fast_once) and self.mode == "active"
+            j.fast_once = False
+            if goal is not None:
+                j.goal = int(goal)
+                goals[n] = int(goal)
+            js.goal, js.state, js.reason, js.fast = goal, state, reason, fast
+            if state == "protect":
+                j.t_resend += dt
+                if j.t_resend >= p.protect_resend_s:
+                    js.resend, j.t_resend = True, 0.0
+            else:
+                j.t_resend = 0.0
 
         follow_allowed = not self.breaker and not self._thermal_stop
         stop_reason = self.breaker_reason if self.breaker else (
             "温度が高いため追従を止めています" if self._thermal_stop else "")
-        if self.mode == "shadow":
-            follow_allowed, stop_reason = True, ""
         msg, level = self._message(report, vmin)
         return GovernorOutput(
             goals=goals, joints=report, follow_allowed=follow_allowed,
-            stop_reason=stop_reason,
-            retreat=self._retreat_requested and self.mode == "active",
+            stop_reason=stop_reason, retreat=self._retreat_requested,
             speed_scale=p.volt_scale if self._volt_low else 1.0,
             thermal=self.thermal, supply_v=round(vmin, 2), message=msg,
             message_level=level)
@@ -345,21 +399,23 @@ class FollowerGovernor:
     # -- per joint --------------------------------------------------------------
     def _joint_step(self, n: str, j: _Joint, st: ServoState, ref: Optional[int],
                     torque: bool, duty: float, cur: float, ug: float, dt: float,
-                    now: float) -> Tuple[int, str, str]:
+                    now: float) -> Tuple[Optional[int], str, str]:
         p = self.p
+        if not st.ok:
+            # no fresh reading: never invent a position. Keep the last goal if we
+            # ever had one; a joint never read since (re)connect gets nothing.
+            if not j.seen or j.goal is None:
+                j.state, j.reason = "stale", "まだ読めていません"
+                return None, j.state, j.reason
+            if st.age >= p.stale_cycles:
+                j.state, j.reason = "stale", "読み取れません"
+            return j.goal, j.state, j.reason
         last_goal = j.goal if j.goal is not None else st.pos
-
-        if not st.ok and st.age >= p.stale_cycles:
-            j.state, j.reason = "stale", "読み取れません"
-            return last_goal, j.state, j.reason
         if not torque:
             j.state, j.reason = "off", "脱力中"
             j.hold_goal = None
-            j.t_block = j.t_grip = 0.0
+            j.t_block = j.t_over = j.t_grip = 0.0
             return st.pos, j.state, j.reason
-        if not st.ok:
-            # a missed read or two: keep doing what we were doing
-            return last_goal, j.state, j.reason
 
         target = st.pos if ref is None else ref
         err = target - st.pos
@@ -370,6 +426,7 @@ class FollowerGovernor:
         if protect_bits:
             if j.state != "protect":
                 j.hold_goal = st.pos
+                j.t_resend = 0.0
                 self._note_protect(n, now, protect_bits)
             j.state = "protect"
             j.reason = f"保護作動中（{sts3215.describe_faults(protect_bits)}）"
@@ -381,7 +438,7 @@ class FollowerGovernor:
                 return int(j.hold_goal), j.state, "保護が解けるのを待っています"
             # restart from where the joint is, not from where it was pushing
             j.state, j.reason, j.hold_goal = "track", "", None
-            j.t_block = 0.0
+            j.t_block = j.t_over = 0.0
 
         # ---- gripper: squeeze instead of push -------------------------------
         if n == GRIPPER:
@@ -394,52 +451,47 @@ class FollowerGovernor:
         # makes it sag at once. A weight gets its old goal back (no drop).
         if j.state == "probe":
             j.t_probe += dt
-            sag = (st.pos - j.probe_pos) * j.push_sign
-            # a weight keeps sagging toward the full eased-off amount; a joint
-            # nudged by the contact moves a little and stops
-            threshold = max(sts3215.deg_to_ticks(p.probe_sag_deg), 0.3 * j.probe_expect)
-            if sag < -threshold:
-                j.state = "load"
-                j.reason = "重い物を支えています（連続で持てる重さを超えています）"
-                j.t_load = 0.0
-                self.events.append((now, n, "load"))
+            if self._sagged(j, st):
+                self._to_load(n, j, duty, now, fast=True)
                 return int(j.prev_goal), j.state, j.reason
             if j.t_probe < p.probe_time_s:
                 return int(j.hold_goal), j.state, j.reason
             j.state = "hold"
+            j.t_hold = 0.0
             j.reason = "何かに当たっています。押すのをやめて止めています"
             self.events.append((now, n, "hold"))
 
         # ---- HOLD: stay put until the reference comes back -------------------
         if j.state == "hold":
-            hg = j.hold_goal
-            # a slow sag shows up after the probe window: still a weight
-            sag = (st.pos - j.probe_pos) * j.push_sign
-            if sag < -max(sts3215.deg_to_ticks(p.probe_sag_deg), 0.3 * j.probe_expect):
-                j.state = "load"
-                j.reason = "重い物を支えています（連続で持てる重さを超えています）"
-                j.t_load = 0.0
-                self.events.append((now, n, "load"))
+            j.t_hold += dt
+            # a slow sag soon after the probe is still a weight. Later, a move away
+            # is a person or the contact shifting - not a reason to push again.
+            if j.t_hold <= p.hold_reclass_s and self._sagged(j, st):
+                self._to_load(n, j, duty, now, fast=False)
                 return int(j.prev_goal), j.state, j.reason
             near = abs(target - st.pos) <= sts3215.deg_to_ticks(p.hold_release_deg)
             away = j.push_sign != 0 and (target - st.pos) * j.push_sign < 0
             if near or away:
                 j.state, j.reason, j.hold_goal, j.push_sign = "track", "", None, 0
-                j.t_block = 0.0
+                j.t_block = j.t_over = 0.0
             else:
-                return int(hg), j.state, j.reason
+                return int(j.hold_goal), j.state, j.reason
 
         # ---- LOAD: track normally, just labelled ----------------------------
-        # No re-probing while the situation is the same (each probe dips the arm
-        # a couple of degrees): only a new pose or a lighter load ends it.
+        # Carrying a weight around is a legitimate use, so moving does not end
+        # it (re-probing mid-move would let the weight win a little each time).
+        # It ends when the load goes away, or when the joint has to work clearly
+        # harder for a while (the weight is now also pressing on something).
         if j.state == "load":
             j.t_load += dt
-            moved = abs(target - (j.prev_goal if j.prev_goal is not None else target)) \
-                > sts3215.deg_to_ticks(p.load_release_deg)
             lighter = duty < max(ug + p.yield_over_gravity, 0.75 * p.block_duty_min)
-            if moved or lighter:
+            if duty > j.load_duty + p.load_extra_duty:
+                j.t_harder += dt
+            else:
+                j.t_harder = 0.0
+            if lighter or j.t_harder >= p.load_harder_s:
                 j.state, j.reason = "track", ""
-                j.t_block = 0.0
+                j.t_block = j.t_over = j.t_harder = 0.0
             else:
                 return self.clamp_goal(n, target), j.state, j.reason
 
@@ -456,14 +508,37 @@ class FollowerGovernor:
             j.t_block += dt * (2.0 if (duty > p.effort_duty or cur > p.effort_current_a) else 1.0)
         else:
             j.t_block = 0.0
+        # working very hard for a long time, moving or not (dragging along the table)
+        if duty > p.over_duty or cur > p.over_current_a:
+            j.t_over += dt
+        else:
+            j.t_over = 0.0
         # the looser "also pushing" test decides who eases off together (step())
         j.pushing = (still and abs(err) > 0.5 * need_err
                      and duty > max(ug + p.yield_over_gravity, 0.75 * p.block_duty_min))
-        j.ready = j.t_block >= p.block_time_s
+        j.ready = j.t_block >= p.block_time_s or j.t_over >= p.over_time_s
 
         j.state = "track"
         j.reason = "負荷大" if duty > max(ug + 150.0, 350.0) else ""
         return self.clamp_goal(n, target), j.state, j.reason
+
+    def _sagged(self, j: _Joint, st: ServoState) -> bool:
+        """Did the joint move away from where it was pushing, by a weight's worth?"""
+        sag = (st.pos - j.probe_pos) * j.push_sign
+        # a weight keeps sagging toward the full eased-off amount; a joint
+        # nudged by the contact moves a little and stops
+        threshold = max(sts3215.deg_to_ticks(self.p.probe_sag_deg), 0.3 * j.probe_expect)
+        return sag < -threshold
+
+    def _to_load(self, n: str, j: _Joint, duty: float, now: float, fast: bool) -> None:
+        j.state = "load"
+        j.reason = "重い物を支えています（連続で持てる重さを超えています）"
+        j.t_load = 0.0
+        # the weight's own effort is what it put out before we eased, not the
+        # eased value the sag was caught at (restoring the goal brings that back)
+        j.load_duty = max(j.probe_duty, duty, 1.0)
+        j.fast_once = fast
+        self.events.append((now, n, "load"))
 
     def _enter_probe(self, n: str, j: _Joint, st: ServoState, ref: Optional[int],
                      last_goal: int, duty: float, ug: float) -> Tuple[int, str, str]:
@@ -475,12 +550,13 @@ class FollowerGovernor:
         budget = max(ug + p.yield_over_gravity, p.yield_min_duty)
         r = min(1.0, budget / duty) if duty > 0 else 1.0
         j.prev_goal = last_goal
+        j.probe_duty = duty
         j.hold_goal = int(round(st.pos + e_s * r))
         j.probe_pos = st.pos
         j.probe_expect = abs(e_s) * (1.0 - r)
         j.push_sign = 1 if (target - st.pos) > 0 else -1
         j.t_probe = 0.0
-        j.t_block = 0.0
+        j.t_block = j.t_over = 0.0
         j.ready = False
         j.state = "probe"
         j.reason = "当たっているか確かめています"
@@ -526,33 +602,35 @@ class FollowerGovernor:
 
     _THERMAL_ORDER = ("ok", "warn", "alert", "stop", "retreat")
 
-    def _update_thermal(self, tmax: float) -> None:
+    def _update_thermal(self, tmax: float, dt: float) -> None:
         p = self.p
         bounds = {"warn": p.temp_warn_c, "alert": p.temp_alert_c,
                   "stop": p.temp_stop_c, "retreat": p.temp_retreat_c}
+        order = self._THERMAL_ORDER
         level = "ok"
         for name in ("warn", "alert", "stop", "retreat"):
             if tmax >= bounds[name]:
                 level = name
-        # rise at once, fall only 2 C below the level's threshold (the sensor
-        # reads whole degrees and would otherwise flicker between two levels)
         cur = self.thermal
-        order = self._THERMAL_ORDER
-        if order.index(level) < order.index(cur):
-            while cur != "ok" and tmax < bounds[cur] - p.temp_hysteresis_c \
-                    and order.index(cur) > order.index(level):
+        if order.index(level) > order.index(cur):
+            cur = level                          # rise at once
+            self._t_thermal = 0.0
+        elif cur != "ok" and tmax < bounds[cur] - p.temp_hysteresis_c:
+            # fall one level at a time, and only after it has stayed cooler for a
+            # while (whole-degree sensor; a single odd reading must not reopen it)
+            self._t_thermal += dt
+            if self._t_thermal >= p.thermal_dwell_s:
                 cur = order[order.index(cur) - 1]
-            level = cur
-        self.thermal = level
-        if level in ("stop", "retreat"):
+                self._t_thermal = 0.0
+        else:
+            self._t_thermal = 0.0
+        self.thermal = cur
+        if cur in ("stop", "retreat"):
             self._thermal_stop = True
-        if level == "retreat" and not self._retreat_done:
+        if cur == "retreat" and not self._retreat_done:
             self._retreat_requested = True
-        if order.index(level) <= order.index("alert"):
+        if order.index(cur) <= order.index("alert"):
             self._retreat_done = False
-        if self._thermal_stop and tmax < p.temp_resume_c and level not in ("stop", "retreat"):
-            # cooled down: the stop stays until the operator re-engages, but a
-            # pending retreat that never ran is no longer needed
             self._retreat_requested = False
 
     def _update_voltage(self, vmin: float, dt: float) -> None:
@@ -569,17 +647,17 @@ class FollowerGovernor:
                 self._volt_low, self._t_volt = False, 0.0
 
     def retreat_pose_ticks(self, states: Dict[str, ServoState]) -> Dict[str, int]:
-        """Cooling pose in ticks: stand the arm up, keep pan / roll / gripper."""
-        out = {}
-        for n in self.joints:
-            if n in states:
-                out[n] = states[n].pos
+        """Cooling pose in ticks for the joints read right now: stand the arm up,
+        keep pan / roll / gripper. A joint without a fresh read is left out."""
+        out = {n: states[n].pos for n in self.joints if n in states and states[n].ok}
+
         def deg_to(n: str, deg: float) -> int:
             lo, hi = self.ranges.get(n, (0, 4095))
             return self.clamp_goal(n, (lo + hi) / 2.0 + deg * (sts3215.TICKS_PER_REV - 1) / 360.0)
-        out["shoulder_lift"] = deg_to("shoulder_lift", COOL_LIFT_DEG)
-        out["elbow_flex"] = deg_to("elbow_flex", COOL_ELBOW_DEG)
-        out["wrist_flex"] = deg_to("wrist_flex", COOL_WRIST_DEG)
+        for n, deg in (("shoulder_lift", COOL_LIFT_DEG), ("elbow_flex", COOL_ELBOW_DEG),
+                       ("wrist_flex", COOL_WRIST_DEG)):
+            if n in out:
+                out[n] = deg_to(n, deg)
         return out
 
     def _message(self, report: Dict[str, JointStatus], vmin: float) -> Tuple[str, str]:

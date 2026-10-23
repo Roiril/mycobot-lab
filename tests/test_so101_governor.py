@@ -175,7 +175,9 @@ class TestWeight(unittest.TestCase):
         out = rig.step({j: ref})
         self.assertEqual(out.joints[j].state, "load")
 
-    def test_a_known_weight_is_not_re_probed_until_the_pose_changes(self):
+    def test_a_known_weight_is_carried_around_without_re_probing(self):
+        # each probe lets the weight win a little; carrying it to a new pose is a
+        # legitimate use (the cooling move does exactly that)
         rig = Rig()
         j = "shoulder_lift"
         ref = rig.pos[j] + deg(14.0)
@@ -185,7 +187,10 @@ class TestWeight(unittest.TestCase):
         rig.step({j: ref})
         out = rig.step({j: ref}, n=int(20.0 / DT))
         self.assertEqual(out.joints[j].state, "load")
-        out = rig.step({j: ref + deg(8.0)})                 # new pose
+        out = rig.step({j: ref + deg(8.0)}, n=30)          # moved to a new pose
+        self.assertEqual(out.joints[j].state, "load")
+        rig.load[j] = 120                                  # put down
+        out = rig.step({j: ref + deg(8.0)}, n=5)
         self.assertEqual(out.joints[j].state, "track")
 
 
@@ -327,6 +332,136 @@ class TestGravityAwareness(unittest.TestCase):
         # all joints at mid range: upper arm up, forearm horizontal -> elbow ~0.45 N*m
         self.assertAlmostEqual(u["elbow_flex"], 0.453 / 2.94 * 1000, delta=10)
         self.assertEqual(u["gripper"], 0.0)
+
+
+# ---------------------------------------------------------------------------
+# regressions from the 2026-10-24 code audit
+class TestNeverInventAPosition(unittest.TestCase):
+    def test_a_joint_never_read_gets_no_command_at_all(self):
+        # after a reconnect the I/O layer's placeholder position is 0: sending it
+        # would drive the joint to (and through) its end stop
+        rig = Rig()
+        rig.ok["elbow_flex"] = False
+        rig.g.reset(rig.states())
+        rig.pos["elbow_flex"] = 0
+        out = rig.step()
+        self.assertNotIn("elbow_flex", out.goals)
+        self.assertEqual(out.joints["elbow_flex"].state, "stale")
+
+    def test_a_torque_off_joint_without_a_fresh_read_is_not_sent_its_stale_position(self):
+        rig = Rig()
+        rig.torque["wrist_flex"] = False
+        rig.ok["wrist_flex"] = False
+        rig.g.reset(rig.states())
+        out = rig.step()
+        self.assertNotIn("wrist_flex", out.goals)
+
+
+class TestShadowKeepsTheSafetyParts(unittest.TestCase):
+    def test_protection_freeze_breaker_and_heat_still_act(self):
+        rig = Rig(mode="shadow")
+        rig.faults["elbow_flex"] = 0x20
+        out = rig.step({"elbow_flex": rig.pos["elbow_flex"] + deg(10)})
+        self.assertEqual(out.joints["elbow_flex"].state, "protect")
+        self.assertEqual(out.goals["elbow_flex"], rig.pos["elbow_flex"])
+        rig.faults["elbow_flex"] = 0
+        rig.temp["shoulder_lift"] = 69
+        out = rig.step()
+        self.assertFalse(out.follow_allowed)
+        self.assertTrue(out.retreat)
+
+
+class TestThermalRobustness(unittest.TestCase):
+    def test_a_missed_read_of_the_hot_joint_keeps_the_level(self):
+        rig = Rig()
+        rig.temp["elbow_flex"] = 69
+        rig.step()
+        rig.ok["elbow_flex"] = False
+        rig.temp["elbow_flex"] = 0           # whatever the placeholder says
+        out = rig.step(n=5)
+        self.assertEqual(out.thermal, "retreat")
+        self.assertFalse(rig.g.clear_thermal_stop())
+
+    def test_cooling_steps_down_one_level_at_a_time(self):
+        rig = Rig()
+        rig.temp["elbow_flex"] = 69
+        rig.step()
+        rig.temp["elbow_flex"] = 40
+        self.assertEqual(rig.step().thermal, "retreat")          # not at once
+        out = rig.step(n=int(2.2 / DT))
+        self.assertEqual(out.thermal, "stop")
+        out = rig.step(n=int(2.2 / DT))
+        self.assertEqual(out.thermal, "alert")
+
+    def test_a_taken_retreat_is_not_requested_again_until_rearmed(self):
+        rig = Rig()
+        rig.temp["elbow_flex"] = 69
+        self.assertTrue(rig.step().retreat)
+        rig.g.take_retreat()
+        self.assertFalse(rig.step(n=10).retreat)
+        rig.g.rearm_retreat()
+        self.assertTrue(rig.step().retreat)
+
+
+class TestLoadDetails(unittest.TestCase):
+    def make_load(self):
+        rig = Rig()
+        j = "shoulder_lift"
+        ref = rig.pos[j] + deg(14.0)
+        rig.load[j] = 650
+        out = rig.step({j: ref})
+        while out.joints[j].state != "probe":
+            out = rig.step({j: ref})
+        rig.pos[j] -= deg(4.0)
+        out = rig.step({j: ref})
+        return rig, j, ref, out
+
+    def test_the_restore_is_fast_only_once(self):
+        rig, j, ref, out = self.make_load()
+        self.assertEqual(out.joints[j].state, "load")
+        self.assertTrue(out.joints[j].fast)
+        self.assertFalse(rig.step({j: ref}).joints[j].fast)
+
+    def test_a_weight_that_starts_pressing_on_something_is_re_examined(self):
+        rig, j, ref, out = self.make_load()
+        rig.load[j] = 900
+        out = rig.step({j: ref}, n=5)
+        self.assertEqual(out.joints[j].state, "load")      # a blip is not enough
+        out = rig.step({j: ref}, n=int(0.6 / DT))
+        self.assertNotEqual(out.joints[j].state, "load")
+
+    def test_a_late_push_back_in_hold_does_not_restore_the_old_push(self):
+        rig = Rig()
+        j = "elbow_flex"
+        ref = rig.pos[j] + deg(12.0)
+        rig.load[j] = 600
+        out = rig.step({j: ref}, n=int(0.9 / DT))
+        self.assertEqual(out.joints[j].state, "hold")
+        rig.step({j: ref}, n=int(2.5 / DT))
+        rig.pos[j] -= deg(4.0)                 # someone pushes the arm away, much later
+        out = rig.step({j: ref})
+        self.assertEqual(out.joints[j].state, "hold")
+
+
+class TestHardWorkWhileMoving(unittest.TestCase):
+    def test_dragging_hard_for_a_second_eases_off(self):
+        rig = Rig()
+        j = "shoulder_lift"
+        rig.vel[j] = deg(10.0)                 # moving, so the still-only test never fires
+        rig.load[j] = 820
+        out = rig.step({j: rig.pos[j] + deg(8.0)}, n=int(1.1 / DT))
+        self.assertIn(out.joints[j].state, ("probe", "hold"))
+
+
+class TestProtectKeepAlive(unittest.TestCase):
+    def test_the_freeze_is_resent_every_second(self):
+        rig = Rig()
+        rig.faults["elbow_flex"] = 0x08
+        resent = 0
+        for _ in range(int(2.2 / DT)):
+            out = rig.step()
+            resent += out.joints["elbow_flex"].resend
+        self.assertEqual(resent, 2)
 
 
 if __name__ == "__main__":

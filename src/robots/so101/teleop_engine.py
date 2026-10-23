@@ -67,6 +67,8 @@ AUTO_FOLLOW_STILL_DEG = 3.0    # leader must be roughly parked, not swinging thr
 AUTO_FOLLOW_HOLD_CYCLES = 5    # consecutive good cycles (rejects a momentary crossing)
 
 RETREAT_DPS = 12.0             # speed of the automatic move to the cooling pose
+RETREAT_ARRIVE_DEG = 5.0       # "there" for the cooling pose
+RETREAT_WAIT_S = 3.0           # extra time a struggling joint gets before we stop asking
 # Profile bypass for a joint the governor is easing / holding: an eased goal
 # must reach the servo's setpoint now, not at the cruise speed.
 FAST_VELOCITY = 3000           # step/s (~260 deg/s, the 12 V no-load speed)
@@ -133,6 +135,15 @@ class AutoFollowGate:
 
     def update(self, leader_ticks: Dict[str, int],
                follower_ticks: Dict[str, int]) -> bool:
+        # every joint must be read on BOTH arms: an unread joint is an unchecked gap
+        missing = [n for n in self.joints
+                   if leader_ticks.get(n) is None or follower_ticks.get(n) is None]
+        if missing:
+            self.held = 0
+            self.gap_joint, self.gap_ticks = None, 0
+            self._prev_leader = None
+            self.status = f"姿勢を取得できません（{', '.join(missing)}）"
+            return False
         joint, gap = max_pose_gap(leader_ticks, follower_ticks, self.joints)
         self.gap_joint, self.gap_ticks = joint, gap
         if joint is None:
@@ -320,6 +331,7 @@ class TeleopEngine:
         self.speed = self.cfg.speed if self.cfg.speed in servo_config.SPEED_PRESETS else "normal"
         self._engaged_at: Optional[float] = None
         self._retreat: Optional[dict] = None
+        self._cool_target: Optional[Dict[str, int]] = None
         self._sent: Dict[str, Command] = {}
         self.states: Dict[str, ServoState] = {}
         self.leader_pos: Dict[str, Optional[int]] = {}
@@ -378,33 +390,38 @@ class TeleopEngine:
         self.instrument_check()
         return self.p_effective
 
-    def instrument_check(self) -> bool:
+    def instrument_check(self, attempts: int = 3) -> bool:
         """Does the one-shot telemetry read agree with single-register reads?
 
-        If not, the governor must not act on it: it falls back to shadow mode
-        (labels only) and the cockpit says so.
+        Each joint is checked `attempts` times and fails only when most of them
+        fail: one dropped packet must not decide the session. On failure the
+        governor's force logic only labels (shadow mode); its protective parts
+        (protection freeze, breaker, temperature stop / retreat) stay active.
         """
         io = self.follower
-        st = io.read_telemetry()
-        problems = []
-        for n in self.joints:
-            s = st.get(n)
-            if s is None or not s.ok:
-                problems.append(f"{n}: 一括読み出しに応答なし")
-                continue
-            single, _err = io.read_reg("Present_Position", n)
-            if single is not None and abs(int(single) - s.pos) > 8:
-                problems.append(f"{n}: 位置が一致しません（{s.pos} / {single}）")
-            if not (6.0 <= s.volt <= 14.5):
-                problems.append(f"{n}: 電圧 {s.volt:.1f}V が範囲外")
-            if not (0 <= s.temp <= 90):
-                problems.append(f"{n}: 温度 {s.temp}℃ が範囲外")
+        bad: Dict[str, List[str]] = {n: [] for n in self.joints}
+        for _ in range(max(1, attempts)):
+            st = io.read_telemetry()
+            for n in self.joints:
+                s = st.get(n)
+                if s is None or not s.ok:
+                    bad[n].append("一括読み出しに応答なし")
+                    continue
+                single, _err = io.read_reg("Present_Position", n)
+                if single is not None and abs(int(single) - s.pos) > 8:
+                    bad[n].append(f"位置が一致しません（{s.pos} / {single}）")
+                elif not (6.0 <= s.volt <= 14.5):
+                    bad[n].append(f"電圧 {s.volt:.1f}V が範囲外")
+                elif not (0 <= s.temp <= 90):
+                    bad[n].append(f"温度 {s.temp}℃ が範囲外")
+        need = max(1, attempts) // 2 + 1
+        problems = [f"{n}: {v[-1]}" for n, v in bad.items() if len(v) >= need]
         self.instrument_ok = not problems
         self.instrument_detail = "; ".join(problems)
         if problems and self.cfg.governor_mode == "active":
             self.governor.mode = "shadow"
-            self._log("⚠ 計器チェック不合格のため、力の自動調整は表示だけにします: "
-                      + self.instrument_detail)
+            self._log("⚠ 計器チェック不合格のため、力の自動調整は表示だけにします"
+                      "（保護・温度・遮断器は有効）: " + self.instrument_detail)
         elif not problems:
             self.governor.mode = self.cfg.governor_mode
         return self.instrument_ok
@@ -425,13 +442,18 @@ class TeleopEngine:
             r = (now - self._engaged_at) / SOFT_START_S
             if r < 1.0:
                 scale = SOFT_START_FLOOR + (1.0 - SOFT_START_FLOOR) * max(0.0, r)
-        if self.last_out is not None:
-            scale *= self.last_out.speed_scale
         return scale
 
+    def _supply_scale(self) -> float:
+        return self.last_out.speed_scale if self.last_out is not None else 1.0
+
     # -- torque ------------------------------------------------------------------
-    def _hold_here(self, joints: List[str]) -> None:
-        """Make each joint's goal its present position (so enabling never jumps)."""
+    def _hold_here(self, joints: List[str]) -> List[str]:
+        """Make each joint's goal its present position (so enabling never jumps).
+
+        Returns the joints that got it. A joint that cannot be read right now
+        is left out - and must not be energized: its goal would be stale or 0.
+        """
         st = self.follower.read_telemetry()
         cmds = {}
         for n in joints:
@@ -441,43 +463,92 @@ class TeleopEngine:
                 self.hold_target[n] = s.pos
         self.follower.write_commands(cmds)
         self._sent.update(cmds)
+        return list(cmds)
 
-    def set_follower_torque(self, joint: str, on: bool) -> None:
+    def set_follower_torque(self, joint: str, on: bool) -> bool:
+        """Energize / relax one joint. Refused while following or retreating: a
+        joint switched on mid-follow would run straight to the leader's pose."""
+        if on and (self.active or self.retreating):
+            self._log(f"{joint}: 追従中は個別にトルクを入れられません（追従を止めてから）")
+            return False
         if on and not self.torque_on.get(joint):
-            self._hold_here([joint])
+            if joint not in self._hold_here([joint]):
+                self._log(f"{joint}: 位置が読めないのでトルクを入れません")
+                return False
         self.follower.sync_write("Torque_Enable", {joint: 1 if on else 0})
         self.torque_on[joint] = bool(on)
+        return True
 
-    def enable_follower_torque_staged(self) -> None:
-        """Torque-enable one joint at a time (inrush control)."""
-        self._hold_here(self.joints)
+    def enable_follower_torque_staged(self) -> List[str]:
+        """Torque-enable one joint at a time (inrush control), only joints whose
+        present position was just written as their goal."""
+        held = self._hold_here(self.joints)
+        skipped = [n for n in self.joints if n not in held and not self.torque_on.get(n)]
+        if skipped:
+            self._log(f"⚠ 位置が読めない関節にはトルクを入れません: {', '.join(skipped)}")
         for n in self.joints:
+            if n not in held:
+                continue
             self.follower.sync_write("Torque_Enable", {n: 1})
             self.torque_on[n] = True
             if self.cfg.torque_stagger_s:
                 self._sleep(self.cfg.torque_stagger_s)
+        return held
 
     def relax_order(self) -> List[str]:
         return [n for n in RELAX_ORDER if n in self.joints]
 
     def relax_follower(self, delay: float = RELAX_STAGGER_S,
-                       sleep: Optional[Callable[[float], None]] = None) -> List[str]:
+                       sleep: Optional[Callable[[float], None]] = None,
+                       verify: bool = True) -> List[str]:
         """Cooling relax: cut all follower torque, tip -> base.
 
-        Sync writes only - a joint in protection cannot make this stop half way.
+        Sync writes - a joint in protection cannot make this stop half way - then
+        each joint is read back and the write repeated where it did not land.
         The follower goes limp: the caller must have warned the operator.
         """
         sleep = sleep or self._sleep
         self.active = False
         self.retreating = False
         self._retreat = None
+        self._engaged_at = None
+        self.governor.cancel_retreat()
         order = self.relax_order()
         for i, n in enumerate(order):
             self.follower.sync_write("Torque_Enable", {n: 0})
             self.torque_on[n] = False
             if delay and i < len(order) - 1:
                 sleep(delay)
+        if verify:
+            for _attempt in range(2):
+                still_on = []
+                for n in order:
+                    v, _err = self.follower.read_reg("Torque_Enable", n)
+                    if v is None or int(v) != 0:
+                        still_on.append(n)
+                if not still_on:
+                    break
+                for n in still_on:
+                    self.follower.sync_write("Torque_Enable", {n: 0})
+            else:
+                if still_on:
+                    self._log(f"⚠ 脱力を確認できない関節: {', '.join(still_on)}")
         return order
+
+    def freeze_here(self) -> None:
+        """Last resort when the cycle keeps failing: stop following and hold every
+        readable joint exactly where it is, with the profile bypassed."""
+        self.active = False
+        self.retreating = False
+        self._retreat = None
+        self._engaged_at = None
+        st = self.follower.read_telemetry()
+        cmds = {n: self._command(n, s.pos, 1.0, fast=True)
+                for n, s in st.items() if s.ok and self.torque_on.get(n)}
+        self.follower.write_commands(cmds)
+        self._sent.update(cmds)
+        for n, c in cmds.items():
+            self.hold_target[n] = c.goal
 
     # -- modes -------------------------------------------------------------------
     def start_teleop(self, now: Optional[float] = None) -> Tuple[bool, str]:
@@ -488,20 +559,28 @@ class TeleopEngine:
             return False, "温度が高いので追従を始められません。冷めるまで待ってください"
         st = self.follower.read_telemetry()
         self.states = st
+        unread = [n for n in self.joints if n not in st or not st[n].ok]
+        if unread:
+            return False, f"位置が読めない関節があります（{', '.join(unread)}）"
         self.governor.reset(st)
         for f in self.filters.values():
             f.reset()
-        self.last_ref = {n: (st[n].pos if n in st and st[n].ok else None) for n in self.joints}
+        self.last_ref = {n: st[n].pos for n in self.joints}
         self.retreating = False
         self._retreat = None
+        self._cool_target = None
         if not all(self.torque_on.values()):
             self.enable_follower_torque_staged()
+            if len([n for n in self.joints if self.torque_on.get(n)]) < len(self.joints):
+                return False, "トルクを入れられない関節があります"
         self._engaged_at = now
         self.active = True
         return True, ""
 
     def stop_teleop(self) -> None:
-        """Stop following and hold where the follower is now."""
+        """Stop following (or a cooling move) and hold where the follower is now."""
+        if self.retreating:
+            self.governor.cancel_retreat()
         self.active = False
         self.retreating = False
         self._retreat = None
@@ -512,25 +591,43 @@ class TeleopEngine:
 
     def jog(self, joint: str, ticks: int) -> None:
         """Move one joint while not following (the governor still applies)."""
-        if self.active:
+        if self.active or self.retreating:
             return
         if not self.torque_on.get(joint):
-            self.set_follower_torque(joint, True)
+            if not self.set_follower_torque(joint, True):
+                return
         self.hold_target[joint] = int(ticks)
 
-    def start_retreat(self) -> None:
-        """Slow straight-line move to the gravity-neutral cooling pose."""
+    def start_retreat(self, manual: bool = False) -> bool:
+        """Slow straight-line move to the gravity-neutral cooling pose.
+
+        Automatic (thermal) retreats never energize the arm: if the operator
+        has relaxed any arm joint, the arm is already shedding heat and an
+        automatic move would bring torque back behind their back. The cooling
+        button (manual) may energize readable joints.
+        """
+        self.governor.take_retreat()
+        arm = [n for n in self.joints if n != profile.GRIPPER_NAME]
+        if not manual and not all(self.torque_on.get(n) for n in arm):
+            self._log("冷却姿勢への自動移動は、脱力中の関節があるので行いません")
+            return False
+        if manual and not all(self.torque_on.values()):
+            self.enable_follower_torque_staged()
         st = self.follower.read_telemetry()
         target = self.governor.retreat_pose_ticks(st)
-        start = {n: st[n].pos for n in self.joints if n in st}
+        start = {n: st[n].pos for n in target if self.torque_on.get(n)}
+        target = {n: target[n] for n in start}
+        if not start:
+            self._log("冷却姿勢へ動かせる関節がありません")
+            return False
         span = max((abs(target[n] - start[n]) for n in start), default=0)
         dur = max(0.5, span / (RETREAT_DPS * TICKS_PER_DEG))
         self._retreat = {"start": start, "target": target, "t0": None, "dur": dur}
         self.active = False
         self.retreating = True
-        if not all(self.torque_on.values()):
-            self.enable_follower_torque_staged()
+        self._engaged_at = None
         self._log(f"冷却姿勢へ移動します（約 {dur:.0f} 秒）")
+        return True
 
     # -- references ----------------------------------------------------------------
     def compute_refs(self, leader_ticks: Dict[str, Optional[int]], now: float
@@ -575,11 +672,12 @@ class TeleopEngine:
         if fast:
             return Command(goal=int(goal), velocity=FAST_VELOCITY,
                            acceleration=FAST_ACCELERATION, torque_limit=tl)
-        vel = max(20, int(round(self.goal_velocity() * vscale)))
+        supply = self._supply_scale()
+        vel = max(20, int(round(self.goal_velocity() * vscale * supply)))
         if self.retreating:
-            vel = max(20, int(round(RETREAT_DPS * TICKS_PER_DEG * 1.5)))
-        return Command(goal=int(goal), velocity=vel, acceleration=ss.acceleration,
-                       torque_limit=tl)
+            vel = max(20, int(round(RETREAT_DPS * TICKS_PER_DEG * 1.5 * supply)))
+        acc = max(1, int(round(ss.acceleration * supply)))
+        return Command(goal=int(goal), velocity=vel, acceleration=acc, torque_limit=tl)
 
     def _changed(self, n: str, c: Command) -> bool:
         prev = self._sent.get(n)
@@ -603,12 +701,27 @@ class TeleopEngine:
         elif self.retreating and self._retreat is not None:
             refs, done = self._retreat_refs(now)
             if done:
-                self.retreating = False
-                self._retreat = None
-                for n, v in refs.items():
-                    self.hold_target[n] = v
-                self.governor.ack_retreat()
-                self._log("冷却姿勢に着きました。冷めるまでこの姿勢で保持します")
+                # finished only when the arm is actually there; a joint that cannot
+                # lift its load gets a little time, then we stop asking (and say so)
+                r = self._retreat
+                far = [n for n in refs if n in st and st[n].ok
+                       and abs(st[n].pos - refs[n]) > RETREAT_ARRIVE_DEG * TICKS_PER_DEG]
+                late = now - (r["t0"] + r["dur"])
+                if not far or late > RETREAT_WAIT_S:
+                    self.retreating = False
+                    self._retreat = None
+                    if not far:
+                        for n, v in refs.items():
+                            self.hold_target[n] = v
+                        self._cool_target = dict(refs)
+                        self._log("冷却姿勢に着きました。冷めるまでこの姿勢で保持します")
+                    else:
+                        for n in self.joints:
+                            if n in st and st[n].ok:
+                                self.hold_target[n] = st[n].pos
+                        self._cool_target = None
+                        self._log("⚠ 冷却姿勢まで動かせませんでした（"
+                                  + ", ".join(far) + "）。重い物を外すか、腕を支えて下ろしてください")
         else:
             refs = {}
             for n in self.joints:
@@ -625,19 +738,27 @@ class TeleopEngine:
             for n, g in out.goals.items():
                 self.hold_target[n] = g
         if out.retreat and not self.retreating:
-            self.start_retreat()
+            self.start_retreat(manual=False)
         if not self.active and not self.retreating:
             # a frozen joint stays where the governor froze it once we stop following
             for n, js in out.joints.items():
-                if js.state in ("hold", "protect"):
+                if js.state in ("hold", "protect") and js.goal is not None:
                     self.hold_target[n] = js.goal
+        # once the arm has left the cooling pose it may need the move again
+        cool = getattr(self, "_cool_target", None)
+        if cool and not self.retreating:
+            off = [abs(st[n].pos - cool[n]) for n in ("shoulder_lift", "elbow_flex", "wrist_flex")
+                   if n in cool and n in st and st[n].ok]
+            if off and max(off) > 10.0 * TICKS_PER_DEG:
+                self.governor.rearm_retreat()
+                self._cool_target = None
 
         vscale = self._velocity_scale(now)
         cmds = {}
         for n, goal in out.goals.items():
             js = out.joints.get(n)
             c = self._command(n, goal, vscale, fast=bool(js is not None and js.fast))
-            if self._changed(n, c):
+            if self._changed(n, c) or (js is not None and js.resend):
                 cmds[n] = c
         if cmds:
             self.follower.write_commands(cmds)

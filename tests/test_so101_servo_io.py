@@ -308,6 +308,24 @@ class TestRawIO(unittest.TestCase):
         self.assertEqual(len(ser.written), 1)
 
 
+class TestLateEcho(unittest.TestCase):
+    def test_our_echo_behind_a_late_sync_write_echo_is_still_removed(self):
+        # the previous sync write's echo lands after the input flush, ahead of the
+        # read's own echo - which is shaped like a 2-byte reply and must not count
+        ser, io = make_io()
+        late = build_sync_write(42, 2, [(1, [0x00, 0x08])])
+        real_reset = ser.reset_input_buffer
+
+        def reset_then_late_echo():
+            real_reset()
+            ser.rx.extend(late)
+        ser.reset_input_buffer = reset_then_late_echo
+        ser.regs[IDS["gripper"]][REG["Torque_Limit"][0]] = 500
+        v, err = io.read_reg("Torque_Limit", "gripper")
+        self.assertEqual(v, 500)
+        self.assertEqual(err, 0)
+
+
 class FakeLegacyBus:
     def __init__(self):
         self.pos = {n: 2048 for n in NAMES}

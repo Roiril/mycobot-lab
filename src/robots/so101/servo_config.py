@@ -161,6 +161,11 @@ def findings(table: Dict[str, Dict[str, Optional[int]]], *, supply_v: float = 12
 WriteFn = Callable[[str, str, int], Tuple[bool, int]]
 
 
+# Registers in the EEPROM area: written with the lock closed they last until
+# power-off; with it open they would be stored for good.
+EEPROM_AREA = ("P_Coefficient", "D_Coefficient", "I_Coefficient")
+
+
 def session_writes(settings: SessionSettings, names: List[str],
                    goal_velocity: Optional[int] = None) -> List[Tuple[str, str, int]]:
     """(register, servo, value) list applied at connect (pure)."""
@@ -186,9 +191,17 @@ def apply_session(write_reg: WriteFn, read_reg: ReadFn, settings: SessionSetting
     Returns {servo: P actually in effect} so the governor uses the real gain
     even when a write was refused.
     """
+    locked: Dict[str, bool] = {}
     for reg, n, v in session_writes(settings, names, goal_velocity):
+        if reg in EEPROM_AREA and not locked.get(n, False):
+            continue          # lock not confirmed: this would persist in EEPROM
         ok, _err = write_reg(reg, n, v)
-        if not ok:
+        if reg == "Lock":
+            locked[n] = ok
+            if not ok:
+                log(f"⚠ {n}: EEPROM の Lock を閉じられないので P/D/I は書きません"
+                    "（書くと電源を切っても残るため）")
+        elif not ok:
             log(f"⚠ {n} の {reg}={v} を書けませんでした")
     p_eff: Dict[str, int] = {}
     for n in names:

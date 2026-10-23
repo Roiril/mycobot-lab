@@ -204,21 +204,22 @@ class RawFeetechIO:
         deadline = self.clock() + self.base_timeout_s + expected * 10e-6 * 1.5
         buf = bytearray()
         got: Dict[int, Tuple[bytes, int]] = {}
-        echo_checked = False
+        echo_removed = False
         while len(got) < len(ids) and self.clock() < deadline:
             chunk = ser.read(ser.in_waiting or 1)
             if not chunk:
                 continue
             buf.extend(chunk)
-            if not echo_checked:
-                # A half-duplex adapter may hand our own instruction back first.
-                # A 2-byte READ instruction is shaped exactly like a 2-byte reply
-                # (FF FF id 04 ..), so it must be removed, not parsed.
-                if len(buf) < len(pkt) and bytes(buf) == pkt[:len(buf)]:
-                    continue
-                if bytes(buf[:len(pkt)]) == pkt:
-                    del buf[:len(pkt)]
-                echo_checked = True
+            if not echo_removed:
+                # A half-duplex adapter may hand our own instruction back - not
+                # necessarily first (a late echo of the previous sync write can
+                # land ahead of it). A 2-byte READ instruction is shaped exactly
+                # like a 2-byte reply (FF FF id 04 ..), so it must be removed
+                # wherever it is, never parsed.
+                k = bytes(buf).find(pkt)
+                if k >= 0:
+                    del buf[k:k + len(pkt)]
+                    echo_removed = True
             found, used = parse_status_packets(buf, length, ids)
             got.update(found)
             del buf[:used]

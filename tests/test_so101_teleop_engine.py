@@ -47,10 +47,19 @@ class FakeIO:
         self.sync = []                    # (reg, values)
         self.sick = set()                 # joints whose acknowledged writes fail
         self.refuse_p = set()
+        self.silent = set()               # joints that do not answer reads
+        self.drop_next_torque_off = set() # first Torque_Enable=0 to these is lost
+        self.dropped_reads = 0            # telemetry reads to drop entirely (one each)
 
     def read_telemetry(self, names=None):
         out = {}
+        drop_all = self.dropped_reads > 0
+        if drop_all:
+            self.dropped_reads -= 1
         for n in (names or self.names):
+            if n in self.silent or drop_all:
+                out[n] = ServoState(ok=False, pos=0, age=1)
+                continue
             s = ServoState(ok=True, pos=self.pos[n], volt=self.volt, temp=self.temp[n],
                            load=self.load[n], status=self.faults[n])
             s.faults = sts3215.status_names(self.faults[n])
@@ -63,7 +72,11 @@ class FakeIO:
     def sync_write(self, reg, values):
         self.sync.append((reg, dict(values)))
         if reg == "Torque_Enable":
-            self.torque.update(values)
+            for n, v in values.items():
+                if v == 0 and n in self.drop_next_torque_off:
+                    self.drop_next_torque_off.discard(n)      # lost on the wire
+                    continue
+                self.torque[n] = v
 
     def write_commands(self, cmds):
         self.commands.append(dict(cmds))
@@ -72,8 +85,12 @@ class FakeIO:
                 self.pos[n] = c.goal
 
     def read_reg(self, reg, name):
+        if name in self.silent:
+            return None, 0
         if reg == "Present_Position":
             return self.pos[name], 0
+        if reg == "Torque_Enable":
+            return self.torque[name], 0
         return self.regs[name].get(reg, 0), 0
 
     def write_reg(self, reg, name, value):
@@ -364,6 +381,94 @@ class TestOnTheSimulatedArm(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# regressions from the 2026-10-24 code audit
+class TestAuditRegressions(unittest.TestCase):
+    def test_relax_with_a_pending_retreat_stays_limp(self):
+        eng, lead, foll = make_engine(present={n: 2050 for n in JOINTS})
+        eng.start_teleop(now=0.0)
+        foll.temp["elbow_flex"] = 69                  # retreat requested
+        eng.relax_follower(delay=0.0)
+        for i in range(30):
+            eng.cycle(now=0.1 + i / 60)
+        self.assertTrue(all(foll.torque[n] == 0 for n in JOINTS), foll.torque)
+        self.assertFalse(eng.retreating)
+
+    def test_abort_ends_a_retreat_and_it_does_not_restart_by_itself(self):
+        eng, lead, foll = make_engine(present={n: 2050 for n in JOINTS})
+        eng.start_teleop(now=0.0)
+        foll.temp["elbow_flex"] = 69
+        eng.cycle(now=0.05)
+        self.assertTrue(eng.retreating)
+        eng.stop_teleop()                              # ABORT
+        for i in range(30):
+            eng.cycle(now=0.1 + i / 60)
+        self.assertFalse(eng.retreating)
+
+    def test_a_joint_that_cannot_be_read_is_never_energized_or_sent_zero(self):
+        eng, lead, foll = make_engine(present={n: 2000 for n in JOINTS})
+        foll.silent.add("elbow_flex")
+        eng.enable_follower_torque_staged()
+        self.assertEqual(foll.torque["elbow_flex"], 0)
+        for i in range(10):
+            eng.cycle(now=i / 60)
+        sent = [c["elbow_flex"].goal for c in foll.commands if "elbow_flex" in c]
+        self.assertEqual(sent, [])
+        ok, why = eng.start_teleop(now=1.0)
+        self.assertFalse(ok)
+        self.assertIn("elbow_flex", why)
+
+    def test_switching_one_joint_on_mid_follow_is_refused(self):
+        eng, lead, foll = make_engine()
+        eng.start_teleop(now=0.0)
+        eng.set_follower_torque("wrist_flex", False)
+        self.assertFalse(eng.set_follower_torque("wrist_flex", True))
+        self.assertEqual(foll.torque["wrist_flex"], 0)
+
+    def test_supply_sag_slows_acceleration_too(self):
+        eng, lead, foll = make_engine()
+        eng.start_teleop(now=0.0)
+        foll.volt = 10.4
+        t = 2.0
+        for _ in range(40):
+            lead.pos["shoulder_pan"] += 3
+            eng.cycle(now=t)
+            t += 1 / 60
+        c = [c["shoulder_pan"] for c in foll.commands if "shoulder_pan" in c][-1]
+        self.assertLess(c.acceleration, eng.cfg.session.acceleration)
+        self.assertLess(c.velocity, eng.goal_velocity())
+
+    def test_one_dropped_read_does_not_fail_the_instrument_check(self):
+        eng, _, foll = make_engine()
+        foll.dropped_reads = 1
+        self.assertTrue(eng.instrument_check())
+        self.assertEqual(eng.governor.mode, "active")
+
+    def test_relax_is_read_back_and_resent(self):
+        eng, _, foll = make_engine()
+        eng.start_teleop(now=0.0)
+        foll.drop_next_torque_off.add("shoulder_lift")
+        eng.relax_follower(delay=0.0)
+        self.assertEqual(foll.torque["shoulder_lift"], 0)
+
+    def test_leaving_the_cooling_pose_rearms_the_automatic_retreat(self):
+        eng, lead, foll = make_engine(present={n: 2050 for n in JOINTS})
+        eng.start_teleop(now=0.0)
+        foll.temp["elbow_flex"] = 69
+        t = 0.02
+        for _ in range(60 * 20):
+            eng.cycle(now=t)
+            t += 1 / 60
+            if not eng.retreating and t > 1.0:
+                break
+        self.assertIsNotNone(eng._cool_target)
+        eng.jog("elbow_flex", foll.pos["elbow_flex"] + deg_to_ticks(30))
+        # the jog goes out, the move is seen and re-arms, the next step asks again
+        for k in range(3):
+            eng.cycle(now=t + 0.02 * k)
+        self.assertTrue(eng.retreating, "the hot arm moved out of the pose and nothing re-armed")
+
+
+# ---------------------------------------------------------------------------
 def pose(**over):
     p = {n: 2048 for n in JOINTS}
     p.update(over)
@@ -440,6 +545,15 @@ class TestAutoFollowGate(unittest.TestCase):
         gate = AutoFollowGate()
         self.assertEqual(gate.tol_ticks, deg_to_ticks(AUTO_FOLLOW_TOL_DEG))
         self.assertLess(gate.still_ticks, gate.tol_ticks)
+
+
+class TestGateNeedsEveryJoint(unittest.TestCase):
+    def test_an_unread_joint_blocks_auto_follow(self):
+        gate = AutoFollowGate(tol_ticks=deg_to_ticks(20.0), hold_cycles=1)
+        leader = pose()
+        leader.pop("wrist_flex")
+        self.assertFalse(gate.update(leader, pose()))
+        self.assertIn("wrist_flex", gate.status)
 
 
 if __name__ == "__main__":
