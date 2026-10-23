@@ -99,6 +99,16 @@
 
 ---
 
+## 4.6 繋いだら最初に（2026-10-24 〜）
+
+```powershell
+.venv-so101\Scripts\python.exe scripts\so101_hw_check.py                 # トルクは入れない
+.venv-so101\Scripts\python.exe scripts\so101_hw_check.py --characterize  # ±1.5° 動かして k と重力の向きを測る
+```
+
+計器（読み出しの周期・欠けた ID の扱い・一括読み出しと単独読み出しの一致）と、全サーボの設定（P/I・保護の閾値・
+電圧と温度の上限・ファーム版）を並べる。NG があればその行を直してからコックピットを使う。
+
 ## 5. 本リポジトリへの接続（✅ 実装済み）
 
 - [x] 実機ドライバ + 操作層: `LerobotSo101Driver` + `So101Controller`（safety/speed/abort）

@@ -2,6 +2,7 @@
 
 - [two_systems_arm_vs_hand.md](two_systems_arm_vs_hand.md) — ⚠ アーム(myCobot)とハンド(Hiwonder 5指)は別系統。別MCU/COM/電源/プロトコル。混同禁止
 - [so101_bringup.md](so101_bringup.md) — SO-101 は server.py /so101/* + ui.html タブに統合済み・env 二系統・Seeed XIAO は CH343P 内蔵でファーム不要
+- [so101_servo_physics.md](so101_servo_physics.md) — 出力=(P/4)×誤差、重力だけでは過負荷にならない、新しい位置指令で保護フラグが消える、電流 6.5mA/カウント、押し付けと荷物は緩めて見分ける
 - [hand_teleop.md](hand_teleop.md) — ✋ハンドの Quest 指追従/Python ドライバ/server endpoint/UI 手動パネル構成
 - [hardware.md](hardware.md) — 機種・接続・動作確認済み構成・初回接続で詰まった事象
 - [mycobot_firmware_quirks.md](mycobot_firmware_quirks.md) — J5 latched lock（M5 再起動以外復旧不能）、get_servo_currents は torque を反映しない
