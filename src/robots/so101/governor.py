@@ -106,6 +106,11 @@ class GovernorParams:
     temp_resume_c: float = 62.0
     temp_hysteresis_c: float = 2.0
     thermal_dwell_s: float = 2.0         # cool down one level at a time, this slowly
+    # A motor warms by about a degree every few seconds, so a reading that jumps
+    # further than this between cycles is a bad frame (seen on hardware when the
+    # supply sagged). It counts only after temp_confirm_n reads agree with it.
+    temp_jump_c: float = 4.0
+    temp_confirm_n: int = 3
     volt_low_v: float = 10.8
     volt_ok_v: float = 11.3
     volt_low_s: float = 0.3
@@ -162,6 +167,8 @@ class _Joint:
     reason: str = ""
     seen: bool = False                   # had a good read since the last reset
     last_temp: int = 0
+    pending_temp: Optional[int] = None   # a jump waiting for confirmation
+    pending_n: int = 0
     goal: Optional[int] = None
     hold_goal: Optional[int] = None
     prev_goal: Optional[int] = None
@@ -263,6 +270,8 @@ class FollowerGovernor:
             j.goal = st.pos if good else None
             if good:
                 j.last_temp = st.temp
+            j.pending_temp = None
+            j.pending_n = 0
             j.hold_goal = None
             j.prev_goal = None
             j.push_sign = 0
@@ -312,8 +321,7 @@ class FollowerGovernor:
         for n in self.joints:
             st = states.get(n)
             if st is not None and st.ok:
-                self._j[n].seen = True
-                self._j[n].last_temp = st.temp
+                self._accept_temp(self._j[n], st.temp)
         u_g = self.gravity_duty(states)
         report: Dict[str, JointStatus] = {}
 
@@ -599,6 +607,25 @@ class FollowerGovernor:
             self.breaker_reason = (f"保護が {int(self.p.breaker_window_s // 60)} 分間に "
                                    f"{len(self._protect_log)} 回作動したので追従を止めました。"
                                    "押し付け・荷物・高温を取り除いてから追従を入れ直してください")
+
+    def _accept_temp(self, j: _Joint, temp: int) -> None:
+        """Take a temperature reading unless it is an implausible jump; a jump
+        becomes the new value once temp_confirm_n reads in a row agree with it."""
+        if not j.seen or abs(temp - j.last_temp) <= self.p.temp_jump_c:
+            j.seen = True
+            j.last_temp = temp
+            j.pending_temp = None
+            j.pending_n = 0
+            return
+        if j.pending_temp is not None and abs(temp - j.pending_temp) <= 1:
+            j.pending_n += 1
+        else:
+            j.pending_temp = temp
+            j.pending_n = 1
+        if j.pending_n >= self.p.temp_confirm_n:
+            j.last_temp = temp
+            j.pending_temp = None
+            j.pending_n = 0
 
     _THERMAL_ORDER = ("ok", "warn", "alert", "stop", "retreat")
 

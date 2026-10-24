@@ -322,7 +322,8 @@ class TestGovernorInTheLoop(unittest.TestCase):
         eng, lead, foll = make_engine()
         eng.start_teleop(now=0.0)
         foll.temp["shoulder_lift"] = 67
-        eng.cycle(now=0.1)
+        for t in (0.1, 0.11, 0.12):                # a jump counts after 3 agreeing reads
+            eng.cycle(now=t)
         self.assertFalse(eng.active)
         ok, why = eng.start_teleop(now=0.2)
         self.assertFalse(ok)
@@ -397,7 +398,8 @@ class TestAuditRegressions(unittest.TestCase):
         eng, lead, foll = make_engine(present={n: 2050 for n in JOINTS})
         eng.start_teleop(now=0.0)
         foll.temp["elbow_flex"] = 69
-        eng.cycle(now=0.05)
+        for t in (0.05, 0.06, 0.07):
+            eng.cycle(now=t)
         self.assertTrue(eng.retreating)
         eng.stop_teleop()                              # ABORT
         for i in range(30):

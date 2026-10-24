@@ -229,10 +229,10 @@ class TestProtect(unittest.TestCase):
 class TestThermal(unittest.TestCase):
     def test_levels_escalate_and_stop_following(self):
         rig = Rig()
-        rig.temp["elbow_flex"] = 56
-        self.assertEqual(rig.step().thermal, "warn")
+        rig.temp["elbow_flex"] = 56          # big jumps count after 3 agreeing reads
+        self.assertEqual(rig.step(n=3).thermal, "warn")
         rig.temp["elbow_flex"] = 63
-        self.assertEqual(rig.step().thermal, "alert")
+        self.assertEqual(rig.step(n=3).thermal, "alert")
         rig.temp["elbow_flex"] = 66
         out = rig.step()
         self.assertEqual(out.thermal, "stop")
@@ -245,20 +245,41 @@ class TestThermal(unittest.TestCase):
     def test_no_flicker_on_a_one_degree_wobble(self):
         rig = Rig()
         rig.temp["elbow_flex"] = 66
-        rig.step()
+        rig.step(n=3)
         rig.temp["elbow_flex"] = 65
         self.assertEqual(rig.step().thermal, "stop")
 
     def test_resume_needs_a_cool_arm(self):
         rig = Rig()
         rig.temp["elbow_flex"] = 66
-        rig.step()
+        rig.step(n=3)
         rig.temp["elbow_flex"] = 63
         rig.step()
         self.assertFalse(rig.g.clear_thermal_stop())
         rig.temp["elbow_flex"] = 50
-        rig.step()
+        rig.step(n=3)
         self.assertTrue(rig.g.clear_thermal_stop())
+
+    def test_a_single_bad_frame_does_not_count(self):
+        # on hardware a sagging supply produced one-frame readings far above the
+        # real 35 C, and one of them started the cooling retreat
+        rig = Rig()
+        rig.step()
+        rig.temp["elbow_flex"] = 70
+        out = rig.step()
+        rig.temp["elbow_flex"] = 35
+        out = rig.step()
+        self.assertEqual(out.thermal, "ok")
+        self.assertFalse(out.retreat)
+        self.assertTrue(rig.g.clear_thermal_stop())
+
+    def test_bad_frames_that_disagree_never_confirm(self):
+        rig = Rig()
+        rig.step()
+        for t in (70, 90, 75, 120, 66):
+            rig.temp["elbow_flex"] = t
+            out = rig.step()
+        self.assertEqual(out.thermal, "ok")
 
     def test_the_cooling_pose_stands_the_arm_up(self):
         rig = Rig()
@@ -366,7 +387,7 @@ class TestShadowKeepsTheSafetyParts(unittest.TestCase):
         self.assertEqual(out.goals["elbow_flex"], rig.pos["elbow_flex"])
         rig.faults["elbow_flex"] = 0
         rig.temp["shoulder_lift"] = 69
-        out = rig.step()
+        out = rig.step(n=3)
         self.assertFalse(out.follow_allowed)
         self.assertTrue(out.retreat)
 
@@ -375,7 +396,7 @@ class TestThermalRobustness(unittest.TestCase):
     def test_a_missed_read_of_the_hot_joint_keeps_the_level(self):
         rig = Rig()
         rig.temp["elbow_flex"] = 69
-        rig.step()
+        rig.step(n=3)
         rig.ok["elbow_flex"] = False
         rig.temp["elbow_flex"] = 0           # whatever the placeholder says
         out = rig.step(n=5)
@@ -385,7 +406,7 @@ class TestThermalRobustness(unittest.TestCase):
     def test_cooling_steps_down_one_level_at_a_time(self):
         rig = Rig()
         rig.temp["elbow_flex"] = 69
-        rig.step()
+        rig.step(n=3)
         rig.temp["elbow_flex"] = 40
         self.assertEqual(rig.step().thermal, "retreat")          # not at once
         out = rig.step(n=int(2.2 / DT))
@@ -396,7 +417,7 @@ class TestThermalRobustness(unittest.TestCase):
     def test_a_taken_retreat_is_not_requested_again_until_rearmed(self):
         rig = Rig()
         rig.temp["elbow_flex"] = 69
-        self.assertTrue(rig.step().retreat)
+        self.assertTrue(rig.step(n=3).retreat)
         rig.g.take_retreat()
         self.assertFalse(rig.step(n=10).retreat)
         rig.g.rearm_retreat()
