@@ -250,10 +250,22 @@ class Sim:
         return {"geoms": geoms, "bodies": bodies, "body_joint": body_joint,
                 "joints": JOINTS, "floor_z": self.arm.floor_z,
                 "poses": {k: v for k, v in so101_poses.POSES.items()},
+                "pose_bodies": {k: self.pose_bodies(v) for k, v in so101_poses.POSES.items()},
+                "ref_bodies": self.pose_bodies(START_DEG),
                 "editable_regs": list(EDITABLE_REGS), "reg_limits": REG_LIMITS,
                 "servo": {"stall_nm": sts3215.STALL_TORQUE_NM, "stall_a": sts3215.STALL_CURRENT_A,
                           "no_load_rpm": sts3215.NO_LOAD_RPM, "gear": sts3215.GEAR_RATIO,
                           "overcurrent_a": sts3215.OVERCURRENT_TRIP_A}}
+
+    def pose_bodies(self, arm_deg, gripper_deg: float = 0.0) -> list:
+        """Body poses of the arm at the given joint angles (kinematics only)."""
+        m = self.arm.m
+        d = mujoco.MjData(m)
+        for j, a in enumerate(list(arm_deg)[:5]):
+            d.qpos[j] = math.radians(a)
+        d.qpos[5] = math.radians(gripper_deg)
+        mujoco.mj_kinematics(m, d)
+        return self._bodies(d)
 
     def mesh_bin(self, mid: int) -> bytes:
         m = self.arm.m

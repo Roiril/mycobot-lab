@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SO-101 シミュレータ</title>
+<title>SO-101 SIM</title>
 <style>
 /* tokens: copied from scripts/ui.html :root (.agent/rules/design.md) */
 :root{
@@ -23,223 +23,204 @@
   --radius:4px; --radius-sm:3px; --bw:1px;
   --pad:11px; --gap:8px;
   --t-fast:.1s; --t-std:.16s; --ease:ease-out;
-  /* meaning colours shared by the tracks, the trace and the 3D view */
-  --c-goal:var(--data-tgt); --c-sp:var(--text-muted); --c-act:var(--data-num);
+  /* one meaning, one colour - the same in the dials, the trace and the 3D view:
+     goal = the orange ghost arm, actual = the bone-coloured solid arm,
+     selection = accent, effort ramps grey -> amber -> red as it nears a trip */
+  --c-goal:var(--data-tgt); --c-act:#d6d0c2; --c-sp:var(--text-faint); --c-cur:var(--data-num);
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:var(--fw-reg) var(--fs-base)/1.4 var(--font-ui)}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:var(--fw-reg) var(--fs-base)/1.4 var(--font-ui);user-select:none}
 button,input{font:inherit;color:inherit}
 .mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
 
-/* ---------- page: the columns follow the signal: command -> servo -> arm ---------- */
-#app{height:100%;display:grid;grid-template-columns:268px 452px minmax(0,1fr);grid-template-rows:42px minmax(0,1fr) 200px;
+/* columns follow the signal: command -> servo -> arm (the chevrons sit on the seams) */
+#app{height:100%;display:grid;grid-template-columns:232px 436px minmax(0,1fr);grid-template-rows:44px minmax(0,1fr) 190px;
   grid-template-areas:"top top top" "cmd servo arm" "cmd servo trace"}
-header{grid-area:top;display:flex;align-items:center;gap:14px;padding:0 var(--pad);background:var(--surface);border-bottom:var(--bw) solid var(--border)}
-#cmd{grid-area:cmd;overflow:auto;border-right:var(--bw) solid var(--border);background:var(--surface)}
+header{grid-area:top;display:flex;align-items:center;gap:18px;padding:0 var(--pad);background:var(--surface);border-bottom:var(--bw) solid var(--border)}
+#cmd{grid-area:cmd;overflow:auto;background:var(--surface);border-right:var(--bw) solid var(--border)}
 #servo{grid-area:servo;overflow:auto;border-right:var(--bw) solid var(--border)}
 #arm{grid-area:arm;position:relative;min-width:0;min-height:0}
 #trace{grid-area:trace;border-top:var(--bw) solid var(--border);position:relative;min-width:0}
-
-/* stage headings: the numbers are the order things happen in */
-.stage{display:flex;align-items:baseline;gap:8px;padding:9px var(--pad) 7px;border-bottom:var(--bw) solid var(--divider);position:sticky;top:0;background:inherit;z-index:2}
-#servo .stage{background:var(--bg)}
-.stage b{font-family:var(--font-mono);color:var(--accent);font-size:var(--fs-sm)}
-.stage h2{margin:0;font-size:var(--fs-base);font-weight:var(--fw-med)}
-.stage span{color:var(--text-faint);font-size:var(--fs-xs);margin-left:auto}
+.chev{align-self:center;justify-self:start;margin-left:-9px;width:18px;height:18px;border-radius:50%;background:var(--bg);border:var(--bw) solid var(--border-strong);
+  display:grid;place-items:center;color:var(--text-muted);z-index:5;pointer-events:none}
+.chev svg{width:10px;height:10px}
 
 /* ---------- header ---------- */
-header h1{margin:0;font-size:var(--fs-md);font-weight:var(--fw-med)}
-.tag{font-size:var(--fs-2xs);color:var(--text-muted);border:var(--bw) solid var(--border);border-radius:var(--radius-sm);padding:1px 6px}
-.hstat{display:flex;gap:16px;margin-left:8px;font-size:var(--fs-sm);color:var(--text-muted)}
-.hstat .mono{color:var(--data-num)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:var(--fw-bold);font-size:var(--fs-md)}
+.chip{font-size:var(--fs-2xs);font-weight:var(--fw-med);letter-spacing:.08em;color:var(--c-goal);border:var(--bw) solid currentColor;border-radius:var(--radius-sm);padding:0 5px}
+.hstat{display:flex;gap:16px}
+.hstat span{display:flex;align-items:center;gap:5px;color:var(--text-faint)}
+.hstat b{font-weight:var(--fw-reg);color:var(--text)}
 .hsp{flex:1}
 .seg{display:inline-flex;border:var(--bw) solid var(--border);border-radius:var(--radius);overflow:hidden}
-.seg button{background:var(--surface-3);border:0;border-right:var(--bw) solid var(--border);padding:4px 9px;cursor:pointer;color:var(--text-muted)}
+.seg button{background:var(--surface-3);border:0;border-right:var(--bw) solid var(--border);padding:4px 9px;cursor:pointer;color:var(--text-muted);font-family:var(--font-mono);font-size:var(--fs-sm)}
 .seg button:last-child{border-right:0}
 .seg button.on{background:var(--accent-soft);color:var(--accent)}
-.btn{background:var(--surface-3);border:var(--bw) solid var(--border);border-radius:var(--radius);padding:4px 10px;cursor:pointer;color:var(--text-muted);transition:background var(--t-fast) var(--ease)}
-.btn:hover{background:var(--surface-2);color:var(--text)}
-.btn.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
-.btn.primary{background:var(--accent-bg);border-color:var(--accent-bg);color:var(--text-inv)}
-.btn.primary:hover{background:var(--accent-bg-hover)}
-.btn.danger{background:var(--danger);border-color:var(--danger);color:var(--text-inv)}
-.btn.danger:hover{background:var(--danger-hover)}
-kbd{font-family:var(--font-mono);font-size:var(--fs-2xs);border:var(--bw) solid var(--border-strong);border-radius:var(--radius-sm);padding:0 4px;color:var(--text-faint)}
+.ib{display:inline-grid;place-items:center;width:30px;height:28px;background:var(--surface-3);border:var(--bw) solid var(--border);border-radius:var(--radius);cursor:pointer;color:var(--text-muted);transition:background var(--t-fast) var(--ease),color var(--t-fast) var(--ease)}
+.ib:hover{background:var(--surface-2);color:var(--text)}
+.ib.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+#torqueBtn{width:auto;padding:0 10px;display:inline-flex;gap:6px;align-items:center}
+#torqueBtn.live{color:var(--ok-text);border-color:var(--ok)}
+#torqueBtn.limp{color:var(--warn-text);border-color:var(--warn);background:rgba(154,125,18,.12)}
+#torqueBtn .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
 
-/* ---------- 1 command column ---------- */
-.grp{padding:10px var(--pad) 12px;border-bottom:var(--bw) solid var(--divider)}
-.grp h3{margin:0 0 8px;font-size:var(--fs-sm);font-weight:var(--fw-med);color:var(--text)}
-.grp p{margin:0 0 8px;color:var(--text-faint);font-size:var(--fs-xs)}
-.poses{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-.poses .btn{text-align:left}
-.poses .btn small{display:block;color:var(--text-faint);font-size:var(--fs-2xs)}
-.row2{display:flex;gap:6px}
-.row2 .btn{flex:1}
-.field{display:grid;grid-template-columns:1fr 74px;align-items:center;gap:2px 8px;margin-bottom:9px}
-.field label{font-size:var(--fs-sm)}
-.field small{grid-column:1/3;color:var(--text-faint);font-size:var(--fs-2xs)}
-.field input[type=number]{width:74px;background:var(--bg);border:var(--bw) solid var(--border);border-radius:var(--radius-sm);padding:3px 6px;text-align:right}
-.field input:focus{outline:none;border-color:var(--accent)}
-.field .unit{color:var(--text-muted);font-family:var(--font-mono);font-size:var(--fs-xs)}
-input[type=range]{width:100%;accent-color:var(--accent)}
-.check{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:var(--fs-sm);cursor:pointer}
-.check input{accent-color:var(--accent)}
+/* ---------- command column ---------- */
+.grp{padding:12px var(--pad);border-bottom:var(--bw) solid var(--divider)}
+.ghead{display:flex;align-items:center;gap:6px;color:var(--text-faint);margin-bottom:9px}
+.ghead .ib{margin-left:auto;width:24px;height:22px}
+.poses{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+.pose{aspect-ratio:1/1;padding:0;background:var(--bg);border:var(--bw) solid var(--border);border-radius:var(--radius);cursor:pointer;overflow:hidden;display:grid;place-items:center;color:var(--text-muted)}
+.pose:hover{border-color:var(--c-goal)}
+.pose img{width:100%;height:100%;object-fit:contain;display:block}
+.pose svg.i{width:26px;height:26px}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
+.steps button{background:var(--surface-3);border:var(--bw) solid var(--border);border-radius:var(--radius);padding:5px 0;cursor:pointer;color:var(--text-muted);font-family:var(--font-mono);font-size:var(--fs-sm)}
+.steps button:hover{border-color:var(--c-goal);color:var(--c-goal)}
+#prof{width:100%;height:58px;display:block;background:var(--bg);border:var(--bw) solid var(--border);border-radius:var(--radius);margin-bottom:8px}
+.sl{display:grid;grid-template-columns:18px 1fr 64px;align-items:center;gap:6px;margin-bottom:4px;color:var(--text-faint)}
+.sl output{text-align:right;font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--text-muted)}
+/* sliders stay quiet: accent is reserved for the selected joint */
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;margin:0;height:18px;background:transparent;cursor:pointer}
+input[type=range]::-webkit-slider-runnable-track{height:2px;background:var(--border-strong);border-radius:1px}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;margin-top:-4.5px;border-radius:50%;background:var(--c-act);border:2px solid var(--surface)}
+input[type=range]:hover::-webkit-slider-thumb{background:var(--text-inv)}
+input[type=range]::-moz-range-track{height:2px;background:var(--border-strong)}
+input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;background:var(--c-act);border:2px solid var(--surface)}
 
-/* ---------- 2 servo channels ---------- */
-.end{padding:4px var(--pad);font-size:var(--fs-2xs);color:var(--text-faint);letter-spacing:.04em}
-.ch{padding:9px var(--pad) 10px;border-bottom:var(--bw) solid var(--divider);border-left:3px solid transparent;cursor:pointer}
+/* ---------- servo channels ---------- */
+.ch{display:grid;grid-template-columns:62px 78px 64px 1fr;align-items:center;gap:10px;padding:8px var(--pad) 8px 8px;border-bottom:var(--bw) solid var(--divider);border-left:3px solid transparent;cursor:pointer}
 .ch:hover{background:var(--surface)}
-.ch.sel{background:var(--surface);border-left-color:var(--accent-line)}
-.ch-head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
-.ch-id{font-family:var(--font-mono);color:var(--text-faint);font-size:var(--fs-xs);width:20px}
-.ch-name{font-weight:var(--fw-med)}
-.ch-en{color:var(--text-faint);font-size:var(--fs-2xs);font-family:var(--font-mono)}
-.badge{margin-left:auto;font-size:var(--fs-2xs);padding:1px 6px;border-radius:var(--radius-sm);border:var(--bw) solid var(--border);color:var(--text-muted)}
-.badge.ok{color:var(--ok-text);border-color:var(--ok)}
-.badge.warn{color:var(--warn-text);border-color:var(--warn);background:rgba(154,125,18,.12)}
-.badge.err{color:var(--danger-text);border-color:var(--danger);background:var(--danger-soft)}
-.badge.gray{color:var(--text-faint)}
-
-/* angle track: goal, internal target and actual on one scale */
-.track{position:relative;height:22px;margin:0 6px;touch-action:none;cursor:ew-resize}
-.track .rail{position:absolute;left:0;right:0;top:10px;height:2px;background:var(--border-strong)}
-.track .zero{position:absolute;top:5px;width:1px;height:12px;background:var(--text-faint)}
-.track .lag{position:absolute;top:8px;height:6px;background:var(--accent-soft)}
-.track .m-goal{position:absolute;top:3px;width:12px;height:12px;margin-left:-6px;background:var(--c-goal);transform:rotate(45deg) scale(.8)}
-.track .m-sp{position:absolute;top:2px;width:2px;height:18px;margin-left:-1px;background:var(--c-sp)}
-.track .m-act{position:absolute;top:5px;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:var(--c-act);box-shadow:0 0 0 2px var(--bg)}
-.track .lim{position:absolute;top:16px;font-size:var(--fs-2xs);color:var(--text-faint);font-family:var(--font-mono)}
-.nums{display:grid;grid-template-columns:repeat(4,1fr);margin:6px 0 7px;font-size:var(--fs-xs);color:var(--text-faint)}
-.nums .mono{font-size:var(--fs-sm)}
-.n-goal{color:var(--c-goal)} .n-sp{color:var(--c-sp)} .n-act{color:var(--c-act)} .n-lag{color:var(--text)}
-.nums .k::before{content:"";display:inline-block;width:7px;height:7px;margin-right:4px;vertical-align:1px}
-.k.goal::before{background:var(--c-goal);transform:rotate(45deg) scale(.85)}
-.k.sp::before{width:2px;height:9px;background:var(--c-sp)}
-.k.act::before{border-radius:50%;background:var(--c-act)}
-
-/* effort meters: output -> current -> heat, each with its trip line */
-.meters{display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:10px}
-.meter .lbl{display:flex;justify-content:space-between;font-size:var(--fs-2xs);color:var(--text-faint);margin-bottom:3px}
-.meter .lbl .mono{color:var(--text);font-size:var(--fs-xs)}
-.bar{position:relative;height:6px;background:var(--surface-3);border-radius:1px}
-.bar .fill{position:absolute;left:0;top:0;bottom:0;background:var(--text-muted);border-radius:1px}
-.bar .trip{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--danger-text)}
+.ch.sel{background:var(--accent-soft)}
+.ch.near{border-left-color:var(--warn-text)}
+.ch.fault{border-left-color:var(--danger-text);background:var(--danger-soft)}
+.who{position:relative;width:62px;height:62px;border-radius:var(--radius);background:var(--bg);border:var(--bw) solid var(--divider);overflow:hidden}
+.ch.sel .who{border-color:var(--accent-line)}
+.who img{width:100%;height:100%;display:block}
+.who .n{position:absolute;left:4px;top:1px;font-family:var(--font-mono);font-size:var(--fs-2xs);color:var(--text-faint)}
+.dial{width:78px;height:78px;touch-action:none;cursor:grab;overflow:visible}
+.dial:active{cursor:grabbing}
+.vals{display:flex;flex-direction:column;gap:1px;font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right}
+.vals .g{color:var(--c-goal);font-size:var(--fs-xs)}
+.vals .a{color:var(--c-act);font-size:var(--fs-md)}
+.vals .f{font-family:var(--font-ui);font-size:var(--fs-2xs);color:var(--danger-text);white-space:nowrap}
+.meters{display:flex;flex-direction:column;gap:7px}
+.mt{display:grid;grid-template-columns:14px 1fr 44px;align-items:center;gap:6px;color:var(--text-faint)}
+.mt svg.i{width:13px;height:13px}
+.mt output{text-align:right;font-family:var(--font-mono);font-size:var(--fs-2xs);color:var(--text-muted)}
+.bar{position:relative;height:5px;background:var(--surface-3);border-radius:1px}
+.bar .fill{position:absolute;left:0;top:0;bottom:0;border-radius:1px;background:var(--text-muted)}
+.bar .trip{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--danger-text);opacity:.8}
 .bar .timer{position:absolute;left:0;bottom:-4px;height:2px;background:var(--warn-text)}
-.fill.hot{background:var(--warn-text)} .fill.over{background:var(--danger-text)}
 
-/* ---------- 3 arm view ---------- */
+/* ---------- arm view ---------- */
 #arm canvas{display:block;width:100%;height:100%}
-.legend{position:absolute;left:12px;bottom:10px;display:flex;flex-direction:column;gap:3px;font-size:var(--fs-xs);color:var(--text-muted);background:rgba(30,30,30,.85);border:var(--bw) solid var(--border);border-radius:var(--radius);padding:7px 10px;pointer-events:none}
-.legend i{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px}
-.toolbar{position:absolute;right:10px;top:46px;display:flex;flex-direction:column;gap:5px}
-.arm-msg{position:absolute;left:50%;top:50px;transform:translateX(-50%);font-size:var(--fs-sm);padding:5px 12px;border-radius:var(--radius);border:var(--bw) solid var(--danger);background:var(--danger-soft);color:var(--danger-text);display:none}
-.arm-msg.warn{border-color:var(--warn);background:rgba(154,125,18,.15);color:var(--warn-text)}
-#armStage{position:absolute;left:0;right:0;top:0;background:rgba(30,30,30,.0);border-bottom:0}
-#selLabel{position:absolute;pointer-events:none;font-size:var(--fs-xs);color:var(--accent);background:rgba(30,30,30,.85);border:var(--bw) solid var(--accent-line);border-radius:var(--radius-sm);padding:1px 6px;white-space:nowrap;transform:translate(10px,-50%)}
+.tools{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:5px}
+.state{position:absolute;left:50%;top:12px;transform:translateX(-50%);display:none;align-items:center;gap:7px;padding:4px 11px;border-radius:var(--radius);font-size:var(--fs-sm)}
+.state.warn{display:flex;border:var(--bw) solid var(--warn);background:rgba(154,125,18,.15);color:var(--warn-text)}
+.state.err{display:flex;border:var(--bw) solid var(--danger);background:var(--danger-soft);color:var(--danger-text)}
+#selLabel{position:absolute;pointer-events:none;font:var(--fs-xs) var(--font-mono);color:var(--accent);transform:translate(12px,-50%)}
 
-/* ---------- 4 trace ---------- */
-#trace .stage{position:absolute;left:0;right:0;top:0;border:0;background:transparent;pointer-events:none}
+/* ---------- trace ---------- */
 #traceCv{position:absolute;left:0;top:0;width:100%;height:100%}
+#traceWho{position:absolute;left:8px;top:8px;width:40px;height:40px;border-radius:var(--radius);border:var(--bw) solid var(--accent-line);background:var(--bg);overflow:hidden}
+#traceWho img{width:100%;height:100%}
 
 @media (max-width:1180px){
-  #app{grid-template-columns:268px minmax(0,1fr);grid-template-rows:42px 52vh auto 200px;
+  #app{grid-template-columns:232px minmax(0,1fr);grid-template-rows:44px 50vh auto 190px;
     grid-template-areas:"top top" "arm arm" "cmd servo" "trace trace";height:auto}
   #cmd,#servo{overflow:visible}
+  .chev,.hstat{display:none}
 }
 </style>
 <script type="importmap">{"imports":{"three":"/static/vendor/three/build/three.module.js"}}</script>
 </head>
 <body>
+<!-- icon set (16 px, stroke = currentColor) -->
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></symbol>
+  <symbol id="i-volt" viewBox="0 0 16 16"><rect x="2" y="5" width="11" height="7" rx="1"/><path d="M13 7.5h1.5v2H13M5 8.5h2M6 7.5v2M9 8.5h2"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 16 16"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"/></symbol>
+  <symbol id="i-floor" viewBox="0 0 16 16"><path d="M1.5 10.5h13M3 10.5 1.5 13.5M6.5 10.5 5 13.5M10 10.5l-1.5 3M13.5 10.5l-1.5 3M8 2v6M5.5 5.5 8 8l2.5-2.5"/></symbol>
+  <symbol id="i-torque" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-2-4"/><path d="M11.5 1.5v3h-3"/><circle cx="8" cy="8" r="1"/></symbol>
+  <symbol id="i-thermo" viewBox="0 0 16 16"><path d="M6.5 9.5V3a1.5 1.5 0 0 1 3 0v6.5a3 3 0 1 1-3 0z"/><path d="M8 6v5"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 16 16"><path d="M5.5 3.5v9M10.5 3.5v9"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3l8 5-8 5z"/></symbol>
+  <symbol id="i-power" viewBox="0 0 16 16"><path d="M8 1.5v6"/><path d="M4.5 4a5.5 5.5 0 1 0 7 0"/></symbol>
+  <symbol id="i-ghost" viewBox="0 0 16 16"><path d="M3 13V8l4-4 3 3" stroke-dasharray="2 1.6"/><path d="M6 13V9l3-3 4 2"/></symbol>
+  <symbol id="i-view" viewBox="0 0 16 16"><path d="M2 5V2h3M11 2h3v3M14 11v3h-3M5 14H2v-3"/><circle cx="8" cy="8" r="2.2"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 1.8v3h3"/></symbol>
+  <symbol id="i-spring" viewBox="0 0 16 16"><path d="M1.5 8h2l1-3 2 6 2-6 2 6 1-3h3"/></symbol>
+  <symbol id="i-damper" viewBox="0 0 16 16"><path d="M1.5 8h4M5.5 5v6M5.5 5h7M5.5 11h7M8 8h6.5"/></symbol>
+  <symbol id="i-weight" viewBox="0 0 16 16"><path d="M6 5a2 2 0 1 1 4 0"/><path d="M4.5 5.5h7L13 14H3z"/></symbol>
+  <symbol id="i-step" viewBox="0 0 16 16"><path d="M1.5 12h5V4h8"/></symbol>
+  <symbol id="i-vmax" viewBox="0 0 16 16"><path d="M1.5 13 4.5 5h7l3 8"/></symbol>
+  <symbol id="i-acc" viewBox="0 0 16 16"><path d="M1.5 13h3l7-10h3"/></symbol>
+  <symbol id="i-limit" viewBox="0 0 16 16"><path d="M2 13h12M2 3h12" stroke-dasharray="2 2"/><path d="M8 13V6M5.5 8.5 8 6l2.5 2.5"/></symbol>
+  <symbol id="i-jaw-open" viewBox="0 0 16 16"><path d="M8 14V9M8 9 3.5 2M8 9l4.5-7"/></symbol>
+  <symbol id="i-jaw-close" viewBox="0 0 16 16"><path d="M8 14V9M8 9 6.5 2M8 9l1.5-7"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 10 10"><path d="M3.5 2 6.5 5l-3 3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+</svg>
+
 <div id="app">
   <header>
-    <h1>SO-101 シミュレータ</h1>
-    <span class="tag">仮想の腕。実機には繋がっていません</span>
-    <div class="hstat">
-      <span>時刻 <b class="mono" id="hT">0.00</b> s</span>
-      <span>電源 <b class="mono" id="hV">12.2</b> V</span>
-      <span>電流の合計 <b class="mono" id="hA">0.00</b> A</span>
-      <span>床からの力 <b class="mono" id="hF">0.0</b> N</span>
+    <div class="brand">SO-101 <span class="chip" title="仮想の腕。実機には繋がっていません">SIM</span></div>
+    <div class="hstat mono">
+      <span title="シミュレーション時刻"><svg class="i"><use href="#i-clock"/></svg><b id="hT">0.0</b>s</span>
+      <span title="電源電圧（12 V / 5 A 電源、電流で下がる）"><svg class="i"><use href="#i-volt"/></svg><b id="hV">12.2</b>V</span>
+      <span title="6 個のサーボの電流の合計"><svg class="i"><use href="#i-bolt"/></svg><b id="hA">0.00</b>A</span>
+      <span title="床が腕を押し返す力"><svg class="i"><use href="#i-floor"/></svg><b id="hF">0.0</b>N</span>
     </div>
     <div class="hsp"></div>
-    <span style="color:var(--text-faint);font-size:var(--fs-xs)">再生速度</span>
-    <div class="seg" id="rtfSeg">
+    <div class="seg" id="rtfSeg" title="再生速度">
       <button data-rtf="1" class="on">1×</button><button data-rtf="0.5">½×</button><button data-rtf="0.25">¼×</button><button data-rtf="0.1">⅒×</button>
     </div>
-    <button class="btn" id="pauseBtn">一時停止 <kbd>Space</kbd></button>
-    <button class="btn" id="torqueBtn">脱力 <kbd>Esc</kbd></button>
+    <button class="ib" id="pauseBtn" title="一時停止 / 再開（Space）"><svg class="i"><use href="#i-pause"/></svg></button>
+    <button class="ib" id="torqueBtn" title="サーボの力を入れる / 抜く（Esc で脱力）"><span class="dot"></span><svg class="i"><use href="#i-power"/></svg></button>
   </header>
 
-  <!-- 1 -->
   <section id="cmd">
-    <div class="stage"><b>1</b><h2>指令</h2><span>何をさせるか</span></div>
     <div class="grp">
-      <h3>姿勢を指令する</h3>
-      <p>6 つのサーボへ同時に目標角を送ります。1 つずつ動かすときは、右の列の目盛をドラッグします。</p>
       <div class="poses" id="poses"></div>
     </div>
     <div class="grp">
-      <h3>ステップ入力</h3>
-      <p>選んだ関節の目標角を一度に変えて、サーボがどう追いつくかを見ます。下のグラフに記録されます。</p>
-      <div class="row2">
-        <button class="btn" data-step="-20">−20°</button>
-        <button class="btn" data-step="-5">−5°</button>
-        <button class="btn" data-step="5">+5°</button>
-        <button class="btn" data-step="20">+20°</button>
+      <div class="ghead" title="選んだ関節の目標を一度に変える"><svg class="i"><use href="#i-step"/></svg></div>
+      <div class="steps">
+        <button data-step="-20">−20°</button><button data-step="-5">−5°</button><button data-step="5">+5°</button><button data-step="20">+20°</button>
       </div>
     </div>
     <div class="grp" id="regs">
-      <h3>サーボの設定 <span style="color:var(--text-faint);font-weight:var(--fw-reg)">（6 個共通）</span></h3>
-      <div class="field"><label for="r_Goal_Velocity">最高速度</label><input type="number" id="r_Goal_Velocity" data-reg="Goal_Velocity" min="0" max="3400" step="10">
-        <small><span class="mono" id="rv_Goal_Velocity"></span> ・ Goal_Velocity [step/s]。0 は制限なし</small></div>
-      <div class="field"><label for="r_Acceleration">加速度</label><input type="number" id="r_Acceleration" data-reg="Acceleration" min="0" max="254">
-        <small><span class="mono" id="rv_Acceleration"></span> ・ Acceleration [100 step/s²]。0 は制限なし</small></div>
-      <div class="field"><label for="r_P_Coefficient">P ゲイン</label><input type="number" id="r_P_Coefficient" data-reg="P_Coefficient" min="1" max="254">
-        <small>ずれ 1 step あたり出力 P/4 ‰。大きいほど硬く追う</small></div>
-      <div class="field"><label for="r_D_Coefficient">D ゲイン</label><input type="number" id="r_D_Coefficient" data-reg="D_Coefficient" min="0" max="254">
-        <small>速さのずれに逆らう。揺れを抑える</small></div>
-      <div class="field"><label for="r_Torque_Limit">トルク上限</label><input type="number" id="r_Torque_Limit" data-reg="Torque_Limit" min="0" max="1000" step="10">
-        <small><span class="mono" id="rv_Torque_Limit"></span> ・ Torque_Limit [0.1 %]</small></div>
-      <button class="btn" id="regsReset" style="width:100%">初期値に戻す</button>
+      <div class="ghead"><svg class="i"><use href="#i-torque"/></svg><button class="ib" id="regsReset" title="サーボの設定を初期値に戻す"><svg class="i"><use href="#i-reset"/></svg></button></div>
+      <canvas id="prof" title="90° 動かすときの速さの変化（最高速度と加速度で決まる）"></canvas>
+      <div class="sl" title="最高速度 Goal_Velocity（右端は制限なし）"><svg class="i"><use href="#i-vmax"/></svg><input type="range" data-reg="Goal_Velocity" min="20" max="3400" step="20"><output></output></div>
+      <div class="sl" title="加速度 Acceleration（右端は制限なし）"><svg class="i"><use href="#i-acc"/></svg><input type="range" data-reg="Acceleration" min="1" max="254"><output></output></div>
+      <div class="sl" title="P ゲイン：ずれに対する硬さ"><svg class="i"><use href="#i-spring"/></svg><input type="range" data-reg="P_Coefficient" min="1" max="64"><output></output></div>
+      <div class="sl" title="D ゲイン：揺れを抑える"><svg class="i"><use href="#i-damper"/></svg><input type="range" data-reg="D_Coefficient" min="0" max="128"><output></output></div>
+      <div class="sl" title="トルク上限 Torque_Limit"><svg class="i"><use href="#i-limit"/></svg><input type="range" data-reg="Torque_Limit" min="0" max="1000" step="10"><output></output></div>
     </div>
     <div class="grp">
-      <h3>まわりの環境</h3>
-      <label class="check"><input type="checkbox" id="floorChk" checked> 床に当たる</label>
-      <div class="field" style="grid-template-columns:1fr 74px"><label for="payload">先端の荷物</label><span class="unit mono" id="payloadV" style="text-align:right">0 g</span>
-        <input type="range" id="payload" min="0" max="500" step="10" value="0" style="grid-column:1/3"></div>
-      <button class="btn" id="resetBtn" style="width:100%">最初の状態に戻す</button>
-      <p style="margin-top:8px">温度・保護の作動回数も含めて作り直します。</p>
+      <div class="ghead"><button class="ib on" id="floorBtn" title="床に当たる / すり抜ける" style="margin-left:0"><svg class="i"><use href="#i-floor"/></svg></button>
+        <button class="ib" id="resetBtn" title="最初の状態に戻す（温度・保護も）"><svg class="i"><use href="#i-reset"/></svg></button></div>
+      <div class="sl" title="先端に吊るす荷物"><svg class="i"><use href="#i-weight"/></svg><input type="range" id="payload" min="0" max="500" step="10" value="0"><output id="payloadV">0 g</output></div>
     </div>
   </section>
+  <div class="chev" style="grid-area:servo"><svg><use href="#i-chev"/></svg></div>
 
-  <!-- 2 -->
-  <section id="servo">
-    <div class="stage"><b>2</b><h2>サーボ</h2><span>指令をどう追っているか</span></div>
-    <div class="end">先端</div>
-    <div id="channels"></div>
-    <div class="end">根元</div>
-  </section>
+  <section id="servo"><div id="channels"></div></section>
+  <div class="chev" style="grid-area:arm"><svg><use href="#i-chev"/></svg></div>
 
-  <!-- 3 -->
   <section id="arm">
-    <div class="stage" id="armStage"><b>3</b><h2>アーム</h2><span>その結果どう動いたか</span></div>
-    <div class="arm-msg" id="armMsg"></div>
-    <div class="toolbar">
-      <button class="btn on" id="ghostBtn">指令の姿</button>
-      <button class="btn" id="viewBtn">視点を戻す</button>
-    </div>
-    <div class="legend">
-      <span><i style="background:#c9c4b8"></i>実際の姿</span>
-      <span><i style="background:#ce9178;opacity:.6"></i>指令した姿</span>
-      <span><i style="background:#f14c4c;border-radius:50%"></i>床に触れている点</span>
-      <span style="color:var(--text-faint)">床の目盛 1 マス 1 cm ・ 太線 10 cm</span>
+    <div class="state" id="armState"></div>
+    <div class="tools">
+      <button class="ib on" id="ghostBtn" title="指令した姿を重ねる"><svg class="i"><use href="#i-ghost"/></svg></button>
+      <button class="ib" id="viewBtn" title="視点を戻す"><svg class="i"><use href="#i-view"/></svg></button>
     </div>
     <div id="selLabel"></div>
   </section>
 
-  <!-- 4 -->
   <section id="trace">
-    <div class="stage"><b>4</b><h2 id="traceTitle">時間で見る</h2><span id="traceSub">直近 10 秒</span></div>
     <canvas id="traceCv"></canvas>
+    <div id="traceWho"></div>
   </section>
 </div>
 
@@ -247,269 +228,28 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 import * as THREE from 'three';
 import { OrbitControls } from '/static/vendor/three/examples/jsm/controls/OrbitControls.js';
 
-const JA = {
-  shoulder_pan: '肩の旋回', shoulder_lift: '肩の上下', elbow_flex: '肘',
-  wrist_flex: '手首の曲げ', wrist_roll: '手首の回転', gripper: 'グリッパ',
-};
-const POSE_JA = { HOME: ['まっすぐ', '全関節 0°'], READY: ['構え', '持ち上げて軽く曲げる'],
-  UP: ['上を向く', '肩を起こす'], FORWARD_LOW: ['前の低い所', '手前に伸ばす'], OBSERVE: ['見下ろす', '手首を立てる'] };
+const JA = { shoulder_pan: '肩の旋回', shoulder_lift: '肩の上下', elbow_flex: '肘', wrist_flex: '手首の曲げ', wrist_roll: '手首の回転', gripper: 'グリッパ' };
+const POSE_JA = { HOME: 'まっすぐ', READY: '構え', UP: '上を向く', FORWARD_LOW: '前の低い所', OBSERVE: '見下ろす' };
 const FAULT_JA = { overload: '過負荷', overcurrent: '過電流', overheat: '過熱', voltage: '電圧', sensor: 'エンコーダ' };
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const $ = id => document.getElementById(id);
-const fmt = (v, d = 1) => (v >= 0 ? '' : '−') + Math.abs(v).toFixed(d);
+const fmt = (v, d = 1) => (v < 0 ? '−' : '') + Math.abs(v).toFixed(d);
+const icon = (id, cls = 'i') => `<svg class="${cls}"><use href="#${id}"/></svg>`;
+const NS = 'http://www.w3.org/2000/svg';
+const TICK_DEG = 360 / 4096;
 
 let MODEL = null, S = null, seq = 0, sel = 2;
 const hist = [];                       // rows: [t, (goal, sp, q, duty, cur) x 6]
-const HIST_KEEP = 2400;                // 12 s at 200 Hz
+const HIST_KEEP = 2400;
+const THUMB = {};                      // joint index -> dataURL of the arm with that link lit
 
 async function api(op, body = {}) {
   const r = await fetch('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op, ...body }) });
   return r.json();
 }
+const effortColor = f => f >= 1 ? css('--danger-text') : f >= 0.7 ? css('--warn-text') : css('--text-muted');
 
-/* ============================== 2: channels ============================== */
-const CH = [];
-function buildChannels() {
-  const host = $('channels');
-  const order = [...MODEL.joints.keys()].reverse();          // tip at the top, like the arm
-  for (const j of order) {
-    const name = MODEL.joints[j];
-    const el = document.createElement('div');
-    el.className = 'ch'; el.dataset.j = j;
-    el.innerHTML = `
-      <div class="ch-head"><span class="ch-id">#${j + 1}</span><span class="ch-name">${JA[name]}</span><span class="ch-en">${name}</span><span class="badge gray">—</span></div>
-      <div class="track" title="ドラッグで目標角を指令">
-        <div class="rail"></div><div class="zero"></div><div class="lag"></div>
-        <div class="m-sp"></div><div class="m-act"></div><div class="m-goal"></div>
-        <span class="lim lo" style="left:0"></span><span class="lim hi" style="right:0"></span>
-      </div>
-      <div class="nums">
-        <div><span class="k goal">指令</span><br><span class="mono n-goal">—</span></div>
-        <div><span class="k sp">内部の目標</span><br><span class="mono n-sp">—</span></div>
-        <div><span class="k act">実際</span><br><span class="mono n-act">—</span></div>
-        <div>遅れ<br><span class="mono n-lag">—</span></div>
-      </div>
-      <div class="meters">
-        <div class="meter m-duty"><div class="lbl"><span>出力</span><span class="mono v">—</span></div><div class="bar"><div class="fill"></div><div class="trip"></div><div class="timer"></div></div></div>
-        <div class="meter m-cur"><div class="lbl"><span>電流</span><span class="mono v">—</span></div><div class="bar"><div class="fill"></div><div class="trip"></div><div class="timer"></div></div></div>
-        <div class="meter m-temp"><div class="lbl"><span>温度</span><span class="mono v">—</span></div><div class="bar"><div class="fill"></div><div class="trip"></div></div></div>
-      </div>`;
-    host.appendChild(el);
-    const q = s => el.querySelector(s);
-    const c = { el, j, track: q('.track'), goal: q('.m-goal'), sp: q('.m-sp'), act: q('.m-act'), lag: q('.lag'), zero: q('.zero'),
-      lo: q('.lim.lo'), hi: q('.lim.hi'), badge: q('.badge'),
-      nGoal: q('.n-goal'), nSp: q('.n-sp'), nAct: q('.n-act'), nLag: q('.n-lag'),
-      duty: q('.m-duty'), cur: q('.m-cur'), temp: q('.m-temp'), range: null, dragging: false };
-    el.addEventListener('click', () => select(j));
-    bindTrack(c);
-    CH[j] = c;
-  }
-}
-const pct = (c, deg) => 100 * (deg - c.range[0]) / (c.range[1] - c.range[0]);
-
-function bindTrack(c) {
-  const toDeg = e => {
-    const r = c.track.getBoundingClientRect();
-    const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-    return c.range[0] + f * (c.range[1] - c.range[0]);
-  };
-  c.track.addEventListener('pointerdown', e => {
-    if (!c.range) return;
-    c.dragging = true; c.track.setPointerCapture(e.pointerId); select(c.j);
-    sendGoal(c.j, toDeg(e));
-  });
-  c.track.addEventListener('pointermove', e => { if (c.dragging) sendGoal(c.j, toDeg(e)); });
-  const end = () => { c.dragging = false; };
-  c.track.addEventListener('pointerup', end); c.track.addEventListener('pointercancel', end);
-}
-
-// goals are rate-limited per joint; the latest value is always delivered
-const pendingGoal = {}; let goalTimer = null;
-function sendGoal(j, deg) {
-  pendingGoal[MODEL.joints[j]] = Math.round(deg * 10) / 10;
-  const c = CH[j]; c.goal.style.left = pct(c, deg) + '%';          // instant feedback
-  if (!goalTimer) goalTimer = setTimeout(flushGoals, 33);
-}
-async function flushGoals() {
-  const goals = { ...pendingGoal };
-  for (const k in pendingGoal) delete pendingGoal[k];
-  goalTimer = null;
-  if (Object.keys(goals).length) await api('goal', { goals });
-}
-
-function setMeter(m, frac, text, cls, tripFrac, timerFrac) {
-  m.querySelector('.v').textContent = text;
-  const f = m.querySelector('.fill');
-  f.style.width = (100 * Math.min(1, Math.max(0, frac))) + '%';
-  f.className = 'fill' + (cls ? ' ' + cls : '');
-  m.querySelector('.trip').style.left = (100 * tripFrac) + '%';
-  const t = m.querySelector('.timer');
-  if (t) t.style.width = (100 * (timerFrac || 0)) + '%';
-}
-
-function renderChannels() {
-  const stallA = MODEL.servo.stall_a, ocA = MODEL.servo.overcurrent_a;
-  for (const js of S.joints) {
-    const j = MODEL.joints.indexOf(js.name), c = CH[j];
-    if (!c.range) {
-      c.range = js.range;
-      c.lo.textContent = Math.round(js.range[0]) + '°'; c.hi.textContent = Math.round(js.range[1]) + '°';
-      c.zero.style.left = pct(c, 0) + '%';
-    }
-    if (!c.dragging && !(js.name in pendingGoal)) c.goal.style.left = pct(c, js.goal) + '%';
-    c.sp.style.left = pct(c, js.sp) + '%';
-    c.act.style.left = pct(c, js.q) + '%';
-    const a = pct(c, js.q), g = pct(c, js.goal);
-    c.lag.style.left = Math.min(a, g) + '%'; c.lag.style.width = Math.abs(g - a) + '%';
-    c.nGoal.textContent = fmt(js.goal) + '°'; c.nSp.textContent = fmt(js.sp) + '°';
-    c.nAct.textContent = fmt(js.q) + '°'; c.nLag.textContent = Math.abs(js.goal - js.q).toFixed(1) + '°';
-
-    const duty = Math.abs(js.duty) / 100, olLine = js.overload_pct / 100;
-    setMeter(c.duty, duty, Math.abs(js.duty).toFixed(0) + ' %', js.faults.includes('overload') ? 'over' : duty > olLine ? 'hot' : '', olLine, js.ol_frac);
-    const cur = Math.abs(js.current);
-    setMeter(c.cur, cur / stallA, cur.toFixed(2) + ' A', js.faults.includes('overcurrent') ? 'over' : cur > ocA ? 'hot' : '', ocA / stallA, js.oc_frac);
-    const tLo = 20, tHi = js.max_temp + 10;
-    setMeter(c.temp, (js.temp - tLo) / (tHi - tLo), js.temp.toFixed(1) + ' °C', js.faults.includes('overheat') ? 'over' : js.temp > js.max_temp - 10 ? 'hot' : '', (js.max_temp - tLo) / (tHi - tLo));
-
-    let b = ['ok', '正常'];
-    if (!js.torque) b = ['gray', '脱力中'];
-    else if (js.faults.length) b = ['err', js.faults.map(f => FAULT_JA[f] || f).join('・') + 'で出力を絞り中'];
-    else if (js.ol_frac > 0 || js.oc_frac > 0) b = ['warn', js.ol_frac >= js.oc_frac ? `過負荷まで ${Math.round(js.ol_frac * 100)} %` : `過電流まで ${Math.round(js.oc_frac * 100)} %`];
-    else if (Math.abs(js.vel) > 1) b = ['gray', '移動中'];
-    c.badge.className = 'badge ' + b[0]; c.badge.textContent = b[1];
-  }
-}
-
-function select(j) {
-  sel = j;
-  for (const c of CH) c && c.el.classList.toggle('sel', c.j === j);
-  const name = MODEL.joints[j];
-  $('traceTitle').textContent = `時間で見る ・ #${j + 1} ${JA[name]}`;
-  highlight();
-}
-
-/* ============================== 1: commands ============================== */
-function buildCommands() {
-  const host = $('poses');
-  for (const [k, v] of Object.entries(MODEL.poses)) {
-    const [t, s] = POSE_JA[k] || [k, ''];
-    const b = document.createElement('button');
-    b.className = 'btn'; b.innerHTML = `${t}<small>${s}</small>`;
-    b.onclick = () => { const goals = {}; v.forEach((d, i) => goals[MODEL.joints[i]] = d); api('goal', { goals }); };
-    host.appendChild(b);
-  }
-  const g = document.createElement('button');
-  g.className = 'btn'; g.innerHTML = 'グリッパ<small>開く ／ 閉じる</small>';
-  g.onclick = () => { const js = S.joints[5]; api('goal', { goals: { gripper: js.goal > 20 ? 0 : 60 } }); };
-  host.appendChild(g);
-
-  document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
-    const js = S.joints[sel];
-    api('goal', { goals: { [js.name]: js.goal + Number(b.dataset.step) } });
-  });
-  document.querySelectorAll('#regs input').forEach(inp => inp.addEventListener('change', () => {
-    api('regs', { regs: { [inp.dataset.reg]: Number(inp.value) } });
-  }));
-  $('regsReset').onclick = () => api('regs', { regs: { Goal_Velocity: 0, Acceleration: 254, P_Coefficient: 16, D_Coefficient: 32, Torque_Limit: 1000 } });
-  $('floorChk').onchange = e => api('world', { floor: e.target.checked });
-  $('payload').oninput = e => { $('payloadV').textContent = e.target.value + ' g'; };
-  $('payload').onchange = e => api('world', { payload_kg: Number(e.target.value) / 1000 });
-  $('resetBtn').onclick = () => { hist.length = 0; api('reset'); };
-
-  document.querySelectorAll('#rtfSeg button').forEach(b => b.onclick = () => api('run', { rtf: Number(b.dataset.rtf) }));
-  $('pauseBtn').onclick = () => api('run', { paused: !S.paused });
-  $('torqueBtn').onclick = () => api('torque', { on: !S.joints[0].torque });
-  addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT') return;
-    if (e.code === 'Space') { e.preventDefault(); $('pauseBtn').click(); }
-    if (e.code === 'Escape') api('torque', { on: false });
-  });
-}
-
-function renderCommands() {
-  for (const [reg, v] of Object.entries(S.regs)) {
-    const inp = $('r_' + reg);
-    if (inp && document.activeElement !== inp) inp.value = v;
-  }
-  const r = S.regs;
-  $('rv_Goal_Velocity').textContent = r.Goal_Velocity ? `${(r.Goal_Velocity * 360 / 4096).toFixed(0)} °/s` : '制限なし';
-  $('rv_Acceleration').textContent = r.Acceleration ? `${(r.Acceleration * 100 * 360 / 4096).toFixed(0)} °/s²` : '制限なし';
-  $('rv_Torque_Limit').textContent = `${(r.Torque_Limit / 10).toFixed(0)} %`;
-  document.querySelectorAll('#rtfSeg button').forEach(b => b.classList.toggle('on', Number(b.dataset.rtf) === S.rtf));
-  $('pauseBtn').classList.toggle('on', S.paused);
-  $('pauseBtn').firstChild.textContent = S.paused ? '再開 ' : '一時停止 ';
-  const on = S.joints[0].torque;
-  $('torqueBtn').className = on ? 'btn' : 'btn primary';
-  $('torqueBtn').firstChild.textContent = on ? '脱力 ' : '力を入れる ';
-  $('floorChk').checked = S.floor.on;
-  $('hT').textContent = S.t.toFixed(2); $('hV').textContent = S.supply_v.toFixed(1);
-  $('hA').textContent = S.total_current.toFixed(2); $('hF').textContent = S.floor.force.toFixed(1);
-
-  const msg = $('armMsg');
-  const faults = S.joints.filter(j => j.faults.length);
-  if (!on) { msg.className = 'arm-msg warn'; msg.textContent = '脱力中。重力で垂れ下がります'; msg.style.display = 'block'; }
-  else if (faults.length) { msg.className = 'arm-msg'; msg.textContent = faults.map(j => `${JA[j.name]}: ${j.faults.map(f => FAULT_JA[f]).join('・')}`).join(' ／ ') + '。新しい指令で解除されます'; msg.style.display = 'block'; }
-  else if (S.paused) { msg.className = 'arm-msg warn'; msg.textContent = '一時停止中'; msg.style.display = 'block'; }
-  else msg.style.display = 'none';
-}
-
-/* ============================== 3: arm view ============================== */
-const view = $('arm');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(2, devicePixelRatio));
-renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-view.prepend(renderer.domElement);
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(css('--bg'));
-const camera = new THREE.PerspectiveCamera(40, 1, 0.005, 20);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true; controls.dampingFactor = 0.12;
-const HOME_CAM = { pos: new THREE.Vector3(0.42, 0.34, 0.46), tgt: new THREE.Vector3(0.0, 0.12, 0.08) };
-function resetView() {
-  if (S) {                       // frame base..tool from the side of the arm (MuJoCo z-up -> three y-up)
-    const tx = S.tcp[0] * 0.5 + 0.02, ty = S.tcp[1] * 0.5, tz = Math.max(0.08, S.tcp[2] * 0.5 + 0.06);
-    const yaw = Math.atan2(S.tcp[1], S.tcp[0]);
-    const sx = -Math.sin(yaw), sy = Math.cos(yaw), d = 0.62;
-    HOME_CAM.tgt.set(tx, tz, -ty);
-    HOME_CAM.pos.set(tx + sx * d * 0.82 - Math.cos(yaw) * 0.12, tz + 0.26, -(ty + sy * d * 0.82 - Math.sin(yaw) * 0.12));
-  }
-  camera.position.copy(HOME_CAM.pos); controls.target.copy(HOME_CAM.tgt); controls.update();
-}
-
-scene.add(new THREE.HemisphereLight(0xdfe6ee, 0x26221e, 0.9));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-sun.position.set(0.5, 1.2, 0.35); sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -0.6, right: 0.6, top: 0.6, bottom: -0.6, near: 0.1, far: 3 });
-sun.shadow.bias = -0.0004;
-scene.add(sun);
-
-// MuJoCo is z-up in metres; three is y-up
-const world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world);
-const actualRoot = new THREE.Group(), ghostRoot = new THREE.Group();
-world.add(actualRoot, ghostRoot);
-
-const COL = { printed: 0xc9c4b8, servo: 0x2a2a2e, goal: new THREE.Color(css('--c-goal')), accent: new THREE.Color(css('--accent')) };
-const bodyGroups = [], ghostGroups = [], bodyMats = [];
-const pickables = [];
-let contactMeshes = [], payloadMesh = null, selRing = null;
-
-function buildFloor(z) {
-  const g = new THREE.Group(); g.position.z = z; world.add(g);
-  const plane = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.6), new THREE.MeshStandardMaterial({ color: 0x2b2b2d, roughness: 0.95 }));
-  plane.receiveShadow = true; g.add(plane);
-  const mk = (size, div, color, opacity, dz) => {
-    const gh = new THREE.GridHelper(size, div, color, color);
-    gh.material.transparent = true; gh.material.opacity = opacity; gh.material.depthWrite = false;
-    gh.rotation.x = Math.PI / 2; gh.position.z = dz; g.add(gh);
-  };
-  mk(1.0, 100, 0x6e6e72, 0.16, 0.0002);
-  mk(1.0, 10, 0x9d9d9d, 0.42, 0.0004);
-  // reach ring at the arm's longest stretch, a rough sense of scale
-  const ring = new THREE.Mesh(new THREE.RingGeometry(0.395, 0.398, 128), new THREE.MeshBasicMaterial({ color: 0x6e6e72, transparent: true, opacity: 0.5 }));
-  ring.position.set(0.0388, 0, 0.0006); g.add(ring);
-}
-
+/* ============================== meshes + thumbnails ============================== */
 async function loadMesh(id) {
   const buf = await (await fetch('/api/mesh/' + id)).arrayBuffer();
   const [vn, fn] = new Uint32Array(buf, 0, 2);
@@ -519,82 +259,403 @@ async function loadMesh(id) {
   geo.computeVertexNormals();
   return geo;
 }
+const GEOS = {};
+const setPose = (groups, poses) => groups.forEach((g, b) => { const p = poses[b]; g.position.set(p[0], p[1], p[2]); g.quaternion.set(p[4], p[5], p[6], p[3]); });
 
-async function buildArm() {
-  const ids = [...new Set(MODEL.geoms.map(g => g.mesh))];
-  const geos = {};
-  await Promise.all(ids.map(async id => { geos[id] = await loadMesh(id); }));
+// a flat-lit arm in its own scene: pose silhouettes for the buttons, a lit link per channel
+function makeThumbs() {
+  const W = 160, H = 160;
+  const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+  r.setSize(W, H); r.setClearColor(0x000000, 0);
+  const sc = new THREE.Scene();
+  sc.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.6));
+  const dl = new THREE.DirectionalLight(0xffffff, 1.2); dl.position.set(0.4, 1, 0.8); sc.add(dl);
+  const root = new THREE.Group(); root.rotation.x = -Math.PI / 2; sc.add(root);
+  const dim = new THREE.MeshLambertMaterial({ color: css('--text-faint') });
+  const pose = new THREE.MeshLambertMaterial({ color: css('--c-act') });
+  const lit = new THREE.MeshLambertMaterial({ color: css('--accent') });
+  const groups = MODEL.bodies.map(() => { const g = new THREE.Group(); root.add(g); return g; });
+  const meshes = MODEL.geoms.map(g => {
+    const m = new THREE.Mesh(GEOS[g.mesh], dim);
+    m.position.fromArray(g.pos); m.quaternion.set(g.quat[1], g.quat[2], g.quat[3], g.quat[0]);
+    m.userData.body = g.body; groups[g.body].add(m); return m;
+  });
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9), new THREE.MeshBasicMaterial({ color: css('--surface-2') }));
+  floor.position.z = MODEL.floor_z - 0.0005; root.add(floor);
+  // one framing for all poses so they compare at the same scale
+  const box = new THREE.Box3();
+  for (const p of Object.values(MODEL.pose_bodies)) { setPose(groups, p); root.updateMatrixWorld(true); groups.forEach(g => box.expandByObject(g)); }
+  const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
+  const cam = new THREE.PerspectiveCamera(26, 1, 0.01, 10);
+  const dist = Math.max(s.x, s.y) / (2 * Math.tan(13 * Math.PI / 180)) * 1.08;
+  cam.position.set(c.x + dist * 0.25, c.y + dist * 0.18, c.z + dist); cam.lookAt(c);
+  const snap = () => { r.render(sc, cam); return r.domElement.toDataURL(); };
+
+  const poseImgs = {};
+  for (const [k, p] of Object.entries(MODEL.pose_bodies)) {
+    setPose(groups, p); meshes.forEach(m => m.material = pose); poseImgs[k] = snap();
+  }
+  // channel thumbnails: close-up framing on the reference pose, the joint's moving link lit
+  setPose(groups, MODEL.ref_bodies); root.updateMatrixWorld(true);
+  const b2 = new THREE.Box3(); groups.forEach(g => b2.expandByObject(g));
+  const c2 = b2.getCenter(new THREE.Vector3()), s2 = b2.getSize(new THREE.Vector3());
+  const d2 = Math.max(s2.x, s2.y) / (2 * Math.tan(13 * Math.PI / 180)) * 1.0;
+  cam.position.set(c2.x + d2 * 0.3, c2.y + d2 * 0.2, c2.z + d2); cam.lookAt(c2);
+  floor.visible = false;
+  MODEL.joints.forEach((_, j) => {
+    meshes.forEach(m => { const bj = MODEL.body_joint[m.userData.body]; m.material = bj === j ? lit : dim; });
+    THUMB[j] = snap();
+  });
+  r.dispose();
+  return poseImgs;
+}
+
+/* ============================== servo channels ============================== */
+const CH = [];
+const R = 30, CX = 39, CY = 39;                           // dial geometry (SVG units)
+const pt = (deg, r) => [CX + r * Math.sin(deg * Math.PI / 180), CY - r * Math.cos(deg * Math.PI / 180)];
+function arc(a0, a1, r) {
+  if (a1 < a0) [a0, a1] = [a1, a0];
+  if (a1 - a0 < 0.05) a1 = a0 + 0.05;
+  const [x0, y0] = pt(a0, r), [x1, y1] = pt(a1, r);
+  return `M${x0} ${y0}A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1} ${y1}`;
+}
+const el = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const setAttrs = (n, attrs) => { for (const k in attrs) n.setAttribute(k, attrs[k]); };
+
+function buildChannels() {
+  const host = $('channels');
+  for (const j of [...MODEL.joints.keys()].reverse()) {        // tip on top, base at the bottom, like the arm
+    const name = MODEL.joints[j];
+    const row = document.createElement('div');
+    row.className = 'ch'; row.title = `#${j + 1} ${JA[name]}`;
+    row.innerHTML = `
+      <div class="who"><img src="${THUMB[j]}" alt=""><span class="n">${j + 1}</span></div>
+      <svg class="dial" viewBox="0 0 78 78"></svg>
+      <div class="vals"><span class="g">—</span><span class="a">—</span><span class="f"></span></div>
+      <div class="meters">
+        <div class="mt" title="出力（赤線で過負荷の計時が始まる）">${icon('i-torque')}<div class="bar"><div class="fill"></div><div class="trip"></div><div class="timer"></div></div><output>—</output></div>
+        <div class="mt" title="モータ電流（赤線は過電流）">${icon('i-bolt')}<div class="bar"><div class="fill"></div><div class="trip"></div><div class="timer"></div></div><output>—</output></div>
+        <div class="mt" title="温度（赤線で過熱停止）">${icon('i-thermo')}<div class="bar"><div class="fill"></div><div class="trip"></div></div><output>—</output></div>
+      </div>`;
+    host.appendChild(row);
+    const svg = row.querySelector('.dial');
+    const d = {
+      range: el('path', { fill: 'none', stroke: css('--border'), 'stroke-width': 7 }),
+      zero: el('line', { stroke: css('--border-strong'), 'stroke-width': 1 }),
+      lag: el('path', { fill: 'none', stroke: css('--c-goal'), 'stroke-width': 7, opacity: 0.35 }),
+      sp: el('line', { stroke: css('--c-sp'), 'stroke-width': 1.5 }),
+      needle: el('line', { stroke: css('--c-act'), 'stroke-width': 3, 'stroke-linecap': 'round' }),
+      hub: el('circle', { cx: CX, cy: CY, r: 3.5, fill: css('--c-act') }),
+      goal: el('path', { fill: css('--c-goal') }),
+    };
+    Object.values(d).forEach(n => svg.appendChild(n));
+    const c = { row, j, svg, d, g: row.querySelector('.g'), a: row.querySelector('.a'), f: row.querySelector('.f'), m: row.querySelectorAll('.mt'), rng: null, dragging: false };
+    row.addEventListener('click', () => select(j));
+    bindDial(c);
+    CH[j] = c;
+  }
+}
+
+function bindDial(c) {
+  const toDeg = e => {
+    const r = c.svg.getBoundingClientRect();
+    let a = Math.atan2(e.clientX - (r.left + r.width / 2), -(e.clientY - (r.top + r.height / 2))) * 180 / Math.PI;
+    const [lo, hi] = c.rng;
+    if (a < lo || a > hi) {                                      // outside the travel: snap to the nearer end
+      const dist = x => Math.abs(((a - x + 540) % 360) - 180);
+      a = dist(lo) < dist(hi) ? lo : hi;
+    }
+    return a;
+  };
+  c.svg.addEventListener('pointerdown', e => { if (!c.rng) return; c.dragging = true; c.svg.setPointerCapture(e.pointerId); select(c.j); sendGoal(c.j, toDeg(e)); });
+  c.svg.addEventListener('pointermove', e => { if (c.dragging) sendGoal(c.j, toDeg(e)); });
+  const end = () => { c.dragging = false; };
+  c.svg.addEventListener('pointerup', end); c.svg.addEventListener('pointercancel', end);
+}
+
+const pendingGoal = {}; let goalTimer = null;
+function sendGoal(j, deg) {
+  pendingGoal[MODEL.joints[j]] = Math.round(deg * 10) / 10;
+  drawGoal(CH[j], deg);
+  if (!goalTimer) goalTimer = setTimeout(async () => {
+    const goals = { ...pendingGoal }; for (const k in pendingGoal) delete pendingGoal[k]; goalTimer = null;
+    await api('goal', { goals });
+  }, 33);
+}
+function drawGoal(c, deg) {
+  const [x, y] = pt(deg, R + 6), a = deg * Math.PI / 180;
+  const ux = Math.sin(a), uy = -Math.cos(a), vx = -uy, vy = ux;      // diamond pointing at the centre
+  c.d.goal.setAttribute('d', `M${x - ux * 5} ${y - uy * 5}L${x + vx * 3.5} ${y + vy * 3.5}L${x + ux * 3} ${y + uy * 3}L${x - vx * 3.5} ${y - vy * 3.5}Z`);
+}
+
+function setMeter(m, frac, text, colorFrac, tripFrac, timerFrac) {
+  m.querySelector('output').textContent = text;
+  const f = m.querySelector('.fill');
+  f.style.width = (100 * Math.min(1, Math.max(0, frac))) + '%';
+  f.style.background = effortColor(colorFrac);
+  m.querySelector('.trip').style.left = (100 * tripFrac) + '%';
+  const t = m.querySelector('.timer'); if (t) t.style.width = (100 * (timerFrac || 0)) + '%';
+}
+
+function renderChannels() {
+  const stallA = MODEL.servo.stall_a, ocA = MODEL.servo.overcurrent_a;
+  for (const js of S.joints) {
+    const j = MODEL.joints.indexOf(js.name), c = CH[j], d = c.d;
+    if (!c.rng) {
+      c.rng = js.range;
+      d.range.setAttribute('d', arc(js.range[0], js.range[1], R));
+      const [x0, y0] = pt(0, R - 6), [x1, y1] = pt(0, R + 4);
+      setAttrs(d.zero, { x1: x0, y1: y0, x2: x1, y2: y1 });
+    }
+    d.lag.setAttribute('d', arc(js.q, js.goal, R));
+    d.lag.style.display = js.torque && Math.abs(js.goal - js.q) > 0.3 ? '' : 'none';
+    const [sx0, sy0] = pt(js.sp, R - 5), [sx1, sy1] = pt(js.sp, R + 5);
+    setAttrs(d.sp, { x1: sx0, y1: sy0, x2: sx1, y2: sy1 });
+    const [nx, ny] = pt(js.q, R - 3);
+    setAttrs(d.needle, { x1: CX, y1: CY, x2: nx, y2: ny });
+    if (!c.dragging && !(js.name in pendingGoal)) drawGoal(c, js.goal);
+    d.goal.setAttribute('opacity', js.torque ? 1 : 0.25);
+    d.sp.setAttribute('opacity', js.torque ? 1 : 0);
+
+    c.g.textContent = fmt(js.goal) + '°'; c.a.textContent = fmt(js.q) + '°';
+    c.g.style.visibility = js.torque ? '' : 'hidden';
+
+    const duty = Math.abs(js.duty) / 100, ol = js.overload_pct / 100;
+    setMeter(c.m[0], duty, Math.abs(js.duty).toFixed(0) + '%', js.faults.includes('overload') ? 1 : Math.max(duty / ol * 0.85, js.ol_frac > 0 ? 0.7 : 0), ol, js.faults.length ? 0 : js.ol_frac);
+    const cur = Math.abs(js.current);
+    setMeter(c.m[1], cur / stallA, cur.toFixed(2) + 'A', js.faults.includes('overcurrent') ? 1 : Math.max(cur / ocA * 0.85, js.oc_frac > 0 ? 0.7 : 0), ocA / stallA, js.faults.length ? 0 : js.oc_frac);
+    const tLo = 20, tHi = js.max_temp + 10;
+    setMeter(c.m[2], (js.temp - tLo) / (tHi - tLo), js.temp.toFixed(0) + '°C', js.faults.includes('overheat') ? 1 : (js.temp - tLo) / (js.max_temp - tLo), (js.max_temp - tLo) / (tHi - tLo));
+
+    const fault = js.faults.length > 0, near = !fault && (js.ol_frac > 0 || js.oc_frac > 0);
+    c.row.classList.toggle('fault', fault); c.row.classList.toggle('near', near);
+    c.f.textContent = fault ? js.faults.map(f => FAULT_JA[f] || f).join('・') : '';
+  }
+}
+
+function select(j) {
+  sel = j;
+  CH.forEach(c => c && c.row.classList.toggle('sel', c.j === j));
+  $('traceWho').innerHTML = `<img src="${THUMB[j]}" alt="" title="#${j + 1} ${JA[MODEL.joints[j]]}">`;
+  highlight();
+}
+
+/* ============================== command column ============================== */
+function buildCommands(poseImgs) {
+  const host = $('poses');
+  for (const [k, v] of Object.entries(MODEL.poses)) {
+    const b = document.createElement('button');
+    b.className = 'pose'; b.title = POSE_JA[k] || k;
+    b.innerHTML = `<img src="${poseImgs[k]}" alt="${POSE_JA[k] || k}">`;
+    b.onclick = () => { const goals = {}; v.forEach((d, i) => goals[MODEL.joints[i]] = d); api('goal', { goals }); };
+    host.appendChild(b);
+  }
+  const jaw = document.createElement('button');
+  jaw.className = 'pose'; jaw.id = 'jawBtn'; jaw.title = 'グリッパを開く / 閉じる';
+  jaw.onclick = () => api('goal', { goals: { gripper: S.joints[5].goal > 20 ? 0 : 60 } });
+  host.appendChild(jaw);
+
+  document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
+    const js = S.joints[sel];
+    api('goal', { goals: { [js.name]: js.goal + Number(b.dataset.step) } });
+  });
+  document.querySelectorAll('#regs input[data-reg]').forEach(inp => {
+    inp.addEventListener('input', () => { regOut(inp); drawProfile(); });
+    inp.addEventListener('change', () => {
+      let v = Number(inp.value);
+      // the right end of speed / acceleration means "no limit" (register value 0)
+      if ((inp.dataset.reg === 'Goal_Velocity' && v >= 3400) || (inp.dataset.reg === 'Acceleration' && v >= 254)) v = 0;
+      api('regs', { regs: { [inp.dataset.reg]: v } });
+    });
+  });
+  $('regsReset').onclick = () => api('regs', { regs: { Goal_Velocity: 0, Acceleration: 254, P_Coefficient: 16, D_Coefficient: 32, Torque_Limit: 1000 } });
+  $('floorBtn').onclick = () => api('world', { floor: !S.floor.on });
+  $('payload').oninput = e => { $('payloadV').textContent = e.target.value + ' g'; };
+  $('payload').onchange = e => api('world', { payload_kg: Number(e.target.value) / 1000 });
+  $('resetBtn').onclick = () => { hist.length = 0; api('reset'); };
+  document.querySelectorAll('#rtfSeg button').forEach(b => b.onclick = () => api('run', { rtf: Number(b.dataset.rtf) }));
+  $('pauseBtn').onclick = () => api('run', { paused: !S.paused });
+  $('torqueBtn').onclick = () => api('torque', { on: !S.joints[0].torque });
+  addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+    if (e.code === 'Space') { e.preventDefault(); $('pauseBtn').click(); }
+    if (e.code === 'Escape') api('torque', { on: false });
+  });
+}
+
+function regOut(inp) {
+  const v = Number(inp.value), o = inp.parentElement.querySelector('output');
+  switch (inp.dataset.reg) {
+    case 'Goal_Velocity': o.textContent = v >= 3400 ? '∞' : `${Math.round(v * TICK_DEG)}°/s`; break;
+    case 'Acceleration': o.textContent = v >= 254 ? '∞' : `${Math.round(v * 100 * TICK_DEG)}°/s²`; break;
+    case 'Torque_Limit': o.textContent = `${Math.round(v / 10)}%`; break;
+    default: o.textContent = v;
+  }
+}
+// velocity over time for a 90 deg move with the current speed / acceleration settings
+const NO_LIMIT_V = 3400, NO_LIMIT_A = 2.0e5;            // what the servo model uses for "0"
+function drawProfile() {
+  const cv = $('prof'), d = Math.min(2, devicePixelRatio), W = cv.clientWidth, H = cv.clientHeight;
+  if (!W) return;
+  if (cv.width !== W * d) { cv.width = W * d; cv.height = H * d; }
+  const x = cv.getContext('2d'); x.setTransform(d, 0, 0, d, 0, 0); x.clearRect(0, 0, W, H);
+  const vIn = Number(document.querySelector('[data-reg=Goal_Velocity]').value);
+  const aIn = Number(document.querySelector('[data-reg=Acceleration]').value);
+  const v = (vIn >= 3400 ? NO_LIMIT_V : vIn) * TICK_DEG, a = (aIn >= 254 ? NO_LIMIT_A : aIn * 100) * TICK_DEG;
+  const dist = 90;
+  const vp = Math.min(v, Math.sqrt(a * dist)), ta = vp / a, tc = Math.max(0, (dist - vp * ta) / vp), T = 2 * ta + tc;
+  const Tmax = 1.6, VMAX = NO_LIMIT_V * TICK_DEG;
+  const X = t => 6 + (Math.min(t, Tmax) / Tmax) * (W - 12), Y = s => H - 8 - (s / VMAX) * (H - 16);
+  x.strokeStyle = css('--border'); x.lineWidth = 1; x.beginPath(); x.moveTo(6, H - 7.5); x.lineTo(W - 6, H - 7.5); x.stroke();
+  x.beginPath(); x.moveTo(X(0), Y(0)); x.lineTo(X(ta), Y(vp)); x.lineTo(X(ta + tc), Y(vp));
+  x.lineTo(X(T), T <= Tmax ? Y(0) : Y(vp));
+  x.strokeStyle = css('--c-goal'); x.lineWidth = 1.5; x.stroke();
+  x.lineTo(X(T), Y(0)); x.closePath(); x.globalAlpha = 0.18; x.fillStyle = css('--c-goal'); x.fill(); x.globalAlpha = 1;
+  x.fillStyle = css('--text-muted'); x.font = `10px ${css('--font-mono')}`; x.textAlign = 'right';
+  x.fillText(T > Tmax ? `>${Tmax}s` : `${T.toFixed(2)}s`, W - 8, 13);
+}
+
+function renderCommands() {
+  for (const [reg, v] of Object.entries(S.regs)) {
+    const inp = document.querySelector(`#regs input[data-reg=${reg}]`);
+    if (!inp || document.activeElement === inp) continue;
+    const shown = reg === 'Goal_Velocity' && v === 0 ? 3400 : reg === 'Acceleration' && v === 0 ? 254 : v;
+    if (Number(inp.value) !== shown || !inp.parentElement.querySelector('output').textContent) { inp.value = shown; regOut(inp); drawProfile(); }
+  }
+  document.querySelectorAll('#rtfSeg button').forEach(b => b.classList.toggle('on', Number(b.dataset.rtf) === S.rtf));
+  $('pauseBtn').classList.toggle('on', S.paused);
+  const pIcon = S.paused ? 'i-play' : 'i-pause';
+  if ($('pauseBtn').dataset.icon !== pIcon) { $('pauseBtn').innerHTML = icon(pIcon); $('pauseBtn').dataset.icon = pIcon; }
+  const on = S.joints[0].torque;
+  $('torqueBtn').className = 'ib ' + (on ? 'live' : 'limp');
+  $('floorBtn').classList.toggle('on', S.floor.on);
+  const pl = $('payload'), g = Math.round(S.payload_kg * 1000);
+  if (document.activeElement !== pl && Number(pl.value) !== g) { pl.value = g; $('payloadV').textContent = g + ' g'; }
+  const want = S.joints[5].goal > 20 ? 'i-jaw-close' : 'i-jaw-open';
+  const jaw = $('jawBtn');
+  if (jaw.dataset.icon !== want) { jaw.innerHTML = icon(want); jaw.dataset.icon = want; }
+  $('hT').textContent = S.t.toFixed(1); $('hV').textContent = S.supply_v.toFixed(1);
+  $('hA').textContent = S.total_current.toFixed(2); $('hF').textContent = S.floor.force.toFixed(1);
+
+  const st = $('armState');
+  const faults = S.joints.filter(j => j.faults.length);
+  if (faults.length) { st.className = 'state err'; st.title = ''; st.innerHTML = icon('i-torque') + faults.map(j => `#${MODEL.joints.indexOf(j.name) + 1} ${j.faults.map(f => FAULT_JA[f]).join('・')}`).join('　'); }
+  else if (!on) { st.className = 'state warn'; st.innerHTML = icon('i-power'); st.title = '脱力中'; }
+  else if (S.paused) { st.className = 'state warn'; st.innerHTML = icon('i-pause'); st.title = '一時停止中'; }
+  else st.className = 'state';
+}
+
+/* ============================== arm view ============================== */
+const view = $('arm');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+view.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const BG = new THREE.Color(css('--bg'));
+scene.background = BG;
+scene.fog = new THREE.Fog(BG, 1.4, 3.2);                    // the floor fades out instead of ending
+const camera = new THREE.PerspectiveCamera(38, 1, 0.005, 20);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.12;
+controls.maxPolarAngle = Math.PI * 0.495;                   // never look from under the floor
+const HOME_CAM = { pos: new THREE.Vector3(0.42, 0.34, 0.46), tgt: new THREE.Vector3(0.0, 0.12, 0.08) };
+function resetView() {
+  if (S) {
+    const tx = S.tcp[0] * 0.5 + 0.02, ty = S.tcp[1] * 0.5, tz = Math.max(0.08, S.tcp[2] * 0.5 + 0.06);
+    const yaw = Math.atan2(S.tcp[1], S.tcp[0]), sx = -Math.sin(yaw), sy = Math.cos(yaw), d = 0.62;
+    HOME_CAM.tgt.set(tx, tz, -ty);
+    HOME_CAM.pos.set(tx + sx * d * 0.82 - Math.cos(yaw) * 0.12, tz + 0.26, -(ty + sy * d * 0.82 - Math.sin(yaw) * 0.12));
+  }
+  camera.position.copy(HOME_CAM.pos); controls.target.copy(HOME_CAM.tgt); controls.update();
+}
+
+scene.add(new THREE.HemisphereLight(0xe6ecf2, 0x2a2622, 0.85));
+const sun = new THREE.DirectionalLight(0xfff6ea, 1.7);
+sun.position.set(0.45, 1.2, 0.3); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -0.6, right: 0.6, top: 0.6, bottom: -0.6, near: 0.1, far: 3 });
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+const rim = new THREE.DirectionalLight(0x9cc8ff, 0.35); rim.position.set(-0.6, 0.4, -0.8); scene.add(rim);
+
+const world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world);
+const actualRoot = new THREE.Group(), ghostRoot = new THREE.Group();
+world.add(actualRoot, ghostRoot);
+const COL = { act: new THREE.Color(css('--c-act')), servo: 0x2a2a2e, goal: new THREE.Color(css('--c-goal')), accent: new THREE.Color(css('--accent')), black: new THREE.Color(0) };
+const bodyGroups = [], ghostGroups = [], bodyMats = [], pickables = [];
+let contactMeshes = [], payloadMesh = null, selRing = null, ghostOn = true;
+
+function buildFloor(z) {
+  const g = new THREE.Group(); g.position.z = z; world.add(g);
+  const plane = new THREE.Mesh(new THREE.CircleGeometry(2.4, 96), new THREE.MeshStandardMaterial({ color: 0x272728, roughness: 0.96 }));
+  plane.receiveShadow = true; g.add(plane);
+  const grid = (size, div, color, opacity, dz) => {
+    const gh = new THREE.GridHelper(size, div, color, color);
+    gh.material.transparent = true; gh.material.opacity = opacity; gh.material.depthWrite = false;
+    gh.rotation.x = Math.PI / 2; gh.position.z = dz; g.add(gh);
+  };
+  grid(1.0, 100, 0x6e6e72, 0.13, 0.0002);       // 1 cm
+  grid(1.0, 10, 0x9d9d9d, 0.36, 0.0004);        // 10 cm
+  // the reach of the arm, drawn on the floor around the shoulder axis
+  const reach = new THREE.Mesh(new THREE.RingGeometry(0.392, 0.398, 160), new THREE.MeshBasicMaterial({ color: COL.act, transparent: true, opacity: 0.18 }));
+  reach.position.set(0.0388, 0, 0.0006); g.add(reach);
+}
+
+function buildArm() {
   for (let b = 0; b < MODEL.bodies.length; b++) {
     const a = new THREE.Group(), gh = new THREE.Group();
-    actualRoot.add(a); ghostRoot.add(gh);
-    bodyGroups.push(a); ghostGroups.push(gh);
+    actualRoot.add(a); ghostRoot.add(gh); bodyGroups.push(a); ghostGroups.push(gh);
     bodyMats.push({
-      printed: new THREE.MeshStandardMaterial({ color: COL.printed, roughness: 0.62, metalness: 0.0, flatShading: true }),
-      servo: new THREE.MeshStandardMaterial({ color: COL.servo, roughness: 0.45, metalness: 0.1, flatShading: true }),
+      printed: new THREE.MeshStandardMaterial({ color: COL.act, roughness: 0.6, metalness: 0.0, flatShading: true }),
+      servo: new THREE.MeshStandardMaterial({ color: COL.servo, roughness: 0.42, metalness: 0.15, flatShading: true }),
     });
   }
-  const ghostMat = new THREE.MeshBasicMaterial({ color: COL.goal, transparent: true, opacity: 0.2, depthWrite: false });
+  const ghostMat = new THREE.MeshBasicMaterial({ color: COL.goal, transparent: true, opacity: 0.22, depthWrite: false });
   for (const g of MODEL.geoms) {
     const kind = g.mesh_name.startsWith('sts3215') ? 'servo' : 'printed';
-    const m = new THREE.Mesh(geos[g.mesh], bodyMats[g.body][kind]);
+    const m = new THREE.Mesh(GEOS[g.mesh], bodyMats[g.body][kind]);
     m.position.fromArray(g.pos); m.quaternion.set(g.quat[1], g.quat[2], g.quat[3], g.quat[0]);
-    m.castShadow = true; m.receiveShadow = true;
-    m.userData.joint = MODEL.body_joint[g.body];
+    m.castShadow = true; m.receiveShadow = true; m.userData.joint = MODEL.body_joint[g.body];
     bodyGroups[g.body].add(m); pickables.push(m);
-    if (MODEL.body_joint[g.body] >= 0) {               // the base never moves: no ghost for it
-      const gm = new THREE.Mesh(geos[g.mesh], ghostMat);
+    if (MODEL.body_joint[g.body] >= 0) {
+      const gm = new THREE.Mesh(GEOS[g.mesh], ghostMat);
       gm.position.copy(m.position); gm.quaternion.copy(m.quaternion); gm.renderOrder = 2;
       ghostGroups[g.body].add(gm);
     }
   }
-  selRing = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.0012, 8, 64), new THREE.MeshBasicMaterial({ color: COL.accent, depthTest: false, transparent: true, opacity: 0.9 }));
+  selRing = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.0011, 8, 72), new THREE.MeshBasicMaterial({ color: COL.accent, depthTest: false, transparent: true, opacity: 0.9 }));
   selRing.renderOrder = 3; world.add(selRing);
   payloadMesh = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.03), new THREE.MeshStandardMaterial({ color: 0x6e6e72, roughness: 0.8 }));
   payloadMesh.castShadow = true; world.add(payloadMesh);
 }
 
-function placeBodies(groups, poses) {
-  for (let b = 0; b < groups.length; b++) {
-    const p = poses[b];
-    groups[b].position.set(p[0], p[1], p[2]);
-    groups[b].quaternion.set(p[4], p[5], p[6], p[3]);
-  }
-}
-
 function highlight() {
-  if (!MODEL || !bodyMats.length) return;
+  if (!bodyMats.length) return;
   MODEL.body_joint.forEach((j, b) => {
-    const on = j === sel;
-    for (const m of Object.values(bodyMats[b])) { m.emissive.copy(on ? COL.accent : new THREE.Color(0)); m.emissiveIntensity = on ? 0.22 : 0; }
+    for (const m of Object.values(bodyMats[b])) { m.emissive.copy(j === sel ? COL.accent : COL.black); m.emissiveIntensity = j === sel ? 0.2 : 0; }
   });
 }
 
 const contactGeo = new THREE.SphereGeometry(1, 12, 8);
 const contactMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(css('--danger-text')) });
 function renderArm() {
-  placeBodies(bodyGroups, S.bodies);
-  placeBodies(ghostGroups, S.ghost);
-  const lagMax = Math.max(...S.joints.map(j => Math.abs(j.goal - j.q)));
-  ghostRoot.visible = ghostOn && lagMax > 0.3;
-  // contacts
+  setPose(bodyGroups, S.bodies); setPose(ghostGroups, S.ghost);
+  ghostRoot.visible = ghostOn && S.joints[0].torque && Math.max(...S.joints.map(j => Math.abs(j.goal - j.q))) > 0.3;
   while (contactMeshes.length < S.floor.contacts.length) { const m = new THREE.Mesh(contactGeo, contactMat); world.add(m); contactMeshes.push(m); }
   contactMeshes.forEach((m, i) => {
-    const c = S.floor.contacts[i];
-    m.visible = !!c;
+    const c = S.floor.contacts[i]; m.visible = !!c;
     if (c) { m.position.set(c[0], c[1], c[2] + 0.001); m.scale.setScalar(0.003 + Math.min(0.006, c[3] * 0.002)); }
   });
   payloadMesh.visible = S.payload_kg > 0;
   if (payloadMesh.visible) { payloadMesh.position.set(S.tcp[0], S.tcp[1], S.tcp[2] - 0.02); payloadMesh.scale.setScalar(0.6 + S.payload_kg * 1.2); }
-  // ring around the selected joint axis (joint = body origin, axis = local z)
   const b = MODEL.body_joint.indexOf(sel);
-  if (b >= 0) { selRing.visible = true; selRing.position.copy(bodyGroups[b].position); selRing.quaternion.copy(bodyGroups[b].quaternion); }
+  if (b >= 0) { selRing.position.copy(bodyGroups[b].position); selRing.quaternion.copy(bodyGroups[b].quaternion); }
 }
-
-let ghostOn = true;
 $('ghostBtn').onclick = () => { ghostOn = !ghostOn; $('ghostBtn').classList.toggle('on', ghostOn); };
 $('viewBtn').onclick = resetView;
 
-// click a link to select its joint
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
 let downAt = null;
 renderer.domElement.addEventListener('pointerdown', e => { downAt = [e.clientX, e.clientY]; });
@@ -610,24 +671,21 @@ renderer.domElement.addEventListener('pointerup', e => {
 const tmpV = new THREE.Vector3();
 function placeLabel() {
   const lab = $('selLabel');
-  if (!selRing || !selRing.visible) { lab.style.display = 'none'; return; }
   selRing.getWorldPosition(tmpV); tmpV.project(camera);
   const r = renderer.domElement.getBoundingClientRect();
-  lab.style.display = 'block';
-  lab.style.left = ((tmpV.x + 1) / 2 * r.width + 24) + 'px';
+  lab.style.left = ((tmpV.x + 1) / 2 * r.width + 22) + 'px';
   lab.style.top = ((1 - tmpV.y) / 2 * r.height) + 'px';
-  const js = S.joints[sel];
-  lab.textContent = `#${sel + 1} ${JA[js.name]}  ${fmt(js.q)}°`;
+  lab.textContent = fmt(S.joints[sel].q) + '°';
 }
-
 function resize() {
   const w = view.clientWidth, h = view.clientHeight;
+  if (!w || !h) return;
   renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
-  sizeTrace();
+  renderer.render(scene, camera);                            // no blank frame between resize and the next tick
 }
 new ResizeObserver(resize).observe(view);
 
-/* ============================== 4: trace ============================== */
+/* ============================== trace ============================== */
 const cv = $('traceCv'), cx = cv.getContext('2d');
 function sizeTrace() {
   const r = $('trace').getBoundingClientRect(), d = Math.min(2, devicePixelRatio);
@@ -639,14 +697,14 @@ function drawTrace() {
   const W = cv.clientWidth, H = cv.clientHeight;
   cx.clearRect(0, 0, W, H);
   if (!hist.length) return;
-  const L = 56, R = 64, top = 34, gap = 22, bot = 22;
-  const h1 = (H - top - gap - bot) * 0.6, h2 = (H - top - gap - bot) * 0.4;
+  const L = 96, Rm = 70, top = 12, gap = 14, bot = 22;
+  const h1 = (H - top - gap - bot) * 0.62, h2 = (H - top - gap - bot) * 0.38;
   const y1 = top, y2 = top + h1 + gap;
   const tEnd = hist[hist.length - 1][0], span = 10, tBeg = tEnd - span;
-  const X = t => L + (t - tBeg) / span * (W - L - R);
+  const X = t => L + (t - tBeg) / span * (W - L - Rm);
   const base = 1 + sel * 5;
-  const rows = hist.filter(r => r[0] >= tBeg);
-  // angle range: fit goal / actual with a little margin
+  const rows = hist.filter(r => r[0] >= tBeg && r[0] <= tEnd);
+  if (!rows.length) return;
   let lo = Infinity, hi = -Infinity;
   for (const r of rows) for (const k of [0, 1, 2]) { lo = Math.min(lo, r[base + k]); hi = Math.max(hi, r[base + k]); }
   const pad = Math.max(2, (hi - lo) * 0.12); lo -= pad; hi += pad;
@@ -655,76 +713,64 @@ function drawTrace() {
   const Yd = v => y2 + h2 - Math.min(1, Math.abs(v) / 100) * h2;
   const Yc = v => y2 + h2 - Math.min(1, Math.abs(v) / curMax) * h2;
 
-  cx.font = `11px ${css('--font-mono')}`;
-  // frames
-  cx.strokeStyle = css('--divider'); cx.lineWidth = 1;
-  for (const [y, h] of [[y1, h1], [y2, h2]]) { cx.strokeRect(L + 0.5, y + 0.5, W - L - R, h); }
-  // time ticks
-  cx.fillStyle = css('--text-faint'); cx.textAlign = 'center';
+  cx.font = `10px ${css('--font-mono')}`;
+  cx.fillStyle = css('--surface'); cx.fillRect(L, y1, W - L - Rm, h1); cx.fillRect(L, y2, W - L - Rm, h2);
+  cx.textAlign = 'center';
   for (let t = Math.ceil(tBeg); t <= tEnd; t++) {
-    const x = X(t); cx.fillRect(x, y2 + h2, 1, 4);
-    cx.fillText(`${(t - tEnd).toFixed(0)} s`, x, y2 + h2 + 15);
+    const x = X(t);
+    cx.fillStyle = css('--divider'); cx.fillRect(x, y1, 1, h1); cx.fillRect(x, y2, 1, h2);
+    cx.fillStyle = css('--text-faint'); cx.fillText(`${(t - tEnd).toFixed(0)}s`, x, y2 + h2 + 14);
   }
-  // angle axis labels
   cx.textAlign = 'right';
   cx.fillText(`${hi.toFixed(0)}°`, L - 6, y1 + 9); cx.fillText(`${lo.toFixed(0)}°`, L - 6, y1 + h1);
-  cx.textAlign = 'left';
-  cx.textAlign = 'right';
-  cx.fillText('100 %', L - 6, y2 + 9); cx.fillStyle = css('--warn-text'); cx.fillText(`${curMax} A`, L - 6, y2 + 22);
-  cx.fillStyle = css('--text-faint'); cx.fillText('0', L - 6, y2 + h2);
-  cx.textAlign = 'left';
-  // overload line
+  cx.fillText('100%', L - 6, y2 + 9);
+  cx.fillStyle = css('--c-cur'); cx.fillText(`${curMax}A`, L - 6, y2 + 20);
+  // overload threshold
   const ol = S.joints[sel].overload_pct;
-  cx.strokeStyle = css('--danger-text'); cx.globalAlpha = 0.55; cx.setLineDash([3, 3]);
-  cx.beginPath(); cx.moveTo(L, Yd(ol) + 0.5); cx.lineTo(W - R, Yd(ol) + 0.5); cx.stroke();
+  cx.strokeStyle = css('--danger-text'); cx.globalAlpha = 0.6; cx.setLineDash([3, 3]); cx.lineWidth = 1;
+  cx.beginPath(); cx.moveTo(L, Yd(ol) + 0.5); cx.lineTo(W - Rm, Yd(ol) + 0.5); cx.stroke();
   cx.setLineDash([]); cx.globalAlpha = 1;
-  cx.fillStyle = css('--danger-text'); cx.fillText(`過負荷 ${ol} %`, W - R + 6, Yd(ol) + 4);
 
+  // output as an area, current as a line, angles as lines
+  cx.fillStyle = 'rgba(157,157,157,.22)';
+  cx.beginPath(); cx.moveTo(X(rows[0][0]), Yd(0));
+  rows.forEach(r => cx.lineTo(X(r[0]), Yd(r[base + 3])));
+  cx.lineTo(X(rows[rows.length - 1][0]), Yd(0)); cx.closePath(); cx.fill();
   const line = (k, Y, color, w, dash) => {
     cx.strokeStyle = color; cx.lineWidth = w; cx.setLineDash(dash || []);
-    cx.beginPath();
-    rows.forEach((r, i) => { const x = X(r[0]), y = Y(r[base + k]); i ? cx.lineTo(x, y) : cx.moveTo(x, y); });
+    cx.beginPath(); rows.forEach((r, i) => { const x = X(r[0]), y = Y(r[base + k]); i ? cx.lineTo(x, y) : cx.moveTo(x, y); });
     cx.stroke(); cx.setLineDash([]);
   };
-  line(0, Y1, css('--c-goal'), 1.5, [5, 3]);
+  line(4, Yc, css('--c-cur'), 1.2);
   line(1, Y1, css('--c-sp'), 1);
+  line(0, Y1, css('--c-goal'), 1.5, [5, 3]);
   line(2, Y1, css('--c-act'), 2);
-  line(3, Yd, css('--text-muted'), 1.25);
-  line(4, Yc, css('--warn-text'), 1.25);
-  // inline labels at the right end of each line
+  // end-of-line values in the line's own colour
   const last = rows[rows.length - 1];
-  const tag = (txt, y, color) => { cx.fillStyle = color; cx.fillText(txt, W - R + 6, y + 4); };
-  const lab = [[`指令 ${fmt(last[base])}°`, Y1(last[base]), css('--c-goal')],
-               [`実際 ${fmt(last[base + 2])}°`, Y1(last[base + 2]), css('--c-act')]].sort((a, b) => a[1] - b[1]);
-  if (lab[1][1] - lab[0][1] < 13) lab[1][1] = lab[0][1] + 13;
-  lab.forEach(l => tag(...l));
-  const key = (x, y, txt, color, dash) => {
-    cx.strokeStyle = color; cx.lineWidth = 2; cx.setLineDash(dash || []);
-    cx.beginPath(); cx.moveTo(x, y - 4); cx.lineTo(x + 16, y - 4); cx.stroke(); cx.setLineDash([]);
-    cx.fillStyle = color; cx.fillText(txt, x + 21, y); return x + 21 + cx.measureText(txt).width + 14;
-  };
-  let kx = L + 8;
-  kx = key(kx, y1 + 14, '指令', css('--c-goal'), [5, 3]);
-  kx = key(kx, y1 + 14, '内部の目標', css('--c-sp'));
-  key(kx, y1 + 14, '実際', css('--c-act'));
-  kx = key(L + 8, y2 + 14, '出力 [%]', css('--text-muted'));
-  key(kx, y2 + 14, '電流 [A]', css('--warn-text'));
+  const tags = [[fmt(last[base]) + '°', Y1(last[base]), css('--c-goal')], [fmt(last[base + 2]) + '°', Y1(last[base + 2]), css('--c-act')]].sort((a, b) => a[1] - b[1]);
+  if (tags[1][1] - tags[0][1] < 12) tags[1][1] = tags[0][1] + 12;
+  cx.textAlign = 'left';
+  tags.forEach(([t, y, c]) => { cx.fillStyle = c; cx.fillText(t, W - Rm + 6, y + 4); });
+  const yd = Yd(last[base + 3]) + 4;
+  cx.fillStyle = css('--text-muted'); cx.fillText(`${Math.abs(last[base + 3]).toFixed(0)}%`, W - Rm + 6, yd);
+  cx.fillStyle = css('--c-cur'); cx.fillText(`${Math.abs(last[base + 4]).toFixed(2)}A`, W - Rm + 6, Math.max(yd + 12, Yc(last[base + 4]) + 4));
 }
 
 /* ============================== loop ============================== */
 async function poll() {
   for (;;) {
     try {
-      const r = await fetch('/api/state?since=' + seq);
-      S = await r.json();
-      if (S.seq < seq) hist.length = 0;              // the sim was rebuilt
+      S = await (await fetch('/api/state?since=' + seq)).json();
       seq = S.seq;
-      for (const row of S.hist) hist.push(row);
+      for (const row of S.hist) {
+        if (hist.length && row[0] < hist[hist.length - 1][0]) hist.length = 0;   // the sim was rebuilt
+        hist.push(row);
+      }
       if (hist.length > HIST_KEEP) hist.splice(0, hist.length - HIST_KEEP);
-      if (hist.length && hist[hist.length - 1][0] < (hist[0] || [0])[0]) hist.length = 0;
       renderChannels(); renderCommands(); renderArm();
     } catch (e) {
-      const msg = $('armMsg'); msg.className = 'arm-msg'; msg.textContent = 'シミュレータのサーバに繋がりません'; msg.style.display = 'block';
+      console.error(e);
+      const st = $('armState'); st.className = 'state err'; st.innerHTML = icon('i-power'); st.title = 'サーバに繋がりません';
       await new Promise(r => setTimeout(r, 1000));
     }
     await new Promise(r => setTimeout(r, 30));
@@ -739,11 +785,14 @@ function frame() {
 
 (async () => {
   MODEL = await (await fetch('/api/model')).json();
+  const ids = [...new Set(MODEL.geoms.map(g => g.mesh))];
+  await Promise.all(ids.map(async id => { GEOS[id] = await loadMesh(id); }));
+  const poseImgs = makeThumbs();
   buildFloor(MODEL.floor_z);
-  buildChannels(); buildCommands();
-  await buildArm();
+  buildChannels(); buildCommands(poseImgs);
+  buildArm();
   S = await (await fetch('/api/state?since=0')).json();
-  resetView(); resize();
+  resetView(); resize(); sizeTrace();
   select(sel);
   S = null;
   poll(); frame();
