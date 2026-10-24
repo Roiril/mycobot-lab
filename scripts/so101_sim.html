@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SO-101 シミュレータ</title>
+<style>
+/* tokens: copied from scripts/ui.html :root (.agent/rules/design.md) */
+:root{
+  --bg:#1e1e1e; --surface:#252526; --surface-2:#2d2d30; --surface-3:#333334;
+  --border:#3c3c3c; --border-strong:#525257; --divider:#2b2b2c;
+  --text:#d4d4d4; --text-muted:#9d9d9d; --text-faint:#6e6e72; --text-inv:#ffffff;
+  --accent:#4ec9ff; --accent-bg:#0e639c; --accent-bg-hover:#1177bb;
+  --accent-soft:rgba(78,201,255,.13); --accent-line:rgba(78,201,255,.30);
+  --ok:#388a5a; --ok-text:#4ec99a;
+  --warn:#9a7d12; --warn-text:#dcdcaa;
+  --danger:#a1260d; --danger-hover:#c5341a; --danger-text:#f14c4c; --danger-soft:rgba(161,38,13,.16);
+  --data-num:#9cdcfe; --data-tgt:#ce9178; --data-ok:#6a9955;
+  --font-ui:system-ui,"Segoe UI",Roboto,sans-serif;
+  --font-mono:ui-monospace,"SF Mono",Consolas,"Liberation Mono",monospace;
+  --fs-2xs:10px; --fs-xs:11px; --fs-sm:12px; --fs-base:13px; --fs-md:15px;
+  --fw-reg:400; --fw-med:600; --fw-bold:700;
+  --radius:4px; --radius-sm:3px; --bw:1px;
+  --pad:11px; --gap:8px;
+  --t-fast:.1s; --t-std:.16s; --ease:ease-out;
+  /* meaning colours shared by the tracks, the trace and the 3D view */
+  --c-goal:var(--data-tgt); --c-sp:var(--text-muted); --c-act:var(--data-num);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:var(--fw-reg) var(--fs-base)/1.4 var(--font-ui)}
+button,input{font:inherit;color:inherit}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+
+/* ---------- page: the columns follow the signal: command -> servo -> arm ---------- */
+#app{height:100%;display:grid;grid-template-columns:268px 452px minmax(0,1fr);grid-template-rows:42px minmax(0,1fr) 200px;
+  grid-template-areas:"top top top" "cmd servo arm" "cmd servo trace"}
+header{grid-area:top;display:flex;align-items:center;gap:14px;padding:0 var(--pad);background:var(--surface);border-bottom:var(--bw) solid var(--border)}
+#cmd{grid-area:cmd;overflow:auto;border-right:var(--bw) solid var(--border);background:var(--surface)}
+#servo{grid-area:servo;overflow:auto;border-right:var(--bw) solid var(--border)}
+#arm{grid-area:arm;position:relative;min-width:0;min-height:0}
+#trace{grid-area:trace;border-top:var(--bw) solid var(--border);position:relative;min-width:0}
+
+/* stage headings: the numbers are the order things happen in */
+.stage{display:flex;align-items:baseline;gap:8px;padding:9px var(--pad) 7px;border-bottom:var(--bw) solid var(--divider);position:sticky;top:0;background:inherit;z-index:2}
+#servo .stage{background:var(--bg)}
+.stage b{font-family:var(--font-mono);color:var(--accent);font-size:var(--fs-sm)}
+.stage h2{margin:0;font-size:var(--fs-base);font-weight:var(--fw-med)}
+.stage span{color:var(--text-faint);font-size:var(--fs-xs);margin-left:auto}
+
+/* ---------- header ---------- */
+header h1{margin:0;font-size:var(--fs-md);font-weight:var(--fw-med)}
+.tag{font-size:var(--fs-2xs);color:var(--text-muted);border:var(--bw) solid var(--border);border-radius:var(--radius-sm);padding:1px 6px}
+.hstat{display:flex;gap:16px;margin-left:8px;font-size:var(--fs-sm);color:var(--text-muted)}
+.hstat .mono{color:var(--data-num)}
+.hsp{flex:1}
+.seg{display:inline-flex;border:var(--bw) solid var(--border);border-radius:var(--radius);overflow:hidden}
+.seg button{background:var(--surface-3);border:0;border-right:var(--bw) solid var(--border);padding:4px 9px;cursor:pointer;color:var(--text-muted)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--accent-soft);color:var(--accent)}
+.btn{background:var(--surface-3);border:var(--bw) solid var(--border);border-radius:var(--radius);padding:4px 10px;cursor:pointer;color:var(--text-muted);transition:background var(--t-fast) var(--ease)}
+.btn:hover{background:var(--surface-2);color:var(--text)}
+.btn.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+.btn.primary{background:var(--accent-bg);border-color:var(--accent-bg);color:var(--text-inv)}
+.btn.primary:hover{background:var(--accent-bg-hover)}
+.btn.danger{background:var(--danger);border-color:var(--danger);color:var(--text-inv)}
+.btn.danger:hover{background:var(--danger-hover)}
+kbd{font-family:var(--font-mono);font-size:var(--fs-2xs);border:var(--bw) solid var(--border-strong);border-radius:var(--radius-sm);padding:0 4px;color:var(--text-faint)}
+
+/* ---------- 1 command column ---------- */
+.grp{padding:10px var(--pad) 12px;border-bottom:var(--bw) solid var(--divider)}
+.grp h3{margin:0 0 8px;font-size:var(--fs-sm);font-weight:var(--fw-med);color:var(--text)}
+.grp p{margin:0 0 8px;color:var(--text-faint);font-size:var(--fs-xs)}
+.poses{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.poses .btn{text-align:left}
+.poses .btn small{display:block;color:var(--text-faint);font-size:var(--fs-2xs)}
+.row2{display:flex;gap:6px}
+.row2 .btn{flex:1}
+.field{display:grid;grid-template-columns:1fr 74px;align-items:center;gap:2px 8px;margin-bottom:9px}
+.field label{font-size:var(--fs-sm)}
+.field small{grid-column:1/3;color:var(--text-faint);font-size:var(--fs-2xs)}
+.field input[type=number]{width:74px;background:var(--bg);border:var(--bw) solid var(--border);border-radius:var(--radius-sm);padding:3px 6px;text-align:right}
+.field input:focus{outline:none;border-color:var(--accent)}
+.field .unit{color:var(--text-muted);font-family:var(--font-mono);font-size:var(--fs-xs)}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.check{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:var(--fs-sm);cursor:pointer}
+.check input{accent-color:var(--accent)}
+
+/* ---------- 2 servo channels ---------- */
+.end{padding:4px var(--pad);font-size:var(--fs-2xs);color:var(--text-faint);letter-spacing:.04em}
+.ch{padding:9px var(--pad) 10px;border-bottom:var(--bw) solid var(--divider);border-left:3px solid transparent;cursor:pointer}
+.ch:hover{background:var(--surface)}
+.ch.sel{background:var(--surface);border-left-color:var(--accent-line)}
+.ch-head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.ch-id{font-family:var(--font-mono);color:var(--text-faint);font-size:var(--fs-xs);width:20px}
+.ch-name{font-weight:var(--fw-med)}
+.ch-en{color:var(--text-faint);font-size:var(--fs-2xs);font-family:var(--font-mono)}
+.badge{margin-left:auto;font-size:var(--fs-2xs);padding:1px 6px;border-radius:var(--radius-sm);border:var(--bw) solid var(--border);color:var(--text-muted)}
+.badge.ok{color:var(--ok-text);border-color:var(--ok)}
+.badge.warn{color:var(--warn-text);border-color:var(--warn);background:rgba(154,125,18,.12)}
+.badge.err{color:var(--danger-text);border-color:var(--danger);background:var(--danger-soft)}
+.badge.gray{color:var(--text-faint)}
+
+/* angle track: goal, internal target and actual on one scale */
+.track{position:relative;height:22px;margin:0 6px;touch-action:none;cursor:ew-resize}
+.track .rail{position:absolute;left:0;right:0;top:10px;height:2px;background:var(--border-strong)}
+.track .zero{position:absolute;top:5px;width:1px;height:12px;background:var(--text-faint)}
+.track .lag{position:absolute;top:8px;height:6px;background:var(--accent-soft)}
+.track .m-goal{position:absolute;top:3px;width:12px;height:12px;margin-left:-6px;background:var(--c-goal);transform:rotate(45deg) scale(.8)}
+.track .m-sp{position:absolute;top:2px;width:2px;height:18px;margin-left:-1px;background:var(--c-sp)}
+.track .m-act{position:absolute;top:5px;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:var(--c-act);box-shadow:0 0 0 2px var(--bg)}
+.track .lim{position:absolute;top:16px;font-size:var(--fs-2xs);color:var(--text-faint);font-family:var(--font-mono)}
+.nums{display:grid;grid-template-columns:repeat(4,1fr);margin:6px 0 7px;font-size:var(--fs-xs);color:var(--text-faint)}
+.nums .mono{font-size:var(--fs-sm)}
+.n-goal{color:var(--c-goal)} .n-sp{color:var(--c-sp)} .n-act{color:var(--c-act)} .n-lag{color:var(--text)}
+.nums .k::before{content:"";display:inline-block;width:7px;height:7px;margin-right:4px;vertical-align:1px}
+.k.goal::before{background:var(--c-goal);transform:rotate(45deg) scale(.85)}
+.k.sp::before{width:2px;height:9px;background:var(--c-sp)}
+.k.act::before{border-radius:50%;background:var(--c-act)}
+
+/* effort meters: output -> current -> heat, each with its trip line */
+.meters{display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:10px}
+.meter .lbl{display:flex;justify-content:space-between;font-size:var(--fs-2xs);color:var(--text-faint);margin-bottom:3px}
+.meter .lbl .mono{color:var(--text);font-size:var(--fs-xs)}
+.bar{position:relative;height:6px;background:var(--surface-3);border-radius:1px}
+.bar .fill{position:absolute;left:0;top:0;bottom:0;background:var(--text-muted);border-radius:1px}
+.bar .trip{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--danger-text)}
+.bar .timer{position:absolute;left:0;bottom:-4px;height:2px;background:var(--warn-text)}
+.fill.hot{background:var(--warn-text)} .fill.over{background:var(--danger-text)}
+
+/* ---------- 3 arm view ---------- */
+#arm canvas{display:block;width:100%;height:100%}
+.legend{position:absolute;left:12px;bottom:10px;display:flex;flex-direction:column;gap:3px;font-size:var(--fs-xs);color:var(--text-muted);background:rgba(30,30,30,.85);border:var(--bw) solid var(--border);border-radius:var(--radius);padding:7px 10px;pointer-events:none}
+.legend i{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px}
+.toolbar{position:absolute;right:10px;top:46px;display:flex;flex-direction:column;gap:5px}
+.arm-msg{position:absolute;left:50%;top:50px;transform:translateX(-50%);font-size:var(--fs-sm);padding:5px 12px;border-radius:var(--radius);border:var(--bw) solid var(--danger);background:var(--danger-soft);color:var(--danger-text);display:none}
+.arm-msg.warn{border-color:var(--warn);background:rgba(154,125,18,.15);color:var(--warn-text)}
+#armStage{position:absolute;left:0;right:0;top:0;background:rgba(30,30,30,.0);border-bottom:0}
+#selLabel{position:absolute;pointer-events:none;font-size:var(--fs-xs);color:var(--accent);background:rgba(30,30,30,.85);border:var(--bw) solid var(--accent-line);border-radius:var(--radius-sm);padding:1px 6px;white-space:nowrap;transform:translate(10px,-50%)}
+
+/* ---------- 4 trace ---------- */
+#trace .stage{position:absolute;left:0;right:0;top:0;border:0;background:transparent;pointer-events:none}
+#traceCv{position:absolute;left:0;top:0;width:100%;height:100%}
+
+@media (max-width:1180px){
+  #app{grid-template-columns:268px minmax(0,1fr);grid-template-rows:42px 52vh auto 200px;
+    grid-template-areas:"top top" "arm arm" "cmd servo" "trace trace";height:auto}
+  #cmd,#servo{overflow:visible}
+}
+</style>
+<script type="importmap">{"imports":{"three":"/static/vendor/three/build/three.module.js"}}</script>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>SO-101 シミュレータ</h1>
+    <span class="tag">仮想の腕。実機には繋がっていません</span>
+    <div class="hstat">
+      <span>時刻 <b class="mono" id="hT">0.00</b> s</span>
+      <span>電源 <b class="mono" id="hV">12.2</b> V</span>
+      <span>電流の合計 <b class="mono" id="hA">0.00</b> A</span>
+      <span>床からの力 <b class="mono" id="hF">0.0</b> N</span>
+    </div>
+    <div class="hsp"></div>
+    <span style="color:var(--text-faint);font-size:var(--fs-xs)">再生速度</span>
+    <div class="seg" id="rtfSeg">
+      <button data-rtf="1" class="on">1×</button><button data-rtf="0.5">½×</button><button data-rtf="0.25">¼×</button><button data-rtf="0.1">⅒×</button>
+    </div>
+    <button class="btn" id="pauseBtn">一時停止 <kbd>Space</kbd></button>
+    <button class="btn" id="torqueBtn">脱力 <kbd>Esc</kbd></button>
+  </header>
+
+  <!-- 1 -->
+  <section id="cmd">
+    <div class="stage"><b>1</b><h2>指令</h2><span>何をさせるか</span></div>
+    <div class="grp">
+      <h3>姿勢を指令する</h3>
+      <p>6 つのサーボへ同時に目標角を送ります。1 つずつ動かすときは、右の列の目盛をドラッグします。</p>
+      <div class="poses" id="poses"></div>
+    </div>
+    <div class="grp">
+      <h3>ステップ入力</h3>
+      <p>選んだ関節の目標角を一度に変えて、サーボがどう追いつくかを見ます。下のグラフに記録されます。</p>
+      <div class="row2">
+        <button class="btn" data-step="-20">−20°</button>
+        <button class="btn" data-step="-5">−5°</button>
+        <button class="btn" data-step="5">+5°</button>
+        <button class="btn" data-step="20">+20°</button>
+      </div>
+    </div>
+    <div class="grp" id="regs">
+      <h3>サーボの設定 <span style="color:var(--text-faint);font-weight:var(--fw-reg)">（6 個共通）</span></h3>
+      <div class="field"><label for="r_Goal_Velocity">最高速度</label><input type="number" id="r_Goal_Velocity" data-reg="Goal_Velocity" min="0" max="3400" step="10">
+        <small><span class="mono" id="rv_Goal_Velocity"></span> ・ Goal_Velocity [step/s]。0 は制限なし</small></div>
+      <div class="field"><label for="r_Acceleration">加速度</label><input type="number" id="r_Acceleration" data-reg="Acceleration" min="0" max="254">
+        <small><span class="mono" id="rv_Acceleration"></span> ・ Acceleration [100 step/s²]。0 は制限なし</small></div>
+      <div class="field"><label for="r_P_Coefficient">P ゲイン</label><input type="number" id="r_P_Coefficient" data-reg="P_Coefficient" min="1" max="254">
+        <small>ずれ 1 step あたり出力 P/4 ‰。大きいほど硬く追う</small></div>
+      <div class="field"><label for="r_D_Coefficient">D ゲイン</label><input type="number" id="r_D_Coefficient" data-reg="D_Coefficient" min="0" max="254">
+        <small>速さのずれに逆らう。揺れを抑える</small></div>
+      <div class="field"><label for="r_Torque_Limit">トルク上限</label><input type="number" id="r_Torque_Limit" data-reg="Torque_Limit" min="0" max="1000" step="10">
+        <small><span class="mono" id="rv_Torque_Limit"></span> ・ Torque_Limit [0.1 %]</small></div>
+      <button class="btn" id="regsReset" style="width:100%">初期値に戻す</button>
+    </div>
+    <div class="grp">
+      <h3>まわりの環境</h3>
+      <label class="check"><input type="checkbox" id="floorChk" checked> 床に当たる</label>
+      <div class="field" style="grid-template-columns:1fr 74px"><label for="payload">先端の荷物</label><span class="unit mono" id="payloadV" style="text-align:right">0 g</span>
+        <input type="range" id="payload" min="0" max="500" step="10" value="0" style="grid-column:1/3"></div>
+      <button class="btn" id="resetBtn" style="width:100%">最初の状態に戻す</button>
+      <p style="margin-top:8px">温度・保護の作動回数も含めて作り直します。</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section id="servo">
+    <div class="stage"><b>2</b><h2>サーボ</h2><span>指令をどう追っているか</span></div>
+    <div class="end">先端</div>
+    <div id="channels"></div>
+    <div class="end">根元</div>
+  </section>
+
+  <!-- 3 -->
+  <section id="arm">
+    <div class="stage" id="armStage"><b>3</b><h2>アーム</h2><span>その結果どう動いたか</span></div>
+    <div class="arm-msg" id="armMsg"></div>
+    <div class="toolbar">
+      <button class="btn on" id="ghostBtn">指令の姿</button>
+      <button class="btn" id="viewBtn">視点を戻す</button>
+    </div>
+    <div class="legend">
+      <span><i style="background:#c9c4b8"></i>実際の姿</span>
+      <span><i style="background:#ce9178;opacity:.6"></i>指令した姿</span>
+      <span><i style="background:#f14c4c;border-radius:50%"></i>床に触れている点</span>
+      <span style="color:var(--text-faint)">床の目盛 1 マス 1 cm ・ 太線 10 cm</span>
+    </div>
+    <div id="selLabel"></div>
+  </section>
+
+  <!-- 4 -->
+  <section id="trace">
+    <div class="stage"><b>4</b><h2 id="traceTitle">時間で見る</h2><span id="traceSub">直近 10 秒</span></div>
+    <canvas id="traceCv"></canvas>
+  </section>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from '/static/vendor/three/examples/jsm/controls/OrbitControls.js';
+
+const JA = {
+  shoulder_pan: '肩の旋回', shoulder_lift: '肩の上下', elbow_flex: '肘',
+  wrist_flex: '手首の曲げ', wrist_roll: '手首の回転', gripper: 'グリッパ',
+};
+const POSE_JA = { HOME: ['まっすぐ', '全関節 0°'], READY: ['構え', '持ち上げて軽く曲げる'],
+  UP: ['上を向く', '肩を起こす'], FORWARD_LOW: ['前の低い所', '手前に伸ばす'], OBSERVE: ['見下ろす', '手首を立てる'] };
+const FAULT_JA = { overload: '過負荷', overcurrent: '過電流', overheat: '過熱', voltage: '電圧', sensor: 'エンコーダ' };
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const $ = id => document.getElementById(id);
+const fmt = (v, d = 1) => (v >= 0 ? '' : '−') + Math.abs(v).toFixed(d);
+
+let MODEL = null, S = null, seq = 0, sel = 2;
+const hist = [];                       // rows: [t, (goal, sp, q, duty, cur) x 6]
+const HIST_KEEP = 2400;                // 12 s at 200 Hz
+
+async function api(op, body = {}) {
+  const r = await fetch('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op, ...body }) });
+  return r.json();
+}
+
+/* ============================== 2: channels ============================== */
+const CH = [];
+function buildChannels() {
+  const host = $('channels');
+  const order = [...MODEL.joints.keys()].reverse();          // tip at the top, like the arm
+  for (const j of order) {
+    const name = MODEL.joints[j];
+    const el = document.createElement('div');
+    el.className = 'ch'; el.dataset.j = j;
+    el.innerHTML = `
+      <div class="ch-head"><span class="ch-id">#${j + 1}</span><span class="ch-name">${JA[name]}</span><span class="ch-en">${name}</span><span class="badge gray">—</span></div>
+      <div class="track" title="ドラッグで目標角を指令">
+        <div class="rail"></div><div class="zero"></div><div class="lag"></div>
+        <div class="m-sp"></div><div class="m-act"></div><div class="m-goal"></div>
+        <span class="lim lo" style="left:0"></span><span class="lim hi" style="right:0"></span>
+      </div>
+      <div class="nums">
+        <div><span class="k goal">指令</span><br><span class="mono n-goal">—</span></div>
+        <div><span class="k sp">内部の目標</span><br><span class="mono n-sp">—</span></div>
+        <div><span class="k act">実際</span><br><span class="mono n-act">—</span></div>
+        <div>遅れ<br><span class="mono n-lag">—</span></div>
+      </div>
+      <div class="meters">
+        <div class="meter m-duty"><div class="lbl"><span>出力</span><span class="mono v">—</span></div><div class="bar"><div class="fill"></div><div class="trip"></div><div class="timer"></div></div></div>
+        <div class="meter m-cur"><div class="lbl"><span>電流</span><span class="mono v">—</span></div><div class="bar"><div class="fill"></div><div class="trip"></div><div class="timer"></div></div></div>
+        <div class="meter m-temp"><div class="lbl"><span>温度</span><span class="mono v">—</span></div><div class="bar"><div class="fill"></div><div class="trip"></div></div></div>
+      </div>`;
+    host.appendChild(el);
+    const q = s => el.querySelector(s);
+    const c = { el, j, track: q('.track'), goal: q('.m-goal'), sp: q('.m-sp'), act: q('.m-act'), lag: q('.lag'), zero: q('.zero'),
+      lo: q('.lim.lo'), hi: q('.lim.hi'), badge: q('.badge'),
+      nGoal: q('.n-goal'), nSp: q('.n-sp'), nAct: q('.n-act'), nLag: q('.n-lag'),
+      duty: q('.m-duty'), cur: q('.m-cur'), temp: q('.m-temp'), range: null, dragging: false };
+    el.addEventListener('click', () => select(j));
+    bindTrack(c);
+    CH[j] = c;
+  }
+}
+const pct = (c, deg) => 100 * (deg - c.range[0]) / (c.range[1] - c.range[0]);
+
+function bindTrack(c) {
+  const toDeg = e => {
+    const r = c.track.getBoundingClientRect();
+    const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    return c.range[0] + f * (c.range[1] - c.range[0]);
+  };
+  c.track.addEventListener('pointerdown', e => {
+    if (!c.range) return;
+    c.dragging = true; c.track.setPointerCapture(e.pointerId); select(c.j);
+    sendGoal(c.j, toDeg(e));
+  });
+  c.track.addEventListener('pointermove', e => { if (c.dragging) sendGoal(c.j, toDeg(e)); });
+  const end = () => { c.dragging = false; };
+  c.track.addEventListener('pointerup', end); c.track.addEventListener('pointercancel', end);
+}
+
+// goals are rate-limited per joint; the latest value is always delivered
+const pendingGoal = {}; let goalTimer = null;
+function sendGoal(j, deg) {
+  pendingGoal[MODEL.joints[j]] = Math.round(deg * 10) / 10;
+  const c = CH[j]; c.goal.style.left = pct(c, deg) + '%';          // instant feedback
+  if (!goalTimer) goalTimer = setTimeout(flushGoals, 33);
+}
+async function flushGoals() {
+  const goals = { ...pendingGoal };
+  for (const k in pendingGoal) delete pendingGoal[k];
+  goalTimer = null;
+  if (Object.keys(goals).length) await api('goal', { goals });
+}
+
+function setMeter(m, frac, text, cls, tripFrac, timerFrac) {
+  m.querySelector('.v').textContent = text;
+  const f = m.querySelector('.fill');
+  f.style.width = (100 * Math.min(1, Math.max(0, frac))) + '%';
+  f.className = 'fill' + (cls ? ' ' + cls : '');
+  m.querySelector('.trip').style.left = (100 * tripFrac) + '%';
+  const t = m.querySelector('.timer');
+  if (t) t.style.width = (100 * (timerFrac || 0)) + '%';
+}
+
+function renderChannels() {
+  const stallA = MODEL.servo.stall_a, ocA = MODEL.servo.overcurrent_a;
+  for (const js of S.joints) {
+    const j = MODEL.joints.indexOf(js.name), c = CH[j];
+    if (!c.range) {
+      c.range = js.range;
+      c.lo.textContent = Math.round(js.range[0]) + '°'; c.hi.textContent = Math.round(js.range[1]) + '°';
+      c.zero.style.left = pct(c, 0) + '%';
+    }
+    if (!c.dragging && !(js.name in pendingGoal)) c.goal.style.left = pct(c, js.goal) + '%';
+    c.sp.style.left = pct(c, js.sp) + '%';
+    c.act.style.left = pct(c, js.q) + '%';
+    const a = pct(c, js.q), g = pct(c, js.goal);
+    c.lag.style.left = Math.min(a, g) + '%'; c.lag.style.width = Math.abs(g - a) + '%';
+    c.nGoal.textContent = fmt(js.goal) + '°'; c.nSp.textContent = fmt(js.sp) + '°';
+    c.nAct.textContent = fmt(js.q) + '°'; c.nLag.textContent = Math.abs(js.goal - js.q).toFixed(1) + '°';
+
+    const duty = Math.abs(js.duty) / 100, olLine = js.overload_pct / 100;
+    setMeter(c.duty, duty, Math.abs(js.duty).toFixed(0) + ' %', js.faults.includes('overload') ? 'over' : duty > olLine ? 'hot' : '', olLine, js.ol_frac);
+    const cur = Math.abs(js.current);
+    setMeter(c.cur, cur / stallA, cur.toFixed(2) + ' A', js.faults.includes('overcurrent') ? 'over' : cur > ocA ? 'hot' : '', ocA / stallA, js.oc_frac);
+    const tLo = 20, tHi = js.max_temp + 10;
+    setMeter(c.temp, (js.temp - tLo) / (tHi - tLo), js.temp.toFixed(1) + ' °C', js.faults.includes('overheat') ? 'over' : js.temp > js.max_temp - 10 ? 'hot' : '', (js.max_temp - tLo) / (tHi - tLo));
+
+    let b = ['ok', '正常'];
+    if (!js.torque) b = ['gray', '脱力中'];
+    else if (js.faults.length) b = ['err', js.faults.map(f => FAULT_JA[f] || f).join('・') + 'で出力を絞り中'];
+    else if (js.ol_frac > 0 || js.oc_frac > 0) b = ['warn', js.ol_frac >= js.oc_frac ? `過負荷まで ${Math.round(js.ol_frac * 100)} %` : `過電流まで ${Math.round(js.oc_frac * 100)} %`];
+    else if (Math.abs(js.vel) > 1) b = ['gray', '移動中'];
+    c.badge.className = 'badge ' + b[0]; c.badge.textContent = b[1];
+  }
+}
+
+function select(j) {
+  sel = j;
+  for (const c of CH) c && c.el.classList.toggle('sel', c.j === j);
+  const name = MODEL.joints[j];
+  $('traceTitle').textContent = `時間で見る ・ #${j + 1} ${JA[name]}`;
+  highlight();
+}
+
+/* ============================== 1: commands ============================== */
+function buildCommands() {
+  const host = $('poses');
+  for (const [k, v] of Object.entries(MODEL.poses)) {
+    const [t, s] = POSE_JA[k] || [k, ''];
+    const b = document.createElement('button');
+    b.className = 'btn'; b.innerHTML = `${t}<small>${s}</small>`;
+    b.onclick = () => { const goals = {}; v.forEach((d, i) => goals[MODEL.joints[i]] = d); api('goal', { goals }); };
+    host.appendChild(b);
+  }
+  const g = document.createElement('button');
+  g.className = 'btn'; g.innerHTML = 'グリッパ<small>開く ／ 閉じる</small>';
+  g.onclick = () => { const js = S.joints[5]; api('goal', { goals: { gripper: js.goal > 20 ? 0 : 60 } }); };
+  host.appendChild(g);
+
+  document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
+    const js = S.joints[sel];
+    api('goal', { goals: { [js.name]: js.goal + Number(b.dataset.step) } });
+  });
+  document.querySelectorAll('#regs input').forEach(inp => inp.addEventListener('change', () => {
+    api('regs', { regs: { [inp.dataset.reg]: Number(inp.value) } });
+  }));
+  $('regsReset').onclick = () => api('regs', { regs: { Goal_Velocity: 0, Acceleration: 254, P_Coefficient: 16, D_Coefficient: 32, Torque_Limit: 1000 } });
+  $('floorChk').onchange = e => api('world', { floor: e.target.checked });
+  $('payload').oninput = e => { $('payloadV').textContent = e.target.value + ' g'; };
+  $('payload').onchange = e => api('world', { payload_kg: Number(e.target.value) / 1000 });
+  $('resetBtn').onclick = () => { hist.length = 0; api('reset'); };
+
+  document.querySelectorAll('#rtfSeg button').forEach(b => b.onclick = () => api('run', { rtf: Number(b.dataset.rtf) }));
+  $('pauseBtn').onclick = () => api('run', { paused: !S.paused });
+  $('torqueBtn').onclick = () => api('torque', { on: !S.joints[0].torque });
+  addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    if (e.code === 'Space') { e.preventDefault(); $('pauseBtn').click(); }
+    if (e.code === 'Escape') api('torque', { on: false });
+  });
+}
+
+function renderCommands() {
+  for (const [reg, v] of Object.entries(S.regs)) {
+    const inp = $('r_' + reg);
+    if (inp && document.activeElement !== inp) inp.value = v;
+  }
+  const r = S.regs;
+  $('rv_Goal_Velocity').textContent = r.Goal_Velocity ? `${(r.Goal_Velocity * 360 / 4096).toFixed(0)} °/s` : '制限なし';
+  $('rv_Acceleration').textContent = r.Acceleration ? `${(r.Acceleration * 100 * 360 / 4096).toFixed(0)} °/s²` : '制限なし';
+  $('rv_Torque_Limit').textContent = `${(r.Torque_Limit / 10).toFixed(0)} %`;
+  document.querySelectorAll('#rtfSeg button').forEach(b => b.classList.toggle('on', Number(b.dataset.rtf) === S.rtf));
+  $('pauseBtn').classList.toggle('on', S.paused);
+  $('pauseBtn').firstChild.textContent = S.paused ? '再開 ' : '一時停止 ';
+  const on = S.joints[0].torque;
+  $('torqueBtn').className = on ? 'btn' : 'btn primary';
+  $('torqueBtn').firstChild.textContent = on ? '脱力 ' : '力を入れる ';
+  $('floorChk').checked = S.floor.on;
+  $('hT').textContent = S.t.toFixed(2); $('hV').textContent = S.supply_v.toFixed(1);
+  $('hA').textContent = S.total_current.toFixed(2); $('hF').textContent = S.floor.force.toFixed(1);
+
+  const msg = $('armMsg');
+  const faults = S.joints.filter(j => j.faults.length);
+  if (!on) { msg.className = 'arm-msg warn'; msg.textContent = '脱力中。重力で垂れ下がります'; msg.style.display = 'block'; }
+  else if (faults.length) { msg.className = 'arm-msg'; msg.textContent = faults.map(j => `${JA[j.name]}: ${j.faults.map(f => FAULT_JA[f]).join('・')}`).join(' ／ ') + '。新しい指令で解除されます'; msg.style.display = 'block'; }
+  else if (S.paused) { msg.className = 'arm-msg warn'; msg.textContent = '一時停止中'; msg.style.display = 'block'; }
+  else msg.style.display = 'none';
+}
+
+/* ============================== 3: arm view ============================== */
+const view = $('arm');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+view.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(css('--bg'));
+const camera = new THREE.PerspectiveCamera(40, 1, 0.005, 20);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.12;
+const HOME_CAM = { pos: new THREE.Vector3(0.42, 0.34, 0.46), tgt: new THREE.Vector3(0.0, 0.12, 0.08) };
+function resetView() {
+  if (S) {                       // frame base..tool from the side of the arm (MuJoCo z-up -> three y-up)
+    const tx = S.tcp[0] * 0.5 + 0.02, ty = S.tcp[1] * 0.5, tz = Math.max(0.08, S.tcp[2] * 0.5 + 0.06);
+    const yaw = Math.atan2(S.tcp[1], S.tcp[0]);
+    const sx = -Math.sin(yaw), sy = Math.cos(yaw), d = 0.62;
+    HOME_CAM.tgt.set(tx, tz, -ty);
+    HOME_CAM.pos.set(tx + sx * d * 0.82 - Math.cos(yaw) * 0.12, tz + 0.26, -(ty + sy * d * 0.82 - Math.sin(yaw) * 0.12));
+  }
+  camera.position.copy(HOME_CAM.pos); controls.target.copy(HOME_CAM.tgt); controls.update();
+}
+
+scene.add(new THREE.HemisphereLight(0xdfe6ee, 0x26221e, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(0.5, 1.2, 0.35); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -0.6, right: 0.6, top: 0.6, bottom: -0.6, near: 0.1, far: 3 });
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+
+// MuJoCo is z-up in metres; three is y-up
+const world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world);
+const actualRoot = new THREE.Group(), ghostRoot = new THREE.Group();
+world.add(actualRoot, ghostRoot);
+
+const COL = { printed: 0xc9c4b8, servo: 0x2a2a2e, goal: new THREE.Color(css('--c-goal')), accent: new THREE.Color(css('--accent')) };
+const bodyGroups = [], ghostGroups = [], bodyMats = [];
+const pickables = [];
+let contactMeshes = [], payloadMesh = null, selRing = null;
+
+function buildFloor(z) {
+  const g = new THREE.Group(); g.position.z = z; world.add(g);
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.6), new THREE.MeshStandardMaterial({ color: 0x2b2b2d, roughness: 0.95 }));
+  plane.receiveShadow = true; g.add(plane);
+  const mk = (size, div, color, opacity, dz) => {
+    const gh = new THREE.GridHelper(size, div, color, color);
+    gh.material.transparent = true; gh.material.opacity = opacity; gh.material.depthWrite = false;
+    gh.rotation.x = Math.PI / 2; gh.position.z = dz; g.add(gh);
+  };
+  mk(1.0, 100, 0x6e6e72, 0.16, 0.0002);
+  mk(1.0, 10, 0x9d9d9d, 0.42, 0.0004);
+  // reach ring at the arm's longest stretch, a rough sense of scale
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.395, 0.398, 128), new THREE.MeshBasicMaterial({ color: 0x6e6e72, transparent: true, opacity: 0.5 }));
+  ring.position.set(0.0388, 0, 0.0006); g.add(ring);
+}
+
+async function loadMesh(id) {
+  const buf = await (await fetch('/api/mesh/' + id)).arrayBuffer();
+  const [vn, fn] = new Uint32Array(buf, 0, 2);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(buf, 8, vn * 3), 3));
+  geo.setIndex(new THREE.BufferAttribute(new Uint32Array(buf, 8 + vn * 12, fn * 3), 1));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+async function buildArm() {
+  const ids = [...new Set(MODEL.geoms.map(g => g.mesh))];
+  const geos = {};
+  await Promise.all(ids.map(async id => { geos[id] = await loadMesh(id); }));
+  for (let b = 0; b < MODEL.bodies.length; b++) {
+    const a = new THREE.Group(), gh = new THREE.Group();
+    actualRoot.add(a); ghostRoot.add(gh);
+    bodyGroups.push(a); ghostGroups.push(gh);
+    bodyMats.push({
+      printed: new THREE.MeshStandardMaterial({ color: COL.printed, roughness: 0.62, metalness: 0.0, flatShading: true }),
+      servo: new THREE.MeshStandardMaterial({ color: COL.servo, roughness: 0.45, metalness: 0.1, flatShading: true }),
+    });
+  }
+  const ghostMat = new THREE.MeshBasicMaterial({ color: COL.goal, transparent: true, opacity: 0.2, depthWrite: false });
+  for (const g of MODEL.geoms) {
+    const kind = g.mesh_name.startsWith('sts3215') ? 'servo' : 'printed';
+    const m = new THREE.Mesh(geos[g.mesh], bodyMats[g.body][kind]);
+    m.position.fromArray(g.pos); m.quaternion.set(g.quat[1], g.quat[2], g.quat[3], g.quat[0]);
+    m.castShadow = true; m.receiveShadow = true;
+    m.userData.joint = MODEL.body_joint[g.body];
+    bodyGroups[g.body].add(m); pickables.push(m);
+    if (MODEL.body_joint[g.body] >= 0) {               // the base never moves: no ghost for it
+      const gm = new THREE.Mesh(geos[g.mesh], ghostMat);
+      gm.position.copy(m.position); gm.quaternion.copy(m.quaternion); gm.renderOrder = 2;
+      ghostGroups[g.body].add(gm);
+    }
+  }
+  selRing = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.0012, 8, 64), new THREE.MeshBasicMaterial({ color: COL.accent, depthTest: false, transparent: true, opacity: 0.9 }));
+  selRing.renderOrder = 3; world.add(selRing);
+  payloadMesh = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.03), new THREE.MeshStandardMaterial({ color: 0x6e6e72, roughness: 0.8 }));
+  payloadMesh.castShadow = true; world.add(payloadMesh);
+}
+
+function placeBodies(groups, poses) {
+  for (let b = 0; b < groups.length; b++) {
+    const p = poses[b];
+    groups[b].position.set(p[0], p[1], p[2]);
+    groups[b].quaternion.set(p[4], p[5], p[6], p[3]);
+  }
+}
+
+function highlight() {
+  if (!MODEL || !bodyMats.length) return;
+  MODEL.body_joint.forEach((j, b) => {
+    const on = j === sel;
+    for (const m of Object.values(bodyMats[b])) { m.emissive.copy(on ? COL.accent : new THREE.Color(0)); m.emissiveIntensity = on ? 0.22 : 0; }
+  });
+}
+
+const contactGeo = new THREE.SphereGeometry(1, 12, 8);
+const contactMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(css('--danger-text')) });
+function renderArm() {
+  placeBodies(bodyGroups, S.bodies);
+  placeBodies(ghostGroups, S.ghost);
+  const lagMax = Math.max(...S.joints.map(j => Math.abs(j.goal - j.q)));
+  ghostRoot.visible = ghostOn && lagMax > 0.3;
+  // contacts
+  while (contactMeshes.length < S.floor.contacts.length) { const m = new THREE.Mesh(contactGeo, contactMat); world.add(m); contactMeshes.push(m); }
+  contactMeshes.forEach((m, i) => {
+    const c = S.floor.contacts[i];
+    m.visible = !!c;
+    if (c) { m.position.set(c[0], c[1], c[2] + 0.001); m.scale.setScalar(0.003 + Math.min(0.006, c[3] * 0.002)); }
+  });
+  payloadMesh.visible = S.payload_kg > 0;
+  if (payloadMesh.visible) { payloadMesh.position.set(S.tcp[0], S.tcp[1], S.tcp[2] - 0.02); payloadMesh.scale.setScalar(0.6 + S.payload_kg * 1.2); }
+  // ring around the selected joint axis (joint = body origin, axis = local z)
+  const b = MODEL.body_joint.indexOf(sel);
+  if (b >= 0) { selRing.visible = true; selRing.position.copy(bodyGroups[b].position); selRing.quaternion.copy(bodyGroups[b].quaternion); }
+}
+
+let ghostOn = true;
+$('ghostBtn').onclick = () => { ghostOn = !ghostOn; $('ghostBtn').classList.toggle('on', ghostOn); };
+$('viewBtn').onclick = resetView;
+
+// click a link to select its joint
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', e => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects(pickables, false)[0];
+  if (hit && hit.object.userData.joint >= 0) select(hit.object.userData.joint);
+});
+
+const tmpV = new THREE.Vector3();
+function placeLabel() {
+  const lab = $('selLabel');
+  if (!selRing || !selRing.visible) { lab.style.display = 'none'; return; }
+  selRing.getWorldPosition(tmpV); tmpV.project(camera);
+  const r = renderer.domElement.getBoundingClientRect();
+  lab.style.display = 'block';
+  lab.style.left = ((tmpV.x + 1) / 2 * r.width + 24) + 'px';
+  lab.style.top = ((1 - tmpV.y) / 2 * r.height) + 'px';
+  const js = S.joints[sel];
+  lab.textContent = `#${sel + 1} ${JA[js.name]}  ${fmt(js.q)}°`;
+}
+
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+  sizeTrace();
+}
+new ResizeObserver(resize).observe(view);
+
+/* ============================== 4: trace ============================== */
+const cv = $('traceCv'), cx = cv.getContext('2d');
+function sizeTrace() {
+  const r = $('trace').getBoundingClientRect(), d = Math.min(2, devicePixelRatio);
+  cv.width = r.width * d; cv.height = r.height * d; cx.setTransform(d, 0, 0, d, 0, 0);
+}
+new ResizeObserver(sizeTrace).observe($('trace'));
+
+function drawTrace() {
+  const W = cv.clientWidth, H = cv.clientHeight;
+  cx.clearRect(0, 0, W, H);
+  if (!hist.length) return;
+  const L = 56, R = 64, top = 34, gap = 22, bot = 22;
+  const h1 = (H - top - gap - bot) * 0.6, h2 = (H - top - gap - bot) * 0.4;
+  const y1 = top, y2 = top + h1 + gap;
+  const tEnd = hist[hist.length - 1][0], span = 10, tBeg = tEnd - span;
+  const X = t => L + (t - tBeg) / span * (W - L - R);
+  const base = 1 + sel * 5;
+  const rows = hist.filter(r => r[0] >= tBeg);
+  // angle range: fit goal / actual with a little margin
+  let lo = Infinity, hi = -Infinity;
+  for (const r of rows) for (const k of [0, 1, 2]) { lo = Math.min(lo, r[base + k]); hi = Math.max(hi, r[base + k]); }
+  const pad = Math.max(2, (hi - lo) * 0.12); lo -= pad; hi += pad;
+  const Y1 = v => y1 + h1 - (v - lo) / (hi - lo) * h1;
+  const curMax = MODEL.servo.stall_a;
+  const Yd = v => y2 + h2 - Math.min(1, Math.abs(v) / 100) * h2;
+  const Yc = v => y2 + h2 - Math.min(1, Math.abs(v) / curMax) * h2;
+
+  cx.font = `11px ${css('--font-mono')}`;
+  // frames
+  cx.strokeStyle = css('--divider'); cx.lineWidth = 1;
+  for (const [y, h] of [[y1, h1], [y2, h2]]) { cx.strokeRect(L + 0.5, y + 0.5, W - L - R, h); }
+  // time ticks
+  cx.fillStyle = css('--text-faint'); cx.textAlign = 'center';
+  for (let t = Math.ceil(tBeg); t <= tEnd; t++) {
+    const x = X(t); cx.fillRect(x, y2 + h2, 1, 4);
+    cx.fillText(`${(t - tEnd).toFixed(0)} s`, x, y2 + h2 + 15);
+  }
+  // angle axis labels
+  cx.textAlign = 'right';
+  cx.fillText(`${hi.toFixed(0)}°`, L - 6, y1 + 9); cx.fillText(`${lo.toFixed(0)}°`, L - 6, y1 + h1);
+  cx.textAlign = 'left';
+  cx.textAlign = 'right';
+  cx.fillText('100 %', L - 6, y2 + 9); cx.fillStyle = css('--warn-text'); cx.fillText(`${curMax} A`, L - 6, y2 + 22);
+  cx.fillStyle = css('--text-faint'); cx.fillText('0', L - 6, y2 + h2);
+  cx.textAlign = 'left';
+  // overload line
+  const ol = S.joints[sel].overload_pct;
+  cx.strokeStyle = css('--danger-text'); cx.globalAlpha = 0.55; cx.setLineDash([3, 3]);
+  cx.beginPath(); cx.moveTo(L, Yd(ol) + 0.5); cx.lineTo(W - R, Yd(ol) + 0.5); cx.stroke();
+  cx.setLineDash([]); cx.globalAlpha = 1;
+  cx.fillStyle = css('--danger-text'); cx.fillText(`過負荷 ${ol} %`, W - R + 6, Yd(ol) + 4);
+
+  const line = (k, Y, color, w, dash) => {
+    cx.strokeStyle = color; cx.lineWidth = w; cx.setLineDash(dash || []);
+    cx.beginPath();
+    rows.forEach((r, i) => { const x = X(r[0]), y = Y(r[base + k]); i ? cx.lineTo(x, y) : cx.moveTo(x, y); });
+    cx.stroke(); cx.setLineDash([]);
+  };
+  line(0, Y1, css('--c-goal'), 1.5, [5, 3]);
+  line(1, Y1, css('--c-sp'), 1);
+  line(2, Y1, css('--c-act'), 2);
+  line(3, Yd, css('--text-muted'), 1.25);
+  line(4, Yc, css('--warn-text'), 1.25);
+  // inline labels at the right end of each line
+  const last = rows[rows.length - 1];
+  const tag = (txt, y, color) => { cx.fillStyle = color; cx.fillText(txt, W - R + 6, y + 4); };
+  const lab = [[`指令 ${fmt(last[base])}°`, Y1(last[base]), css('--c-goal')],
+               [`実際 ${fmt(last[base + 2])}°`, Y1(last[base + 2]), css('--c-act')]].sort((a, b) => a[1] - b[1]);
+  if (lab[1][1] - lab[0][1] < 13) lab[1][1] = lab[0][1] + 13;
+  lab.forEach(l => tag(...l));
+  const key = (x, y, txt, color, dash) => {
+    cx.strokeStyle = color; cx.lineWidth = 2; cx.setLineDash(dash || []);
+    cx.beginPath(); cx.moveTo(x, y - 4); cx.lineTo(x + 16, y - 4); cx.stroke(); cx.setLineDash([]);
+    cx.fillStyle = color; cx.fillText(txt, x + 21, y); return x + 21 + cx.measureText(txt).width + 14;
+  };
+  let kx = L + 8;
+  kx = key(kx, y1 + 14, '指令', css('--c-goal'), [5, 3]);
+  kx = key(kx, y1 + 14, '内部の目標', css('--c-sp'));
+  key(kx, y1 + 14, '実際', css('--c-act'));
+  kx = key(L + 8, y2 + 14, '出力 [%]', css('--text-muted'));
+  key(kx, y2 + 14, '電流 [A]', css('--warn-text'));
+}
+
+/* ============================== loop ============================== */
+async function poll() {
+  for (;;) {
+    try {
+      const r = await fetch('/api/state?since=' + seq);
+      S = await r.json();
+      if (S.seq < seq) hist.length = 0;              // the sim was rebuilt
+      seq = S.seq;
+      for (const row of S.hist) hist.push(row);
+      if (hist.length > HIST_KEEP) hist.splice(0, hist.length - HIST_KEEP);
+      if (hist.length && hist[hist.length - 1][0] < (hist[0] || [0])[0]) hist.length = 0;
+      renderChannels(); renderCommands(); renderArm();
+    } catch (e) {
+      const msg = $('armMsg'); msg.className = 'arm-msg'; msg.textContent = 'シミュレータのサーバに繋がりません'; msg.style.display = 'block';
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    await new Promise(r => setTimeout(r, 30));
+  }
+}
+function frame() {
+  controls.update();
+  if (S) { placeLabel(); drawTrace(); }
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+(async () => {
+  MODEL = await (await fetch('/api/model')).json();
+  buildFloor(MODEL.floor_z);
+  buildChannels(); buildCommands();
+  await buildArm();
+  S = await (await fetch('/api/state?since=0')).json();
+  resetView(); resize();
+  select(sel);
+  S = null;
+  poll(); frame();
+})();
+</script>
+</body>
+</html>

@@ -27,6 +27,14 @@
       "port": 8023
     },
     {
+      "name": "so101-sim",
+      "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "scripts/so101_sim_server.py"
+      ],
+      "port": 8025
+    },
+    {
       "name": "so101-follow",
       "runtimeExecutable": ".venv-so101\\Scripts\\python.exe",
       "runtimeArgs": [

@@ -86,6 +86,11 @@ tests/
 |---|---|---|---|
 | `ui.html`（`/`） | `server.py` :8000（Quest 開発時は :8001） | 🦾 myCobot + ✋ ハンド + SO-101 | 統一 UI。6 ワークスペースタブ（SO-101 タブは `/so101/*` API） |
 | `hand.html`（`/hand`） | 同上（同一サーバ） | ✋ ハンドのみ | Quest 用軽量 teleop（three.js 無し） |
+| `so101_sim.html` | `so101_sim_server.py` :8025（`.venv-so101`） | SO-101（仮想のみ） | STS3215 サーボモデル + 床接触の物理を 1 kHz で回す 3D シミュレータ。画面は「1 指令 → 2 サーボ → 3 アーム → 4 時間」の順に列を並べる |
+
+- `so101_sim.html` は別ページの例外（2026-10-24 ユーザー指示「既存のものは使わず、レイアウトで分からせる新しい UI を」）。
+  物理は `src/robots/so101/sim/floor_world.py` の `FloorArm`（`servo_sim.SimArm` に全リンクの床接触を足したもの）。
+  ハードには一切触れない。戻り導線はホーム（:8010）のランチャー。
 
 - SO-101 は `server.py` の `So101Subsystem` として統合（`/so101/state|jog|ik|home|release|frame.png`）。
   driver は `--so101-driver {sim,mock,real,off}`（default sim=MuJoCo、**lazy-init**: 初回 /so101/* リクエストでロード）。

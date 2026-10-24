@@ -40,6 +40,7 @@ PROBES = {
     "8001": "http://127.0.0.1:8001/",
     "8012": "http://127.0.0.1:8012/cal/state",
     "8013": "http://127.0.0.1:8013/state",
+    "8025": "http://127.0.0.1:8025/api/model",
 }
 
 LOCK = threading.Lock()
