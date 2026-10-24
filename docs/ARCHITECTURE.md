@@ -91,6 +91,8 @@ tests/
 - `so101_sim.html` は別ページの例外（2026-10-24 ユーザー指示「既存のものは使わず、レイアウトで分からせる新しい UI を」）。
   物理は `src/robots/so101/sim/floor_world.py` の `FloorArm`（`servo_sim.SimArm` に全リンクの床接触を足したもの）。
   ハードには一切触れない。戻り導線はホーム（:8010）のランチャー。
+  ヘッダの立方体アイコンは model-lab（`Projects/Web/model-lab`、:3000）の `models/so101` を開く。
+  形を直すのは model-lab 側（`edits.py`）。シミュレータはまだ直した形を読まない（元の URDF のまま）。
 
 - SO-101 は `server.py` の `So101Subsystem` として統合（`/so101/state|jog|ik|home|release|frame.png`）。
   driver は `--so101-driver {sim,mock,real,off}`（default sim=MuJoCo、**lazy-init**: 初回 /so101/* リクエストでロード）。

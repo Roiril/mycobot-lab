@@ -60,6 +60,7 @@ header{grid-area:top;display:flex;align-items:center;gap:18px;padding:0 var(--pa
 .ib{display:inline-grid;place-items:center;width:30px;height:28px;background:var(--surface-3);border:var(--bw) solid var(--border);border-radius:var(--radius);cursor:pointer;color:var(--text-muted);transition:background var(--t-fast) var(--ease),color var(--t-fast) var(--ease)}
 .ib:hover{background:var(--surface-2);color:var(--text)}
 .ib.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+a.ib{text-decoration:none}
 #torqueBtn{width:auto;padding:0 10px;display:inline-flex;gap:6px;align-items:center}
 #torqueBtn.live{color:var(--ok-text);border-color:var(--ok)}
 #torqueBtn.limp{color:var(--warn-text);border-color:var(--warn);background:rgba(154,125,18,.12)}
@@ -159,6 +160,7 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
   <symbol id="i-limit" viewBox="0 0 16 16"><path d="M2 13h12M2 3h12" stroke-dasharray="2 2"/><path d="M8 13V6M5.5 8.5 8 6l2.5 2.5"/></symbol>
   <symbol id="i-jaw-open" viewBox="0 0 16 16"><path d="M8 14V9M8 9 3.5 2M8 9l4.5-7"/></symbol>
   <symbol id="i-jaw-close" viewBox="0 0 16 16"><path d="M8 14V9M8 9 6.5 2M8 9l1.5-7"/></symbol>
+  <symbol id="i-model" viewBox="0 0 16 16"><path d="M8 1.8 13.5 5v6L8 14.2 2.5 11V5z"/><path d="M2.5 5 8 8.2 13.5 5M8 8.2v6"/></symbol>
   <symbol id="i-chev" viewBox="0 0 10 10"><path d="M3.5 2 6.5 5l-3 3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
 </svg>
 
@@ -172,6 +174,7 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
       <span title="床が腕を押し返す力"><svg class="i"><use href="#i-floor"/></svg><b id="hF">0.0</b>N</span>
     </div>
     <div class="hsp"></div>
+    <a class="ib" id="modelLink" href="http://localhost:3000/?model=so101" target="_blank" rel="noopener" title="model-lab で SO-101 の形を開く（指示を出して部品を直す）"><svg class="i"><use href="#i-model"/></svg></a>
     <div class="seg" id="rtfSeg" title="再生速度">
       <button data-rtf="1" class="on">1×</button><button data-rtf="0.5">½×</button><button data-rtf="0.25">¼×</button><button data-rtf="0.1">⅒×</button>
     </div>
