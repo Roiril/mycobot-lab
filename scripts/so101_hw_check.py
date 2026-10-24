@@ -229,6 +229,44 @@ def stage3(foll, ranges, rep: Report, joints: List[str], step_deg: float = 1.5) 
     return out
 
 
+def move_to_pose(bus, ranges, pose_text: str, rep: Report, timeout_s: float = 25.0) -> bool:
+    """Energize and move to a pose through the real engine (governor on, slow)."""
+    from robots.so101.teleop_engine import TeleopConfig, TeleopEngine
+    deg = [float(v) for v in pose_text.split(",")]
+    say(f"\n[2.5] 姿勢 {deg} へゆっくり移動します（おだやか 30°/s・ガバナ有効）")
+    eng = TeleopEngine(None, bus, ranges, config=TeleopConfig(speed="slow", torque_stagger_s=0.05),
+                       log=lambda m: say("  .. " + m))
+    eng.sync_torque_state()
+    eng.configure_follower()
+    eng.enable_follower_torque_staged()
+    names = JOINTS[:5]
+    target = {}
+    for n, a in zip(names, deg):
+        lo, hi = ranges[n]
+        target[n] = eng.governor.clamp_goal(n, (lo + hi) / 2 + a * 4095 / 360)
+        eng.hold_target[n] = target[n]
+    t0 = time.perf_counter()
+    last = ""
+    while time.perf_counter() - t0 < timeout_s:
+        res = eng.cycle()
+        st = res["follower"]
+        msg = res["governor"].message
+        if msg and msg != last:
+            say("  .. " + msg)
+            last = msg
+        err = max(abs(st[n].pos - target[n]) for n in names if st[n].ok)
+        if err < sts3215.deg_to_ticks(2.0) and all(abs(st[n].vel) < 20 for n in names):
+            break
+        time.sleep(1 / 30)
+    st = eng.follower.read_telemetry()
+    errs = {n: round((st[n].pos - target[n]) * 360 / 4095, 1) for n in names}
+    cur = {n: round(abs(st[n].current), 2) for n in names}
+    states = {n: res["governor"].joints[n].state for n in names}
+    rep.note(f"到達誤差（°、重力のたわみ込み）{errs}")
+    rep.note(f"電流 A {cur} / 状態 {states}")
+    return max(abs(v) for v in errs.values()) < 8.0
+
+
 # ---------------------------------------------------------------------------
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
@@ -237,6 +275,9 @@ def main(argv=None) -> int:
     ap.add_argument("--characterize", action="store_true", help="stage 3: energize and step joints")
     ap.add_argument("--joints", default=",".join(GRAVITY_JOINTS))
     ap.add_argument("--sim", action="store_true", help="run against the simulated arm")
+    ap.add_argument("--pose", default="",
+                    help="before stage 3, move slowly (governed) to these 5 arm angles in deg, "
+                         "e.g. 0,0,0,0,0 = upper arm up, forearm level (gravity-loaded)")
     ap.add_argument("--out", default=str(ROOT / "data" / "so101_hw_check.json"))
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
@@ -259,21 +300,36 @@ def main(argv=None) -> int:
         from robots.so101 import ports as so101_ports
         from robots.so101.teleop_engine import make_bus
         ranges = load_ranges(say)
-        roles = so101_ports.wait_for_ports(args.leader_port, args.follower_port, log=say,
-                                           timeout=30.0)
-        rep.check(roles.confirmed, f"follower={roles.follower} leader={roles.leader}（実測）",
-                  f"follower={roles.follower} leader={roles.leader}（{roles.source}: 実測ではない）")
-        fb = make_bus(roles.follower)
-        fb.connect(handshake=False)
-        lb = make_bus(roles.leader)
-        lb.connect(handshake=False)
-        buses = [fb, lb]
-        foll, lead = wrap_bus(fb, JOINTS), wrap_bus(lb, JOINTS)
+        if args.leader_port == "none":
+            # follower alone: identify it by its 12 V supply, refuse anything else
+            probe = so101_ports.probe_port(args.follower_port)
+            rep.check(probe.ok and probe.volt >= so101_ports.FOLLOWER_MIN_VOLT,
+                      f"follower={args.follower_port}（{probe.volt:.1f}V, {len(probe.motors)} 台）",
+                      f"{args.follower_port} はフォロワーと確認できません（{probe.volt}V {probe.error}）")
+            if not (probe.ok and probe.volt >= so101_ports.FOLLOWER_MIN_VOLT):
+                return 1
+            fb = make_bus(args.follower_port)
+            fb.connect(handshake=False)
+            buses = [fb]
+            foll, lead = wrap_bus(fb, JOINTS), None
+        else:
+            roles = so101_ports.wait_for_ports(args.leader_port, args.follower_port, log=say,
+                                               timeout=30.0)
+            rep.check(roles.confirmed, f"follower={roles.follower} leader={roles.leader}（実測）",
+                      f"follower={roles.follower} leader={roles.leader}（{roles.source}: 実測ではない）")
+            fb = make_bus(roles.follower)
+            fb.connect(handshake=False)
+            lb = make_bus(roles.leader)
+            lb.connect(handshake=False)
+            buses = [fb, lb]
+            foll, lead = wrap_bus(fb, JOINTS), wrap_bus(lb, JOINTS)
         source = "hw"
     try:
         stage1(foll, lead, rep)
         stage2(foll, lead, rep)
         params = None
+        if args.pose:
+            move_to_pose(buses[0] if buses else foll, ranges, args.pose, rep)
         if args.characterize:
             joints = [j for j in args.joints.split(",") if j in JOINTS]
             params = stage3(foll, ranges, rep, joints)
