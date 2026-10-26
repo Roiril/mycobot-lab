@@ -29,8 +29,10 @@
   --c-goal:var(--data-tgt); --c-act:#d6d0c2; --c-sp:var(--text-faint); --c-cur:var(--data-num);
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:var(--fw-reg) var(--fs-base)/1.4 var(--font-ui);user-select:none}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:var(--fw-reg) var(--fs-base)/1.4 var(--font-ui);user-select:none;color-scheme:dark}
 button,input{font:inherit;color:inherit}
+button,a,input,summary{touch-action:manipulation}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
 svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
 
@@ -114,6 +116,28 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
 .bar .trip{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--danger-text);opacity:.8}
 .bar .timer{position:absolute;left:0;bottom:-4px;height:2px;background:var(--warn-text)}
 
+/* selected servo: the plots share the channel column, leaving the arm view intact */
+#servoDetail{padding:12px var(--pad)}
+#servoDetail h2{font-size:var(--fs-base);font-weight:var(--fw-med);margin:0 0 8px}
+.detail-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--gap)}
+.note{font-size:var(--fs-xs);color:var(--text-muted);margin:6px 0;overflow-wrap:anywhere}
+.measurements{display:grid;grid-template-columns:1fr 1fr;gap:5px 16px;margin:8px 0 12px}
+.measurements div{display:flex;justify-content:space-between;gap:6px;min-width:0}
+.measurements dt{color:var(--text-muted);font-size:var(--fs-xs)}
+.measurements dd{margin:0;font:var(--fs-xs) var(--font-mono);white-space:nowrap}
+.plot{margin:12px 0}
+.plot figcaption{font-size:var(--fs-xs);color:var(--text-muted);margin-bottom:5px}
+.plot canvas{display:block;width:100%;height:185px;background:var(--surface)}
+#thermalPlot{height:205px}
+.model-settings{border-top:var(--bw) solid var(--border);padding-top:8px}
+.model-settings summary{cursor:pointer;color:var(--text-muted);padding:4px 0}
+.model-settings a{color:var(--accent)}
+.model-input{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;font-size:var(--fs-xs);color:var(--text-muted)}
+.model-input input{width:84px;min-width:0;background:var(--bg);border:var(--bw) solid var(--border);border-radius:var(--radius-sm);padding:4px 6px;font-family:var(--font-mono)}
+#modelError{color:var(--danger-text)}
+#regsWho{color:var(--text-muted);font-size:var(--fs-xs)}
+#forecastNote{min-height:30px}
+
 /* ---------- arm view ---------- */
 #arm canvas{display:block;width:100%;height:100%}
 .tools{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:5px}
@@ -132,6 +156,28 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
     grid-template-areas:"top top" "arm arm" "cmd servo" "trace trace";height:auto}
   #cmd,#servo{overflow:visible}
   .chev,.hstat{display:none}
+}
+@media (max-width:700px){
+  #app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 45vh auto auto 190px;grid-template-areas:"top" "arm" "cmd" "servo" "trace"}
+  header{gap:8px;flex-wrap:wrap;min-width:0;padding:8px var(--pad);padding-top:max(8px,env(safe-area-inset-top))}
+  .brand{font-size:var(--fs-base)}
+  .hsp{display:none}
+  #modelLink{margin-left:auto}
+  #rtfSeg{margin-left:auto}
+  #cmd{display:grid;grid-template-columns:1fr 1fr;min-width:0}
+  #cmd .grp{min-width:0;padding:10px 8px}
+  #regs{grid-row:span 2}
+  .sl{grid-template-columns:16px minmax(0,1fr) 55px;gap:4px}
+  .sl output{font-size:var(--fs-2xs)}
+  .ch{grid-template-columns:54px 70px 55px minmax(0,1fr);gap:8px}
+  .who{width:54px;height:54px}
+  .dial{width:70px;height:70px}
+  .mt{grid-template-columns:12px minmax(0,1fr) 40px;gap:4px}
+  .measurements{gap:6px 12px}
+  .ib,.seg button,.steps button,.model-settings summary{min-height:44px}
+  .ghead .ib{width:44px;height:44px}
+  .model-input input{font-size:16px;min-height:44px}
+  #servoDetail{padding-bottom:max(12px,env(safe-area-inset-bottom))}
 }
 </style>
 <script type="importmap">{"imports":{"three":"/static/vendor/three/build/three.module.js"}}</script>
@@ -193,13 +239,14 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
       </div>
     </div>
     <div class="grp" id="regs">
-      <div class="ghead"><svg class="i"><use href="#i-torque"/></svg><button class="ib" id="regsReset" title="サーボの設定を初期値に戻す"><svg class="i"><use href="#i-reset"/></svg></button></div>
-      <canvas id="prof" title="90° 動かすときの速さの変化（最高速度と加速度で決まる）"></canvas>
-      <div class="sl" title="最高速度 Goal_Velocity（右端は制限なし）"><svg class="i"><use href="#i-vmax"/></svg><input type="range" data-reg="Goal_Velocity" min="20" max="3400" step="20"><output></output></div>
-      <div class="sl" title="加速度 Acceleration（右端は制限なし）"><svg class="i"><use href="#i-acc"/></svg><input type="range" data-reg="Acceleration" min="1" max="254"><output></output></div>
-      <div class="sl" title="P ゲイン：ずれに対する硬さ"><svg class="i"><use href="#i-spring"/></svg><input type="range" data-reg="P_Coefficient" min="1" max="64"><output></output></div>
-      <div class="sl" title="D ゲイン：揺れを抑える"><svg class="i"><use href="#i-damper"/></svg><input type="range" data-reg="D_Coefficient" min="0" max="128"><output></output></div>
-      <div class="sl" title="トルク上限 Torque_Limit"><svg class="i"><use href="#i-limit"/></svg><input type="range" data-reg="Torque_Limit" min="0" max="1000" step="10"><output></output></div>
+      <div class="ghead"><svg class="i"><use href="#i-torque"/></svg><span id="regsWho"></span><button class="ib" id="regsReset" title="選択中のサーボの設定を初期値に戻す"><svg class="i"><use href="#i-reset"/></svg></button></div>
+      <canvas id="prof" role="img" aria-label="90度の指令速度プロファイルの参考図"></canvas>
+      <div class="note">90°の指令参考。到達時間は負荷で変わります。</div>
+      <div class="sl" title="最高速度 Goal_Velocity（右端は機械の最大速度）"><svg class="i"><use href="#i-vmax"/></svg><input type="range" data-reg="Goal_Velocity" aria-label="選択中のサーボの最高速度" min="1" max="3400" step="1"><output></output></div>
+      <div class="sl" title="加速度 Acceleration（右端はモデルの最大加速度）"><svg class="i"><use href="#i-acc"/></svg><input type="range" data-reg="Acceleration" aria-label="選択中のサーボの加速度" min="1" max="254"><output></output></div>
+      <div class="sl" title="P ゲイン：ずれに対する硬さ"><svg class="i"><use href="#i-spring"/></svg><input type="range" data-reg="P_Coefficient" aria-label="選択中のサーボのPゲイン" min="1" max="64"><output></output></div>
+      <div class="sl" title="D ゲイン：揺れを抑える"><svg class="i"><use href="#i-damper"/></svg><input type="range" data-reg="D_Coefficient" aria-label="選択中のサーボのDゲイン" min="0" max="128"><output></output></div>
+      <div class="sl" title="トルク上限 Torque_Limit"><svg class="i"><use href="#i-limit"/></svg><input type="range" data-reg="Torque_Limit" aria-label="選択中のサーボのトルク上限" min="0" max="1000" step="1"><output></output></div>
     </div>
     <div class="grp">
       <div class="ghead"><button class="ib on" id="floorBtn" title="床に当たる / すり抜ける" style="margin-left:0"><svg class="i"><use href="#i-floor"/></svg></button>
@@ -209,7 +256,35 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
   </section>
   <div class="chev" style="grid-area:servo"><svg><use href="#i-chev"/></svg></div>
 
-  <section id="servo"><div id="channels"></div></section>
+  <section id="servo">
+    <div id="channels"></div>
+    <div id="servoDetail">
+      <div class="detail-head"><h2 id="detailWho">肘</h2><span class="note">推定・未校正</span></div>
+      <dl class="measurements">
+        <div><dt>実トルク</dt><dd id="mTorque">—</dd></div>
+        <div><dt>速度</dt><dd id="mSpeed">—</dd></div>
+        <div><dt>発熱 / 放熱</dt><dd id="mHeat">—</dd></div>
+        <div><dt>温度変化</dt><dd id="mRate">—</dd></div>
+        <div><dt>通電時間</dt><dd id="mTime">—</dd></div>
+        <div><dt>時定数</dt><dd id="mTau">—</dd></div>
+      </dl>
+      <figure class="plot"><figcaption>速度とトルク <span class="note">● 現在</span></figcaption><canvas id="envelopePlot" role="img" aria-label="選択したサーボの速度と正負トルクの限界。破線は熱平衡の目安"></canvas></figure>
+      <figure class="plot"><figcaption>温度 <span id="tempNow" class="mono"></span></figcaption><canvas id="thermalPlot" role="img" aria-label="過去10分の温度履歴と今後10分の発熱一定・脱力の予測"></canvas></figure>
+      <div class="note">発熱一定の予測。保護後の動作は含まない</div>
+      <div id="forecastNote" class="note" aria-live="polite">予測を取得中…</div>
+      <details class="model-settings">
+        <summary>定数と仮定</summary>
+        <p class="note">熱抵抗と熱容量は選択した個体の仮定値です。実機測定による校正はしていません。</p>
+        <p class="note">温度は内部の等価温度です。熱平衡の目安には過負荷・過電流の保護条件を含みません。</p>
+        <label class="model-input">熱抵抗 Rθ [°C/W]<input id="rTh" name="r_th" type="number" min="0.5" max="15" step="0.1" inputmode="decimal" aria-label="選択中のサーボの熱抵抗"></label>
+        <label class="model-input">熱容量 Cθ [J/°C]<input id="cTh" name="c_th" type="number" min="5" max="100" step="1" inputmode="decimal" aria-label="選択中のサーボの熱容量"></label>
+        <label class="model-input">周囲温度 [°C]・全軸<input id="ambient" name="ambient_c" type="number" min="-10" max="50" step="0.5" inputmode="decimal" aria-label="全サーボの周囲温度"></label>
+        <p class="note mono" id="motorConstants"></p>
+        <p class="note" id="modelError" role="status"></p>
+        <a href="/docs/servo-model" target="_blank" rel="noopener">モデルの仮定と出典</a>
+      </details>
+    </div>
+  </section>
   <div class="chev" style="grid-area:arm"><svg><use href="#i-chev"/></svg></div>
 
   <section id="arm">
@@ -241,14 +316,18 @@ const icon = (id, cls = 'i') => `<svg class="${cls}"><use href="#${id}"/></svg>`
 const NS = 'http://www.w3.org/2000/svg';
 const TICK_DEG = 360 / 4096;
 
-let MODEL = null, S = null, seq = 0, sel = 2;
+let MODEL = null, S = null, seq = 0, sel = 2, generation = null, thermalSeq = 0;
 const hist = [];                       // rows: [t, (goal, sp, q, duty, cur) x 6]
+const thermalHist = [];                // rows: [t, temperature x 6], 1 Hz
+let analysis = null, analysisRequest = 0, analysisController = null, analysisNextAt = 0;
 const HIST_KEEP = 2400;
 const THUMB = {};                      // joint index -> dataURL of the arm with that link lit
 
 async function api(op, body = {}) {
   const r = await fetch('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op, ...body }) });
-  return r.json();
+  const data = await r.json();
+  if (!r.ok || data.error) throw new Error(data.error || '設定を送信できませんでした');
+  return data;
 }
 const effortColor = f => f >= 1 ? css('--danger-text') : f >= 0.7 ? css('--warn-text') : css('--text-muted');
 
@@ -332,6 +411,7 @@ function buildChannels() {
     const name = MODEL.joints[j];
     const row = document.createElement('div');
     row.className = 'ch'; row.title = `#${j + 1} ${JA[name]}`;
+    row.tabIndex = 0; row.setAttribute('role', 'button'); row.setAttribute('aria-label', row.title + 'を選択');
     row.innerHTML = `
       <div class="who"><img src="${THUMB[j]}" alt=""><span class="n">${j + 1}</span></div>
       <svg class="dial" viewBox="0 0 78 78"></svg>
@@ -355,6 +435,7 @@ function buildChannels() {
     Object.values(d).forEach(n => svg.appendChild(n));
     const c = { row, j, svg, d, g: row.querySelector('.g'), a: row.querySelector('.a'), f: row.querySelector('.f'), m: row.querySelectorAll('.mt'), rng: null, dragging: false };
     row.addEventListener('click', () => select(j));
+    row.addEventListener('keydown', e => { if (e.code === 'Enter' || e.code === 'Space') { e.preventDefault(); e.stopPropagation(); select(j); } });
     bindDial(c);
     CH[j] = c;
   }
@@ -439,8 +520,18 @@ function renderChannels() {
 
 function select(j) {
   sel = j;
-  CH.forEach(c => c && c.row.classList.toggle('sel', c.j === j));
+  CH.forEach(c => { if (c) { c.row.classList.toggle('sel', c.j === j); c.row.setAttribute('aria-pressed', String(c.j === j)); } });
   $('traceWho').innerHTML = `<img src="${THUMB[j]}" alt="" title="#${j + 1} ${JA[MODEL.joints[j]]}">`;
+  $('regsWho').textContent = `#${j + 1} ${JA[MODEL.joints[j]]}`;
+  $('detailWho').textContent = `#${j + 1} ${JA[MODEL.joints[j]]}`;
+  analysis = null;
+  analysisController?.abort();
+  analysisRequest++;
+  analysisNextAt = 0;
+  $('forecastNote').textContent = '予測を取得中…';
+  $('modelError').textContent = '';
+  if (S) { renderCommands(true); renderDetail(true); }
+  pollAnalysis();
   highlight();
 }
 
@@ -469,35 +560,52 @@ function buildCommands(poseImgs) {
       let v = Number(inp.value);
       // the right end of speed / acceleration means "no limit" (register value 0)
       if ((inp.dataset.reg === 'Goal_Velocity' && v >= 3400) || (inp.dataset.reg === 'Acceleration' && v >= 254)) v = 0;
-      api('regs', { regs: { [inp.dataset.reg]: v } });
+      api('regs', { joint: MODEL.joints[sel], regs: { [inp.dataset.reg]: v } }).catch(modelError);
     });
   });
-  $('regsReset').onclick = () => api('regs', { regs: { Goal_Velocity: 0, Acceleration: 254, P_Coefficient: 16, D_Coefficient: 32, Torque_Limit: 1000 } });
+  $('regsReset').onclick = () => api('regs', { joint: MODEL.joints[sel], regs: { Goal_Velocity: 0, Acceleration: 254, P_Coefficient: 16, D_Coefficient: 32, Torque_Limit: 1000 } }).catch(modelError);
+  for (const [id, key] of [['rTh', 'r_th'], ['cTh', 'c_th'], ['ambient', 'ambient_c']]) {
+    $(id).addEventListener('change', async e => {
+      const inp = e.target;
+      if (!inp.value.trim() || !inp.checkValidity()) { inp.reportValidity(); return; }
+      const joint = MODEL.joints[sel], gen = generation;
+      try {
+        $('modelError').textContent = '';
+        await (id === 'ambient' ? api('world', { ambient_c: Number(inp.value) }) : api('motor', { joint, params: { [key]: Number(inp.value) } }));
+        if (joint === MODEL.joints[sel] && gen === generation) { analysisController?.abort(); analysisNextAt = 0; pollAnalysis(); }
+      } catch (e) { modelError(e); }
+    });
+  }
   $('floorBtn').onclick = () => api('world', { floor: !S.floor.on });
   $('payload').oninput = e => { $('payloadV').textContent = e.target.value + ' g'; };
   $('payload').onchange = e => api('world', { payload_kg: Number(e.target.value) / 1000 });
-  $('resetBtn').onclick = () => { hist.length = 0; api('reset'); };
+  $('resetBtn').onclick = () => api('reset').catch(modelError);
   document.querySelectorAll('#rtfSeg button').forEach(b => b.onclick = () => api('run', { rtf: Number(b.dataset.rtf) }));
   $('pauseBtn').onclick = () => api('run', { paused: !S.paused });
   $('torqueBtn').onclick = () => api('torque', { on: !S.joints[0].torque });
   addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
-    if (e.code === 'Space') { e.preventDefault(); $('pauseBtn').click(); }
     if (e.code === 'Escape') api('torque', { on: false });
+    if (e.target.matches('input:not([type=range]),textarea,summary,button,a')) return;
+    if (e.code === 'Space') { e.preventDefault(); $('pauseBtn').click(); }
   });
+  document.querySelectorAll('button[title],a[title]').forEach(el => {
+    if (!el.hasAttribute('aria-label')) el.setAttribute('aria-label', el.title);
+  });
+  $('payload').setAttribute('aria-label', '先端に吊るす荷物の重さ');
 }
+
+function modelError(e) { $('modelError').textContent = String(e.message || e); }
 
 function regOut(inp) {
   const v = Number(inp.value), o = inp.parentElement.querySelector('output');
   switch (inp.dataset.reg) {
-    case 'Goal_Velocity': o.textContent = v >= 3400 ? '∞' : `${Math.round(v * TICK_DEG)}°/s`; break;
-    case 'Acceleration': o.textContent = v >= 254 ? '∞' : `${Math.round(v * 100 * TICK_DEG)}°/s²`; break;
+    case 'Goal_Velocity': o.textContent = v >= 3400 || v === 0 ? '最大' : `${Math.round(v * TICK_DEG)}°/s`; break;
+    case 'Acceleration': o.textContent = v >= 254 ? '最大' : `${Math.round(v * 100 * TICK_DEG)}°/s²`; break;
     case 'Torque_Limit': o.textContent = `${Math.round(v / 10)}%`; break;
     default: o.textContent = v;
   }
 }
 // velocity over time for a 90 deg move with the current speed / acceleration settings
-const NO_LIMIT_V = 3400, NO_LIMIT_A = 2.0e5;            // what the servo model uses for "0"
 function drawProfile() {
   const cv = $('prof'), d = Math.min(2, devicePixelRatio), W = cv.clientWidth, H = cv.clientHeight;
   if (!W) return;
@@ -505,10 +613,15 @@ function drawProfile() {
   const x = cv.getContext('2d'); x.setTransform(d, 0, 0, d, 0, 0); x.clearRect(0, 0, W, H);
   const vIn = Number(document.querySelector('[data-reg=Goal_Velocity]').value);
   const aIn = Number(document.querySelector('[data-reg=Acceleration]').value);
-  const v = (vIn >= 3400 ? NO_LIMIT_V : vIn) * TICK_DEG, a = (aIn >= 254 ? NO_LIMIT_A : aIn * 100) * TICK_DEG;
+  const p = S?.joints[sel].physics;
+  if (!p) return;
+  const vmax = p.no_load_speed_deg_s;
+  if (vmax <= 0) { x.fillStyle = css('--text-muted'); x.font = `10px ${css('--font-ui')}`; x.fillText('駆動停止中', 8, 20); cv.setAttribute('aria-label', '駆動停止中のため指令速度の参考図は表示していません'); return; }
+  const v = Math.max(0.01, Math.min(vIn >= 3400 || vIn === 0 ? vmax : vIn * TICK_DEG, vmax));
+  const a = (aIn >= 254 ? 2.0e5 : aIn * 100) * TICK_DEG;
   const dist = 90;
   const vp = Math.min(v, Math.sqrt(a * dist)), ta = vp / a, tc = Math.max(0, (dist - vp * ta) / vp), T = 2 * ta + tc;
-  const Tmax = 1.6, VMAX = NO_LIMIT_V * TICK_DEG;
+  const Tmax = Math.max(1.6, T * 1.05), VMAX = Math.max(1, vmax);
   const X = t => 6 + (Math.min(t, Tmax) / Tmax) * (W - 12), Y = s => H - 8 - (s / VMAX) * (H - 16);
   x.strokeStyle = css('--border'); x.lineWidth = 1; x.beginPath(); x.moveTo(6, H - 7.5); x.lineTo(W - 6, H - 7.5); x.stroke();
   x.beginPath(); x.moveTo(X(0), Y(0)); x.lineTo(X(ta), Y(vp)); x.lineTo(X(ta + tc), Y(vp));
@@ -516,13 +629,14 @@ function drawProfile() {
   x.strokeStyle = css('--c-goal'); x.lineWidth = 1.5; x.stroke();
   x.lineTo(X(T), Y(0)); x.closePath(); x.globalAlpha = 0.18; x.fillStyle = css('--c-goal'); x.fill(); x.globalAlpha = 1;
   x.fillStyle = css('--text-muted'); x.font = `10px ${css('--font-mono')}`; x.textAlign = 'right';
-  x.fillText(T > Tmax ? `>${Tmax}s` : `${T.toFixed(2)}s`, W - 8, 13);
+  x.fillText(`参考 ${T.toFixed(2)}s`, W - 8, 13);
+  cv.setAttribute('aria-label', `90度の指令速度プロファイル。最大${v.toFixed(0)}度毎秒。参考時間${T.toFixed(2)}秒。到達時間は負荷で変わります`);
 }
 
-function renderCommands() {
-  for (const [reg, v] of Object.entries(S.regs)) {
+function renderCommands(forceRegs = false) {
+  for (const [reg, v] of Object.entries(S.joints[sel].regs || S.regs)) {
     const inp = document.querySelector(`#regs input[data-reg=${reg}]`);
-    if (!inp || document.activeElement === inp) continue;
+    if (!inp || (!forceRegs && document.activeElement === inp)) continue;
     const shown = reg === 'Goal_Velocity' && v === 0 ? 3400 : reg === 'Acceleration' && v === 0 ? 254 : v;
     if (Number(inp.value) !== shown || !inp.parentElement.querySelector('output').textContent) { inp.value = shown; regOut(inp); drawProfile(); }
   }
@@ -547,7 +661,140 @@ function renderCommands() {
   else if (!on) { st.className = 'state warn'; st.innerHTML = icon('i-power'); st.title = '脱力中'; }
   else if (S.paused) { st.className = 'state warn'; st.innerHTML = icon('i-pause'); st.title = '一時停止中'; }
   else st.className = 'state';
+  drawProfile();
 }
+
+/* ============================== selected servo physics ============================== */
+const number = (v, digits = 1) => Number.isFinite(v) ? fmt(v, digits) : '—';
+function renderDetail(forceInputs = false) {
+  const js = S.joints[sel], p = js.physics;
+  if (!p) return;
+  $('mTorque').textContent = number(p.torque_nm, 2) + ' N·m';
+  $('mSpeed').textContent = number(js.vel) + ' °/s';
+  $('mHeat').textContent = number(p.heat_w, 2) + ' / ' + number(p.cooling_w, 2) + ' W';
+  $('mRate').textContent = number(p.temp_rate_c_s * 60, 2) + ' °C/min';
+  $('mTime').textContent = p.energized_s >= 60 ? number(p.energized_s / 60, 1) + ' min' : number(p.energized_s, 0) + ' s';
+  $('mTau').textContent = number(p.thermal_tau_s, 0) + ' s';
+  $('tempNow').textContent = number(js.temp) + ' °C';
+  for (const [id, val] of [['rTh', p.r_th], ['cTh', p.c_th], ['ambient', p.ambient_c]]) {
+    if (forceInputs || document.activeElement !== $(id)) $(id).value = val;
+  }
+  $('motorConstants').textContent = `銅損の抵抗 ${number(p.copper_resistance_ohm, 2)} Ω · 駆動の等価抵抗 ${number(p.resistance_ohm, 2)} Ω · 停止時上限 ${number(p.stall_torque_nm, 2)} N·m · 無負荷 ${number(p.no_load_speed_deg_s, 0)} °/s`;
+  drawEnvelope(); drawThermal();
+}
+
+async function pollAnalysis() {
+  if (!S || Date.now() < analysisNextAt || (analysisController && !analysisController.signal.aborted)) return;
+  analysisNextAt = Date.now() + 2000;
+  const joint = MODEL.joints[sel], gen = generation, request = ++analysisRequest;
+  const controller = new AbortController(); analysisController = controller;
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const r = await fetch('/api/analysis?joint=' + encodeURIComponent(joint), { signal: controller.signal });
+    if (!r.ok) throw new Error('予測を取得できませんでした');
+    const data = await r.json();
+    if (request !== analysisRequest || joint !== MODEL.joints[sel] || gen !== generation || data.joint !== joint) return;
+    analysis = { ...data, t: S.t };
+    const f = data.forecast;
+    $('forecastNote').textContent = f.trip_in_s === null
+      ? `発熱一定なら平衡 ${number(f.equilibrium_c)} °C。10分以内の過熱到達なし。`
+      : `発熱一定なら過熱温度まで ${number(f.trip_in_s, 0)} s。平衡 ${number(f.equilibrium_c)} °C。`;
+    drawEnvelope(); drawThermal();
+  } catch (e) {
+    if (request !== analysisRequest || gen !== generation) return;
+    analysis = null;
+    $('forecastNote').textContent = '予測を取得できませんでした。自動で再試行します。';
+    drawEnvelope(); drawThermal();
+  } finally {
+    clearTimeout(timeout);
+    if (analysisController === controller) analysisController = null;
+  }
+}
+
+function plotContext(id) {
+  const cv = $(id), W = cv.clientWidth, H = cv.clientHeight, d = Math.min(2, devicePixelRatio);
+  if (!W || !H) return null;
+  if (cv.width !== Math.round(W * d) || cv.height !== Math.round(H * d)) { cv.width = Math.round(W * d); cv.height = Math.round(H * d); }
+  const x = cv.getContext('2d');
+  x.setTransform(d, 0, 0, d, 0, 0); x.clearRect(0, 0, W, H);
+  x.font = `10px ${css('--font-mono')}`; x.lineWidth = 1;
+  return { x, W, H };
+}
+function plotLine(x, rows, X, Y, color, dash = []) {
+  x.strokeStyle = color; x.lineWidth = 1.5; x.setLineDash(dash); x.beginPath();
+  let started = false;
+  for (const [t, value] of rows) {
+    if (!Number.isFinite(t) || !Number.isFinite(value)) { started = false; continue; }
+    if (started) x.lineTo(X(t), Y(value)); else x.moveTo(X(t), Y(value));
+    started = true;
+  }
+  x.stroke(); x.setLineDash([]);
+}
+function drawEnvelope() {
+  const plot = plotContext('envelopePlot'); if (!plot || !S) return;
+  const { x, W, H } = plot, p = S.joints[sel].physics;
+  if (!p || !analysis?.envelope?.length) {
+    x.fillStyle = css('--text-muted'); x.fillText('機械特性を取得中…', 12, 24); return;
+  }
+  const rows = analysis.envelope, L = 46, R = W - 20, top = 27, bot = H - 32;
+  const speed = Math.max(1, ...rows.map(r => Math.abs(r[0])), Math.abs(S.joints[sel].vel));
+  const torque = Math.max(0.01, ...rows.flatMap(r => [Math.abs(r[1]), Math.abs(r[2])]), Math.abs(p.torque_nm), p.continuous_torque_nm) * 1.15;
+  const X = v => L + (v + speed) / (2 * speed) * (R - L), Y = v => bot - (v + torque) / (2 * torque) * (bot - top);
+  x.strokeStyle = css('--border-strong'); x.beginPath(); x.moveTo(L, Y(0)); x.lineTo(R, Y(0)); x.moveTo(X(0), top); x.lineTo(X(0), bot); x.stroke();
+  x.fillStyle = css('--text-muted'); x.textAlign = 'left'; x.fillText('N·m', 6, 13);
+  x.fillText(`±${number(torque, 1)}`, 2, top + 5);
+  x.textAlign = 'center'; x.fillText(`${number(-speed, 0)}`, L, H - 16); x.fillText('0', X(0), H - 16); x.fillText(`${number(speed, 0)} °/s`, R - 18, H - 16);
+  x.save(); x.beginPath(); x.rect(L, top, R - L, bot - top); x.clip();
+  plotLine(x, rows.map(r => [r[0], r[1]]), X, Y, css('--c-act'));
+  plotLine(x, rows.map(r => [r[0], r[2]]), X, Y, css('--c-act'));
+  for (const sign of [-1, 1]) plotLine(x, [[-speed, sign * p.continuous_torque_nm], [speed, sign * p.continuous_torque_nm]], X, Y, css('--warn-text'), [5, 4]);
+  x.fillStyle = css('--accent'); x.beginPath(); x.arc(X(S.joints[sel].vel), Y(p.torque_nm), 3.5, 0, Math.PI * 2); x.fill(); x.restore();
+  x.fillStyle = css('--c-act'); x.textAlign = 'left'; x.fillText('駆動限界', L, 13);
+  x.fillStyle = css('--warn-text'); x.textAlign = 'right'; x.fillText('熱平衡の目安', R, 13);
+  $('envelopePlot').setAttribute('aria-label', `速度とトルクの限界。現在${number(S.joints[sel].vel)}度毎秒、${number(p.torque_nm, 2)}ニュートンメートル。熱平衡の目安は正負${number(p.continuous_torque_nm, 2)}ニュートンメートル。過負荷と過電流の保護条件は含みません`);
+}
+function drawThermal() {
+  const plot = plotContext('thermalPlot'); if (!plot || !S?.joints[sel].physics) return;
+  const { x, W, H } = plot, js = S.joints[sel], now = S.t;
+  const rows = thermalHist.filter(r => r[0] >= now - 600 && r[0] <= now);
+  const points = analysis?.forecast?.points || [], at = analysis?.t ?? now;
+  const values = [js.physics.ambient_c, js.temp, js.max_temp, ...rows.map(r => r[sel + 1]), ...points.flatMap(r => [r[1], r[2]])].filter(Number.isFinite);
+  const low = Math.floor((Math.min(...values) - 3) / 10) * 10, high = Math.ceil((Math.max(...values) + 3) / 10) * 10;
+  const L = 39, R = W - 66, top = 20, bot = H - 29;
+  const X = t => L + (t - now + 600) / 1200 * (R - L), Y = v => bot - (v - low) / (high - low) * (bot - top);
+  x.fillStyle = css('--surface-2'); x.fillRect(X(now), top, R - X(now), bot - top);
+  x.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const v = low + (high - low) * i / 4, y = Y(v);
+    x.fillStyle = css('--border'); x.fillRect(L, y, R - L, 1);
+    x.fillStyle = css('--text-muted'); x.fillText(number(v, 0), L - 5, y + 3);
+  }
+  x.textAlign = 'left'; x.fillText('°C', 6, 12);
+  x.textAlign = 'center'; x.fillText('−10 min', L + 12, H - 9); x.fillText('今', X(now), H - 9); x.fillText('+10 min', R - 10, H - 9);
+  x.fillStyle = css('--text-muted'); x.fillText('履歴', (L + X(now)) / 2, 12); x.fillText('予測', (R + X(now)) / 2, 12);
+  x.save(); x.beginPath(); x.rect(L, top, R - L, bot - top); x.clip();
+  plotLine(x, [[now - 600, js.max_temp], [now + 600, js.max_temp]], X, Y, css('--danger-text'), [2, 4]);
+  plotLine(x, [...rows.map(r => [r[0], r[sel + 1]]), [now, js.temp]], X, Y, css('--c-act'));
+  plotLine(x, points.map(r => [at + r[0], r[1]]), X, Y, css('--c-goal'), [6, 3]);
+  plotLine(x, points.map(r => [at + r[0], r[2]]), X, Y, css('--c-cur'), [2, 3]);
+  x.fillStyle = css('--c-act'); x.beginPath(); x.arc(X(now), Y(js.temp), 3, 0, Math.PI * 2); x.fill(); x.restore();
+  const labels = [{ text: '過熱', y: Y(js.max_temp), color: css('--danger-text') }];
+  if (points.length) {
+    const last = points[points.length - 1];
+    labels.push({ text: '発熱一定', y: Y(last[1]), color: css('--c-goal') }, { text: '脱力', y: Y(last[2]), color: css('--c-cur') });
+  }
+  labels.sort((a, b) => a.y - b.y);
+  let previous = top - 12;
+  labels.forEach((l, i) => { l.ly = Math.max(previous + 13, Math.min(bot - (labels.length - i - 1) * 13, Math.max(top + 4, l.y))); previous = l.ly; });
+  x.textAlign = 'left';
+  for (const l of labels) {
+    x.strokeStyle = l.color; x.lineWidth = 1; x.beginPath(); x.moveTo(R + 1, l.y); x.lineTo(R + 6, l.ly); x.stroke();
+    x.fillStyle = l.color; x.fillText(l.text, R + 9, l.ly + 3);
+  }
+  const f = analysis?.forecast;
+  $('thermalPlot').setAttribute('aria-label', `過去10分の温度履歴。現在${number(js.temp)}度。過熱停止${number(js.max_temp)}度。${f ? `発熱一定なら10分後${number(points[points.length - 1]?.[1])}度。脱力なら${number(points[points.length - 1]?.[2])}度。` : '予測を取得中。'}`);
+}
+new ResizeObserver(() => { if (S) { drawProfile(); drawEnvelope(); drawThermal(); } }).observe($('servoDetail'));
 
 /* ============================== arm view ============================== */
 const view = $('arm');
@@ -567,7 +814,9 @@ const HOME_CAM = { pos: new THREE.Vector3(0.42, 0.34, 0.46), tgt: new THREE.Vect
 function resetView() {
   if (S) {
     const tx = S.tcp[0] * 0.5 + 0.02, ty = S.tcp[1] * 0.5, tz = Math.max(0.08, S.tcp[2] * 0.5 + 0.06);
-    const yaw = Math.atan2(S.tcp[1], S.tcp[0]), sx = -Math.sin(yaw), sy = Math.cos(yaw), d = 0.62;
+    const yaw = Math.atan2(S.tcp[1], S.tcp[0]), sx = -Math.sin(yaw), sy = Math.cos(yaw);
+    const aspect = view.clientWidth / Math.max(1, view.clientHeight);
+    const d = Math.max(0.62, 0.27 / (Math.tan(camera.fov * Math.PI / 360) * Math.min(1, aspect)));
     HOME_CAM.tgt.set(tx, tz, -ty);
     HOME_CAM.pos.set(tx + sx * d * 0.82 - Math.cos(yaw) * 0.12, tz + 0.26, -(ty + sy * d * 0.82 - Math.sin(yaw) * 0.12));
   }
@@ -676,7 +925,7 @@ function placeLabel() {
   const lab = $('selLabel');
   selRing.getWorldPosition(tmpV); tmpV.project(camera);
   const r = renderer.domElement.getBoundingClientRect();
-  lab.style.left = ((tmpV.x + 1) / 2 * r.width + 22) + 'px';
+  lab.style.left = Math.max(0, Math.min(r.width - lab.offsetWidth - 12, (tmpV.x + 1) / 2 * r.width + 22)) + 'px';
   lab.style.top = ((1 - tmpV.y) / 2 * r.height) + 'px';
   lab.textContent = fmt(S.joints[sel].q) + '°';
 }
@@ -763,14 +1012,34 @@ function drawTrace() {
 async function poll() {
   for (;;) {
     try {
-      S = await (await fetch('/api/state?since=' + seq)).json();
+      const response = await fetch(`/api/state?since=${seq}&since_thermal=${thermalSeq}`);
+      if (!response.ok) throw new Error('状態を取得できませんでした');
+      const next = await response.json();
+      if (generation !== null && next.generation !== generation) {
+        generation = next.generation; seq = 0; thermalSeq = 0;
+        hist.length = 0; thermalHist.length = 0; analysis = null;
+        analysisNextAt = 0;
+        analysisRequest++; analysisController?.abort();
+        $('forecastNote').textContent = '予測を取得中…';
+        S = null;
+        continue;                  // the old sequence may have hidden the reset's first rows
+      }
+      generation = next.generation;
+      S = next;
       seq = S.seq;
+      thermalSeq = S.thermal_seq;
       for (const row of S.hist) {
         if (hist.length && row[0] < hist[hist.length - 1][0]) hist.length = 0;   // the sim was rebuilt
         hist.push(row);
       }
       if (hist.length > HIST_KEEP) hist.splice(0, hist.length - HIST_KEEP);
-      renderChannels(); renderCommands(); renderArm();
+      for (const row of S.thermal_hist || []) {
+        if (thermalHist.length && row[0] <= thermalHist[thermalHist.length - 1][0]) continue;
+        thermalHist.push(row);
+      }
+      if (thermalHist.length > 3600) thermalHist.splice(0, thermalHist.length - 3600);
+      renderChannels(); renderCommands(); renderArm(); renderDetail();
+      if (!analysis && !analysisController) pollAnalysis();
     } catch (e) {
       console.error(e);
       const st = $('armState'); st.className = 'state err'; st.innerHTML = icon('i-power'); st.title = 'サーバに繋がりません';
@@ -798,6 +1067,7 @@ function frame() {
   resetView(); resize(); sizeTrace();
   select(sel);
   S = null;
+  setInterval(pollAnalysis, 2000);
   poll(); frame();
 })();
 </script>

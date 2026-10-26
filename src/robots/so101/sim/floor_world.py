@@ -23,7 +23,7 @@ it at z = 0 of the floor.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, Optional
 
 import numpy as np
@@ -54,7 +54,20 @@ class FloorArm(SimArm):
     def __init__(self, ranges=None, motor: Optional[MotorParams] = None,
                  world: Optional[World] = None, start_deg: Optional[List[float]] = None,
                  floor: Optional[FloorParams] = None):
-        super().__init__(ranges=ranges, motor=motor, world=world or World(), start_deg=start_deg)
+        world = world or World()
+        payload_kg = world.payload_kg
+        # This subclass attaches a point mass at the TCP; the parent must not
+        # also add its gravity-only external force.
+        super().__init__(ranges=ranges, motor=motor, world=replace(world, payload_kg=0.0), start_deg=start_deg)
+        bid = self._gripper_bid
+        self._bare_mass = float(self.m.body_mass[bid])
+        self._bare_com = self.m.body_ipos[bid].copy()
+        rotation = np.empty(9)
+        self.mj.mju_quat2Mat(rotation, self.m.body_iquat[bid])
+        rotation = rotation.reshape(3, 3)
+        self._bare_inertia = rotation @ np.diag(self.m.body_inertia[bid]) @ rotation.T
+        self.payload_kg = 0.0
+        self.set_payload(payload_kg)
         self.floor = floor or FloorParams()
         mj, m, d = self.mj, self.m, self.d
         base_bid = mj.mj_name2id(m, mj.mjtObj.mjOBJ_BODY, "base")
@@ -83,6 +96,38 @@ class FloorArm(SimArm):
         self.floor_z = base_min if math.isfinite(base_min) else 0.0
         self.contacts: List[List[float]] = []      # [x, y, z, Fn] of touching points
         self.floor_force = 0.0                     # N, total normal force
+
+    def set_payload(self, payload_kg: float) -> None:
+        """Combine a TCP point mass with the gripper's mass, COM and inertia.
+
+        This models the load's gravitational AND acceleration torque. It does
+        not create a second contact shape or claim a real object's inertia.
+        """
+        from .. import profile
+        mass = float(payload_kg)
+        if not math.isfinite(mass) or mass < 0:
+            raise ValueError("payload mass must be finite and non-negative")
+        m, d, bid = self.m, self.d, self._gripper_bid
+        point = np.array(profile.TOOL_TRANSFORM[0], dtype=float) / 1000.0
+        total = self._bare_mass + mass
+        com = (self._bare_mass * self._bare_com + mass * point) / total
+        shift = lambda v: np.dot(v, v) * np.eye(3) - np.outer(v, v)
+        inertia = (self._bare_inertia + self._bare_mass * shift(self._bare_com - com)
+                   + mass * shift(point - com))
+        eigenvalues, rotation = np.linalg.eigh(inertia)
+        if np.linalg.det(rotation) < 0:
+            rotation[:, 0] *= -1
+        m.body_mass[bid] = total
+        m.body_ipos[bid] = com
+        m.body_inertia[bid] = eigenvalues
+        quat = np.empty(4)
+        self.mj.mju_mat2Quat(quat, np.ascontiguousarray(rotation).ravel())
+        m.body_iquat[bid] = quat
+        qpos, qvel, elapsed = d.qpos.copy(), d.qvel.copy(), float(d.time)
+        self.mj.mj_setConst(m, d)
+        d.qpos[:], d.qvel[:], d.time = qpos, qvel, elapsed
+        self.mj.mj_forward(m, d)
+        self.payload_kg = mass
 
     def contact_points_world(self) -> np.ndarray:
         d = self.d

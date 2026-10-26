@@ -42,6 +42,8 @@ STATIC = HERE / "static"
 START_DEG = [0.0, -35.0, 45.0, -15.0, 0.0]          # READY: clear of the floor
 HIST_DT = 0.005                                      # trace sample period (sim s)
 HIST_LEN = 4000                                      # 20 s of trace
+THERMAL_LEN = 3601                                  # one hour, 1 Hz, simulation time
+MOTOR_LIMITS = {"r_th": (0.5, 15.0), "c_th": (5.0, 100.0)}
 EDITABLE_REGS = ("Goal_Velocity", "Acceleration", "P_Coefficient", "D_Coefficient",
                  "Torque_Limit")
 REG_LIMITS = {"Goal_Velocity": (0, 3400), "Acceleration": (0, 254),
@@ -63,9 +65,17 @@ class Sim:
         self.paused = False
         self.payload_kg = 0.0
         self.floor_on = True
+        self.ambient_c = 27.0
+        self.motor_params = {name: {"r_th": 3.0, "c_th": 29.0} for name in JOINTS}
         self.regs = {"Goal_Velocity": 0, "Acceleration": 254, "P_Coefficient": 16,
                      "D_Coefficient": 32, "Torque_Limit": 1000}
         self.hist = deque(maxlen=HIST_LEN)
+        self.thermal_hist = deque(maxlen=THERMAL_LEN)
+        self.thermal_seq = 0
+        # Remain distinct across server restarts as well as cold resets.
+        # Microseconds still fit exactly into a JavaScript integer.
+        self.generation = time.time_ns() // 1000
+        self._analysis_cache = {}
         self.seq = 0
         self._build(START_DEG, torque=True)
 
@@ -77,10 +87,19 @@ class Sim:
         self.ghost = mujoco.MjData(m)
         self.jnt_range = [tuple(math.degrees(v) for v in m.jnt_range[j]) for j in range(m.njnt)]
         for s in self.arm.servos:
+            s.mp.ambient_c = self.ambient_c
+            for key, value in self.motor_params[s.name].items():
+                setattr(s.mp, key, value)
+            s.temp_c = self.ambient_c
+            s.peak_temp = self.ambient_c
             for reg, v in self.regs.items():
                 s.write(reg, v, s.setpoint)
             s.write("Torque_Enable", 1 if torque else 0, s.setpoint)
         self.hist.clear()
+        self.thermal_hist.clear()
+        self._next_thermal = 0.0
+        self.generation += 1
+        self._analysis_cache.clear()
         self._next_sample = 0.0
         self._wall0 = time.perf_counter()
         self._sim0 = 0.0
@@ -112,26 +131,64 @@ class Sim:
                     # hold where the shaft is now, like the real servo
                     s.regs.goal_position = int(round(pos))
                 s.write("Torque_Enable", 1 if on else 0, pos)
+            self._analysis_cache.clear()
 
-    def set_regs(self, regs: dict) -> None:
+    def set_regs(self, regs: dict, joint=None) -> None:
         with self.lock:
+            if joint is not None and joint not in JOINTS:
+                raise ValueError("unknown joint")
             for reg, v in regs.items():
                 if reg not in EDITABLE_REGS:
                     continue
                 lo, hi = REG_LIMITS[reg]
                 v = max(lo, min(hi, int(v)))
-                self.regs[reg] = v
+                if joint is None:
+                    self.regs[reg] = v
                 for j, s in enumerate(self.arm.servos):
-                    s.write(reg, v, self.arm.ticks(j))
+                    if joint is None or s.name == joint:
+                        s.write(reg, v, self.arm.ticks(j))
+            self._analysis_cache.clear()
 
-    def set_world(self, payload_kg=None, floor=None) -> None:
+    def set_motor(self, joint: str, params: dict) -> None:
+        if joint not in JOINTS:
+            raise ValueError("unknown joint")
+        values = {}
+        for key, value in params.items():
+            if key not in MOTOR_LIMITS:
+                raise ValueError("unknown motor parameter")
+            value = float(value)
+            lo, hi = MOTOR_LIMITS[key]
+            if not math.isfinite(value) or not lo <= value <= hi:
+                raise ValueError(f"{key} must be between {lo} and {hi}")
+            values[key] = value
+        with self.lock:
+            self.motor_params[joint].update(values)
+            s = self.arm.servos[JOINTS.index(joint)]
+            for key, value in values.items():
+                setattr(s.mp, key, value)
+            self._analysis_cache.clear()
+
+    def set_world(self, payload_kg=None, floor=None, ambient_c=None) -> None:
+        if ambient_c is not None:
+            ambient_c = float(ambient_c)
+            if not math.isfinite(ambient_c) or not -10 <= ambient_c <= 50:
+                raise ValueError("ambient_c must be between -10 and 50")
+        if payload_kg is not None:
+            payload_kg = float(payload_kg)
+            if not math.isfinite(payload_kg):
+                raise ValueError("payload must be finite")
         with self.lock:
             if payload_kg is not None:
-                self.payload_kg = max(0.0, min(1.0, float(payload_kg)))
-                self.arm.world.payload_kg = self.payload_kg
+                self.payload_kg = max(0.0, min(1.0, payload_kg))
+                self.arm.set_payload(self.payload_kg)
             if floor is not None:
                 self.floor_on = bool(floor)
                 self.arm.floor.enabled = self.floor_on
+            if ambient_c is not None:
+                self.ambient_c = ambient_c
+                for s in self.arm.servos:
+                    s.mp.ambient_c = ambient_c
+            self._analysis_cache.clear()
 
     def set_run(self, paused=None, rtf=None) -> None:
         with self.lock:
@@ -171,6 +228,11 @@ class Sim:
                     round(s.current, 3)]
         self.seq += 1
         self.hist.append((self.seq, row))
+        if a.t >= self._next_thermal:
+            self.thermal_seq += 1
+            self.thermal_hist.append((self.thermal_seq, [round(a.t, 4)] +
+                                      [round(s.temp_c, 3) for s in a.servos]))
+            self._next_thermal = a.t + 1.0
 
     # -- views -------------------------------------------------------------------
     def _bodies(self, data) -> list:
@@ -180,7 +242,7 @@ class Sim:
             out.append([round(float(v), 6) for v in (*p, *q)])
         return out
 
-    def state(self, since: int) -> dict:
+    def state(self, since: int, since_thermal: int = 0) -> dict:
         with self.lock:
             a, m = self.arm, self.arm.m
             g = self.ghost
@@ -210,6 +272,9 @@ class Sim:
                     "overload_pct": r.overload_torque,
                     "protective_pct": r.protective_torque,
                     "max_temp": r.max_temperature,
+                    "regs": {key: s.read(key) for key in EDITABLE_REGS},
+                    "physics": {**s.heat_balance(),
+                                **s.capability(a.supply_v, float(a.d.qvel[j]))},
                 })
             tcp = a.tcp_world()
             rows = [row for sq, row in self.hist if sq > since]
@@ -220,11 +285,35 @@ class Sim:
                 "floor": {"on": a.floor.enabled, "z": a.floor_z, "force": round(a.floor_force, 2),
                           "contacts": [[round(v, 5) for v in c] for c in a.contacts]},
                 "payload_kg": self.payload_kg,
+                "ambient_c": self.ambient_c,
                 "tcp": [round(float(v), 5) for v in tcp],
                 "bodies": self._bodies(a.d), "ghost": self._bodies(g),
                 "joints": joints, "regs": dict(self.regs),
                 "seq": self.seq, "hist": rows[-HIST_LEN:],
+                "generation": self.generation,
+                "thermal_seq": self.thermal_seq,
+                "thermal_hist": [row for sq, row in self.thermal_hist if sq > since_thermal],
             }
+
+    def analysis(self, joint: str) -> dict:
+        if joint not in JOINTS:
+            raise ValueError("unknown joint")
+        with self.lock:
+            s = self.arm.servos[JOINTS.index(joint)]
+            stamp = int(self.arm.t)
+            cached = self._analysis_cache.get(joint)
+            if cached is not None and cached[0] == stamp:
+                return cached[1]
+            cap = s.capability(self.arm.supply_v, 0.0)
+            span = max(1.0, cap["no_load_speed_deg_s"])
+            envelope = []
+            for i in range(41):
+                speed = (i / 20.0 - 1.0) * span
+                point = s.capability(self.arm.supply_v, math.radians(speed))
+                envelope.append([speed, point["torque_positive_nm"], point["torque_negative_nm"]])
+            result = {"joint": joint, "forecast": s.thermal_forecast(), "envelope": envelope}
+            self._analysis_cache[joint] = (stamp, result)
+            return result
 
     def model(self) -> dict:
         """Visual geometry: one entry per visual geom, meshes shared by id."""
@@ -253,6 +342,7 @@ class Sim:
                 "pose_bodies": {k: self.pose_bodies(v) for k, v in so101_poses.POSES.items()},
                 "ref_bodies": self.pose_bodies(START_DEG),
                 "editable_regs": list(EDITABLE_REGS), "reg_limits": REG_LIMITS,
+                "motor_limits": MOTOR_LIMITS,
                 "servo": {"stall_nm": sts3215.STALL_TORQUE_NM, "stall_a": sts3215.STALL_CURRENT_A,
                           "no_load_rpm": sts3215.NO_LOAD_RPM, "gear": sts3215.GEAR_RATIO,
                           "overcurrent_a": sts3215.OVERCURRENT_TRIP_A}}
@@ -306,7 +396,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, UI_HTML.read_bytes(), CTYPES[".html"])
         if path == "/api/state":
             since = int(parse_qs(u.query).get("since", ["0"])[0] or 0)
-            return self._json(SIM.state(since))
+            since_thermal = int(parse_qs(u.query).get("since_thermal", ["0"])[0] or 0)
+            return self._json(SIM.state(since, since_thermal))
+        if path == "/api/analysis":
+            try:
+                return self._json(SIM.analysis(parse_qs(u.query).get("joint", [""])[0]))
+            except ValueError as e:
+                return self._json({"error": str(e)}, 400)
+        if path == "/docs/servo-model":
+            return self._send(200, (HERE.parent / "docs" / "SO101_SERVO_MODEL.md").read_bytes(),
+                              "text/plain; charset=utf-8")
         if path == "/api/model":
             return self._json(SIM.model())
         if path.startswith("/api/mesh/"):
@@ -336,9 +435,11 @@ class Handler(BaseHTTPRequestHandler):
             elif op == "torque":
                 SIM.set_torque(bool(cmd.get("on")))
             elif op == "regs":
-                SIM.set_regs(cmd.get("regs") or {})
+                SIM.set_regs(cmd.get("regs") or {}, cmd.get("joint"))
+            elif op == "motor":
+                SIM.set_motor(cmd.get("joint"), cmd.get("params") or {})
             elif op == "world":
-                SIM.set_world(cmd.get("payload_kg"), cmd.get("floor"))
+                SIM.set_world(cmd.get("payload_kg"), cmd.get("floor"), cmd.get("ambient_c"))
             elif op == "run":
                 SIM.set_run(cmd.get("paused"), cmd.get("rtf"))
             elif op == "reset":
