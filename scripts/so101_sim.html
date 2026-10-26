@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SO-101 SIM</title>
+<title>SO-101 動作ワークスペース</title>
 <style>
 /* tokens: copied from scripts/ui.html :root (.agent/rules/design.md) */
 :root{
@@ -180,6 +180,7 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
   #servoDetail{padding-bottom:max(12px,env(safe-area-inset-bottom))}
 }
 </style>
+<link rel="stylesheet" href="/static/so101_twin_ui.css">
 <script type="importmap">{"imports":{"three":"/static/vendor/three/build/three.module.js"}}</script>
 </head>
 <body>
@@ -212,7 +213,7 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
 
 <div id="app">
   <header>
-    <div class="brand">SO-101 <span class="chip" title="仮想の腕。実機には繋がっていません">SIM</span></div>
+    <div class="brand">SO-101 <span class="chip" title="仮想の腕で動きを作り、接続した実機で確認します">TWIN</span></div>
     <div class="hstat mono">
       <span title="シミュレーション時刻"><svg class="i"><use href="#i-clock"/></svg><b id="hT">0.0</b>s</span>
       <span title="電源電圧（12 V / 5 A 電源、電流で下がる）"><svg class="i"><use href="#i-volt"/></svg><b id="hV">12.2</b>V</span>
@@ -225,7 +226,7 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
       <button data-rtf="1" class="on">1×</button><button data-rtf="0.5">½×</button><button data-rtf="0.25">¼×</button><button data-rtf="0.1">⅒×</button>
     </div>
     <button class="ib" id="pauseBtn" title="一時停止 / 再開（Space）"><svg class="i"><use href="#i-pause"/></svg></button>
-    <button class="ib" id="torqueBtn" title="サーボの力を入れる / 抜く（Esc で脱力）"><span class="dot"></span><svg class="i"><use href="#i-power"/></svg></button>
+    <button class="ib" id="torqueBtn" title="仮想サーボだけの力を入れる / 抜く"><span class="dot"></span><svg class="i"><use href="#i-power"/></svg><span>仮想の脱力</span></button>
   </header>
 
   <section id="cmd">
@@ -305,6 +306,7 @@ input[type=range]::-moz-range-thumb{width:9px;height:9px;border-radius:50%;backg
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from '/static/vendor/three/examples/jsm/controls/OrbitControls.js';
+import { createTwinUI } from '/static/so101_twin_ui.js';
 
 const JA = { shoulder_pan: '肩の旋回', shoulder_lift: '肩の上下', elbow_flex: '肘', wrist_flex: '手首の曲げ', wrist_roll: '手首の回転', gripper: 'グリッパ' };
 const POSE_JA = { HOME: 'まっすぐ', READY: '構え', UP: '上を向く', FORWARD_LOW: '前の低い所', OBSERVE: '見下ろす' };
@@ -322,9 +324,13 @@ const thermalHist = [];                // rows: [t, temperature x 6], 1 Hz
 let analysis = null, analysisRequest = 0, analysisController = null, analysisNextAt = 0;
 const HIST_KEEP = 2400;
 const THUMB = {};                      // joint index -> dataURL of the arm with that link lit
+const clientId = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), v => v.toString(16).padStart(2, '0')).join('');
+let twinUI = null;
 
 async function api(op, body = {}) {
-  const r = await fetch('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op, ...body }) });
+  if (op === 'goal' && twinUI && !twinUI.canEditGoals()) throw new Error('追従を開始したタブだけが目標姿勢を変更できます');
+  if (op !== 'goal' && twinUI?.physicsLocked()) throw new Error('実機追従中は仮想の物理設定を変更できません');
+  const r = await fetch('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op, ...body, client_id: clientId }) });
   const data = await r.json();
   if (!r.ok || data.error) throw new Error(data.error || '設定を送信できませんでした');
   return data;
@@ -452,7 +458,7 @@ function bindDial(c) {
     }
     return a;
   };
-  c.svg.addEventListener('pointerdown', e => { if (!c.rng) return; c.dragging = true; c.svg.setPointerCapture(e.pointerId); select(c.j); sendGoal(c.j, toDeg(e)); });
+  c.svg.addEventListener('pointerdown', e => { if (!c.rng || (twinUI && !twinUI.canEditGoals()) || S?.twin?.playback?.playing) return; c.dragging = true; c.svg.setPointerCapture(e.pointerId); select(c.j); sendGoal(c.j, toDeg(e)); });
   c.svg.addEventListener('pointermove', e => { if (c.dragging) sendGoal(c.j, toDeg(e)); });
   const end = () => { c.dragging = false; };
   c.svg.addEventListener('pointerup', end); c.svg.addEventListener('pointercancel', end);
@@ -460,11 +466,12 @@ function bindDial(c) {
 
 const pendingGoal = {}; let goalTimer = null;
 function sendGoal(j, deg) {
+  if ((twinUI && !twinUI.canEditGoals()) || S?.twin?.playback?.playing) return;
   pendingGoal[MODEL.joints[j]] = Math.round(deg * 10) / 10;
   drawGoal(CH[j], deg);
   if (!goalTimer) goalTimer = setTimeout(async () => {
     const goals = { ...pendingGoal }; for (const k in pendingGoal) delete pendingGoal[k]; goalTimer = null;
-    await api('goal', { goals });
+    try { await api('goal', { goals }); } catch (error) { modelError(error); }
   }, 33);
 }
 function drawGoal(c, deg) {
@@ -542,17 +549,17 @@ function buildCommands(poseImgs) {
     const b = document.createElement('button');
     b.className = 'pose'; b.title = POSE_JA[k] || k;
     b.innerHTML = `<img src="${poseImgs[k]}" alt="${POSE_JA[k] || k}">`;
-    b.onclick = () => { const goals = {}; v.forEach((d, i) => goals[MODEL.joints[i]] = d); api('goal', { goals }); };
+    b.onclick = () => { const goals = {}; v.forEach((d, i) => goals[MODEL.joints[i]] = d); api('goal', { goals }).catch(modelError); };
     host.appendChild(b);
   }
   const jaw = document.createElement('button');
   jaw.className = 'pose'; jaw.id = 'jawBtn'; jaw.title = 'グリッパを開く / 閉じる';
-  jaw.onclick = () => api('goal', { goals: { gripper: S.joints[5].goal > 20 ? 0 : 60 } });
+  jaw.onclick = () => api('goal', { goals: { gripper: S.joints[5].goal > 20 ? 0 : 60 } }).catch(modelError);
   host.appendChild(jaw);
 
   document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
     const js = S.joints[sel];
-    api('goal', { goals: { [js.name]: js.goal + Number(b.dataset.step) } });
+    api('goal', { goals: { [js.name]: js.goal + Number(b.dataset.step) } }).catch(modelError);
   });
   document.querySelectorAll('#regs input[data-reg]').forEach(inp => {
     inp.addEventListener('input', () => { regOut(inp); drawProfile(); });
@@ -576,15 +583,14 @@ function buildCommands(poseImgs) {
       } catch (e) { modelError(e); }
     });
   }
-  $('floorBtn').onclick = () => api('world', { floor: !S.floor.on });
+  $('floorBtn').onclick = () => api('world', { floor: !S.floor.on }).catch(modelError);
   $('payload').oninput = e => { $('payloadV').textContent = e.target.value + ' g'; };
-  $('payload').onchange = e => api('world', { payload_kg: Number(e.target.value) / 1000 });
+  $('payload').onchange = e => api('world', { payload_kg: Number(e.target.value) / 1000 }).catch(modelError);
   $('resetBtn').onclick = () => api('reset').catch(modelError);
-  document.querySelectorAll('#rtfSeg button').forEach(b => b.onclick = () => api('run', { rtf: Number(b.dataset.rtf) }));
-  $('pauseBtn').onclick = () => api('run', { paused: !S.paused });
-  $('torqueBtn').onclick = () => api('torque', { on: !S.joints[0].torque });
+  document.querySelectorAll('#rtfSeg button').forEach(b => b.onclick = () => api('run', { rtf: Number(b.dataset.rtf) }).catch(modelError));
+  $('pauseBtn').onclick = () => api('run', { paused: !S.paused }).catch(modelError);
+  $('torqueBtn').onclick = () => api('torque', { on: !S.joints[0].torque }).catch(modelError);
   addEventListener('keydown', e => {
-    if (e.code === 'Escape') api('torque', { on: false });
     if (e.target.matches('input:not([type=range]),textarea,summary,button,a')) return;
     if (e.code === 'Space') { e.preventDefault(); $('pauseBtn').click(); }
   });
@@ -594,7 +600,7 @@ function buildCommands(poseImgs) {
   $('payload').setAttribute('aria-label', '先端に吊るす荷物の重さ');
 }
 
-function modelError(e) { $('modelError').textContent = String(e.message || e); }
+function modelError(e) { $('modelError').textContent = String(e.message || e); twinUI?.reportError(e); }
 
 function regOut(inp) {
   const v = Number(inp.value), o = inp.parentElement.querySelector('output');
@@ -646,6 +652,7 @@ function renderCommands(forceRegs = false) {
   if ($('pauseBtn').dataset.icon !== pIcon) { $('pauseBtn').innerHTML = icon(pIcon); $('pauseBtn').dataset.icon = pIcon; }
   const on = S.joints[0].torque;
   $('torqueBtn').className = 'ib ' + (on ? 'live' : 'limp');
+  $('torqueBtn').querySelector('span:last-child').textContent = on ? '仮想の脱力' : '仮想の通電';
   $('floorBtn').classList.toggle('on', S.floor.on);
   const pl = $('payload'), g = Math.round(S.payload_kg * 1000);
   if (document.activeElement !== pl && Number(pl.value) !== g) { pl.value = g; $('payloadV').textContent = g + ' g'; }
@@ -833,10 +840,10 @@ scene.add(sun);
 const rim = new THREE.DirectionalLight(0x9cc8ff, 0.35); rim.position.set(-0.6, 0.4, -0.8); scene.add(rim);
 
 const world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world);
-const actualRoot = new THREE.Group(), ghostRoot = new THREE.Group();
-world.add(actualRoot, ghostRoot);
+const actualRoot = new THREE.Group(), ghostRoot = new THREE.Group(), measuredRoot = new THREE.Group();
+world.add(actualRoot, ghostRoot, measuredRoot);
 const COL = { act: new THREE.Color(css('--c-act')), servo: 0x2a2a2e, goal: new THREE.Color(css('--c-goal')), accent: new THREE.Color(css('--accent')), black: new THREE.Color(0) };
-const bodyGroups = [], ghostGroups = [], bodyMats = [], pickables = [];
+const bodyGroups = [], ghostGroups = [], measuredGroups = [], bodyMats = [], pickables = [];
 let contactMeshes = [], payloadMesh = null, selRing = null, ghostOn = true;
 
 function buildFloor(z) {
@@ -857,20 +864,25 @@ function buildFloor(z) {
 
 function buildArm() {
   for (let b = 0; b < MODEL.bodies.length; b++) {
-    const a = new THREE.Group(), gh = new THREE.Group();
+    const a = new THREE.Group(), gh = new THREE.Group(), measured = new THREE.Group();
     actualRoot.add(a); ghostRoot.add(gh); bodyGroups.push(a); ghostGroups.push(gh);
+    measuredRoot.add(measured); measuredGroups.push(measured);
     bodyMats.push({
       printed: new THREE.MeshStandardMaterial({ color: COL.act, roughness: 0.6, metalness: 0.0, flatShading: true }),
       servo: new THREE.MeshStandardMaterial({ color: COL.servo, roughness: 0.42, metalness: 0.15, flatShading: true }),
     });
   }
   const ghostMat = new THREE.MeshBasicMaterial({ color: COL.goal, transparent: true, opacity: 0.22, depthWrite: false });
+  const measuredMat = new THREE.MeshBasicMaterial({ color: css('--data-num'), wireframe: true, transparent: true, opacity: 0.52, depthWrite: false });
   for (const g of MODEL.geoms) {
     const kind = g.mesh_name.startsWith('sts3215') ? 'servo' : 'printed';
     const m = new THREE.Mesh(GEOS[g.mesh], bodyMats[g.body][kind]);
     m.position.fromArray(g.pos); m.quaternion.set(g.quat[1], g.quat[2], g.quat[3], g.quat[0]);
     m.castShadow = true; m.receiveShadow = true; m.userData.joint = MODEL.body_joint[g.body];
     bodyGroups[g.body].add(m); pickables.push(m);
+    const measuredMesh = new THREE.Mesh(GEOS[g.mesh], measuredMat);
+    measuredMesh.position.copy(m.position); measuredMesh.quaternion.copy(m.quaternion); measuredMesh.renderOrder = 3;
+    measuredGroups[g.body].add(measuredMesh);
     if (MODEL.body_joint[g.body] >= 0) {
       const gm = new THREE.Mesh(GEOS[g.mesh], ghostMat);
       gm.position.copy(m.position); gm.quaternion.copy(m.quaternion); gm.renderOrder = 2;
@@ -894,6 +906,8 @@ const contactGeo = new THREE.SphereGeometry(1, 12, 8);
 const contactMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(css('--danger-text')) });
 function renderArm() {
   setPose(bodyGroups, S.bodies); setPose(ghostGroups, S.ghost);
+  measuredRoot.visible = Array.isArray(S.measured_bodies) && S.measured_bodies.length === measuredGroups.length;
+  if (measuredRoot.visible) setPose(measuredGroups, S.measured_bodies);
   ghostRoot.visible = ghostOn && S.joints[0].torque && Math.max(...S.joints.map(j => Math.abs(j.goal - j.q))) > 0.3;
   while (contactMeshes.length < S.floor.contacts.length) { const m = new THREE.Mesh(contactGeo, contactMat); world.add(m); contactMeshes.push(m); }
   contactMeshes.forEach((m, i) => {
@@ -1038,10 +1052,11 @@ async function poll() {
         thermalHist.push(row);
       }
       if (thermalHist.length > 3600) thermalHist.splice(0, thermalHist.length - 3600);
-      renderChannels(); renderCommands(); renderArm(); renderDetail();
+      renderChannels(); renderCommands(); renderArm(); renderDetail(); twinUI?.render(S.twin);
       if (!analysis && !analysisController) pollAnalysis();
     } catch (e) {
       console.error(e);
+      twinUI?.reportConnectionError(e);
       const st = $('armState'); st.className = 'state err'; st.innerHTML = icon('i-power'); st.title = 'サーバに繋がりません';
       await new Promise(r => setTimeout(r, 1000));
     }
@@ -1063,13 +1078,18 @@ function frame() {
   buildFloor(MODEL.floor_z);
   buildChannels(); buildCommands(poseImgs);
   buildArm();
+  twinUI = createTwinUI({ clientId, getSimState: () => S, getJointNames: () => MODEL.joints,
+    sendGoals: goals => api('goal', { goals }),
+    onStop: () => { clearTimeout(goalTimer); goalTimer = null; for (const key in pendingGoal) delete pendingGoal[key]; CH.forEach(channel => { channel.dragging = false; }); },
+  });
   S = await (await fetch('/api/state?since=0')).json();
+  twinUI.render(S.twin);
   resetView(); resize(); sizeTrace();
   select(sel);
   S = null;
   setInterval(pollAnalysis, 2000);
   poll(); frame();
-})();
+})().catch(error => { console.error(error); modelError(error); });
 </script>
 </body>
 </html>

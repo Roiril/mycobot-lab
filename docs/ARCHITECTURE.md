@@ -86,11 +86,15 @@ tests/
 |---|---|---|---|
 | `ui.html`（`/`） | `server.py` :8000（Quest 開発時は :8001） | 🦾 myCobot + ✋ ハンド + SO-101 | 統一 UI。6 ワークスペースタブ（SO-101 タブは `/so101/*` API） |
 | `hand.html`（`/hand`） | 同上（同一サーバ） | ✋ ハンドのみ | Quest 用軽量 teleop（three.js 無し） |
-| `so101_sim.html` | `so101_sim_server.py` :8025（`.venv-so101`） | SO-101（仮想のみ） | STS3215 サーボモデル + 床接触の物理を 1 kHz で回す 3D シミュレータ。画面は「1 指令 → 2 サーボ → 3 アーム → 4 時間」の順に列を並べる |
+| `so101_sim.html` | `so101_sim_server.py` :8025（`.venv-so101`） | SO-101（既定は仮想、実機連携は opt-in） | 1 kHz の物理予測に動作編集・保存・再生と明示的な実機追従を追加。「指令 → サーボ → アーム → 時間」の配置を維持 |
 
 - `so101_sim.html` は別ページの例外（2026-10-24 ユーザー指示「既存のものは使わず、レイアウトで分からせる新しい UI を」）。
   物理は `src/robots/so101/sim/floor_world.py` の `FloorArm`（`servo_sim.SimArm` に全リンクの床接触を足したもの）。
-  ハードには一切触れない。戻り導線はホーム（:8010）のランチャー。
+  既定の `--hardware off` ではハードへ接続しない。`--hardware mock|real` で観測接続と追従を有効にできる。
+  観測は書込ゼロ。実測姿勢を仮想へ取り込み、明示的な追従開始後だけ同じ目標を実機へ送る。
+  `twin_studio.py` が姿勢列と再生を担当し、`twin_link.py` の単一 worker が I/O・校正照合・期限付き制御権・停止を担う。
+  物理予測角を実機の指令にしない。詳細と要件は [SO101_DIGITAL_TWIN.md](SO101_DIGITAL_TWIN.md)。
+  戻り導線はホーム（:8010）のランチャー。
   ヘッダの立方体アイコンは model-lab（`Projects/Web/model-lab`、:3000）の `models/so101` を開く。
   形を直すのは model-lab 側（`edits.py`）。シミュレータはまだ直した形を読まない（元の URDF のまま）。
 

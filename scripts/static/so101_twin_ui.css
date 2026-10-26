@@ -1,0 +1,74 @@
+/* The simulator supplies the shared VSCode dark tokens. */
+#app{grid-template-columns:300px 436px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) 190px}
+header{flex-wrap:wrap;gap:8px;min-height:84px;padding:8px var(--pad);position:sticky;top:0;z-index:20}
+header .brand{margin-right:8px}
+.twin-mode button{font-family:var(--font-ui)}
+.twin-stop{background:var(--danger);color:var(--text-inv);border:var(--bw) solid var(--danger-hover);border-radius:var(--radius);padding:6px 14px;min-height:36px;cursor:pointer;white-space:nowrap}
+.twin-stop:hover{background:var(--danger-hover)}
+.twin-stop kbd{font:var(--fs-xs) var(--font-mono);margin-left:8px}
+.twin-status{flex-basis:100%;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 16px;font-size:var(--fs-xs);color:var(--text-muted);min-width:0}
+.twin-status strong{color:var(--text);font-weight:var(--fw-med)}
+.twin-status .stale{color:var(--warn-text)}
+.twin-status .twin-reason{flex:1;min-width:130px;overflow-wrap:anywhere}
+.twin-error{color:var(--danger-text);flex-basis:100%;overflow-wrap:anywhere}
+.twin-error:empty{display:none}
+.twin-panel h2{font-size:var(--fs-base);font-weight:var(--fw-med);margin:0 0 9px}
+.twin-panel p{margin:6px 0}
+.twin-panel label{display:block;color:var(--text-muted);font-size:var(--fs-xs)}
+.twin-panel input:not([type=checkbox]),.twin-panel select{font:inherit;color:var(--text);background:var(--bg);border:var(--bw) solid var(--border);border-radius:var(--radius-sm);padding:5px 7px;min-width:0;max-width:100%;width:100%;user-select:text}
+.twin-panel input:focus,.twin-panel select:focus{border-color:var(--accent)}
+.twin-panel input[type=checkbox]{accent-color:var(--accent-bg);flex:none;width:17px;height:17px;margin:0}
+.twin-panel button{font:inherit;border:var(--bw) solid var(--border);border-radius:var(--radius);background:var(--surface-3);color:var(--text);padding:5px 8px;cursor:pointer;min-height:30px}
+.twin-panel button:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-2)}
+.twin-panel button.primary{background:var(--accent-bg);border-color:var(--accent-bg);color:var(--text-inv)}
+.twin-panel button.primary:hover:not(:disabled){background:var(--accent-bg-hover)}
+button:disabled,input:disabled,select:disabled{opacity:.45;cursor:not-allowed}
+.twin-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.twin-actions>*{flex:1 1 auto}
+.twin-library{display:flex;gap:6px;margin-top:8px}
+.twin-library select{flex:1;width:0}
+.twin-steps{padding:0;margin:10px 0;list-style:none;display:flex;flex-direction:column;gap:6px}
+.twin-step{padding:8px;border:var(--bw) solid var(--border);border-left:3px solid var(--border);background:var(--bg);min-width:0}
+.twin-step.playing{border-left-color:var(--accent);background:var(--accent-soft)}
+.twin-step-title{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+.twin-step-title span{color:var(--text-faint);font-family:var(--font-mono)}
+.twin-step-title label{flex:1;min-width:0}
+.twin-step-times{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.twin-step-angles{font:var(--fs-2xs)/1.5 var(--font-mono);color:var(--c-goal);overflow-wrap:anywhere;margin:6px 0}
+.twin-step .twin-actions button{font-size:var(--fs-xs);padding:3px 6px}
+.twin-check{display:flex!important;align-items:center;gap:8px;min-height:36px}
+.twin-progress{margin:9px 0 0;min-height:18px;color:var(--accent);font:var(--fs-xs) var(--font-mono)}
+.twin-draft{font-size:var(--fs-xs);color:var(--warn-text);min-height:16px;margin-top:5px}
+.twin-errors{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 8px;margin:8px 0;font:var(--fs-xs) var(--font-mono)}
+.twin-errors div{min-width:0;display:flex;justify-content:space-between;gap:4px}
+.twin-errors dt{color:var(--text-muted)}
+.twin-errors dd{margin:0;color:var(--data-num)}
+.twin-legend{position:absolute;bottom:10px;left:10px;display:flex;flex-wrap:wrap;gap:5px 14px;background:var(--bg);padding:5px 8px;border:var(--bw) solid var(--border);border-radius:var(--radius);font-size:var(--fs-xs);pointer-events:none;max-width:calc(100% - 20px)}
+.twin-legend span::before{content:'';display:inline-block;width:12px;height:3px;vertical-align:middle;margin-right:5px;background:var(--c-act)}
+.twin-legend .goal::before{background:var(--c-goal)}
+.twin-legend .measured::before{background:var(--data-num)}
+.twin-sim-note{padding:7px var(--pad);border-bottom:var(--bw) solid var(--divider);margin:0;color:var(--text-muted);font-size:var(--fs-xs)}
+#twinHardware[hidden]{display:none}
+#twinImportFile{display:none}
+@media(max-width:1180px){
+  #app{grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto 50vh auto 190px}
+}
+@media(max-width:700px){
+  #app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 45vh auto auto 190px}
+  header{padding-top:max(8px,env(safe-area-inset-top))}
+  header .brand{flex:1}
+  header .hsp{display:none}
+  .twin-mode{order:1;flex:0 0 100%;width:100%}
+  .twin-mode button{flex:1;min-width:0;white-space:nowrap}
+  .twin-stop{order:0}
+  #modelLink,#rtfSeg,#pauseBtn,#torqueBtn{order:2;margin-left:0}
+  .twin-status{order:3}
+  #cmd{display:block}
+  #cmd .grp{padding:12px var(--pad)}
+  .twin-panel button,.twin-panel input:not([type=checkbox]),.twin-panel select,.twin-check,.twin-stop{min-height:44px}
+  .twin-panel input:not([type=checkbox]),.twin-panel select{font-size:16px}
+  #torqueBtn{min-height:44px}
+  .ib,.seg button{min-width:44px}
+  input[type=range]{height:44px}
+  .twin-legend{font-size:var(--fs-2xs);gap:5px 10px}
+}

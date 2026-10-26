@@ -9,7 +9,8 @@ time (or slowed down), takes goal / register writes, and streams the state.
 Run:   .venv-so101\\Scripts\\python.exe scripts\\so101_sim_server.py
 Open:  http://localhost:8025/
 
-Nothing here talks to hardware.
+Hardware is opt-in (--hardware mock|real). Connecting only observes; an
+explicit, leased follow session is required before any motor command.
 """
 from __future__ import annotations
 
@@ -32,9 +33,11 @@ import mujoco  # noqa: E402
 import numpy as np  # noqa: E402
 
 from robots.so101 import poses as so101_poses  # noqa: E402
+from robots.so101 import profile as so101_profile  # noqa: E402
 from robots.so101 import sts3215  # noqa: E402
 from robots.so101.sim.floor_world import FloorArm, FloorParams  # noqa: E402
 from robots.so101.sim.servo_sim import JOINTS, TICKS_PER_RAD, World  # noqa: E402
+from robots.so101.twin_studio import TwinStudio  # noqa: E402
 
 UI_HTML = HERE / "so101_sim.html"
 STATIC = HERE / "static"
@@ -61,6 +64,8 @@ def _ticks_to_deg(servo, ticks: float) -> float:
 class Sim:
     def __init__(self):
         self.lock = threading.RLock()
+        self.studio = None
+        self.stopping = threading.Event()
         self.rtf = 1.0
         self.paused = False
         self.payload_kg = 0.0
@@ -111,12 +116,40 @@ class Sim:
             q = (q + [0.0] * 5)[:5]
             self._build(q, torque=True)
 
+    def sim_time(self):
+        return self.arm.t
+
+    def target_degrees(self):
+        with self.lock:
+            # Encoder rounding can exceed a URDF bound by half a tick.
+            limits = so101_profile.JOINT_LIMITS + [so101_profile.GRIPPER_LIMIT_DEG]
+            return {n: max(self.jnt_range[j][0], limits[j][0],
+                          min(self.jnt_range[j][1], limits[j][1],
+                          _ticks_to_deg(s, s.regs.goal_position)))
+                    for j, (n, s) in enumerate(zip(JOINTS, self.arm.servos))}
+
+    def reset_to_measured(self, angles):
+        """Kinematic import only; the hardware link remains read-only."""
+        with self.lock:
+            self._build(angles[:5], torque=True)
+            self.arm.d.qpos[5] = math.radians(angles[5])
+            self.arm.d.qvel[:] = 0
+            for j, servo in enumerate(self.arm.servos):
+                pos = self.arm.ticks(j)
+                servo.write("Goal_Position", int(round(pos)), pos)
+            mujoco.mj_forward(self.arm.m, self.arm.d)
+
     # -- commands ---------------------------------------------------------------
     def set_goals(self, goals: dict) -> None:
+        if not isinstance(goals, dict) or any(n not in JOINTS for n in goals):
+            raise ValueError("関節名が正しくありません")
+        values = {}
+        for name, value in goals.items():
+            if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
+                raise ValueError("目標角度は有限の数値で指定してください")
+            values[name] = float(value)
         with self.lock:
-            for name, deg in goals.items():
-                if name not in JOINTS:
-                    continue
+            for name, deg in values.items():
                 j = JOINTS.index(name)
                 lo, hi = self.jnt_range[j]
                 deg = max(lo, min(hi, float(deg)))
@@ -191,6 +224,9 @@ class Sim:
             self._analysis_cache.clear()
 
     def set_run(self, paused=None, rtf=None) -> None:
+        if rtf is not None and (isinstance(rtf, bool) or not isinstance(rtf, (int, float))
+                                or not math.isfinite(rtf)):
+            raise ValueError("再生速度は有限の数値で指定してください")
         with self.lock:
             if paused is not None:
                 self.paused = bool(paused)
@@ -201,8 +237,10 @@ class Sim:
 
     # -- physics thread -----------------------------------------------------------
     def run_forever(self) -> None:
-        while True:
+        while not self.stopping.is_set():
             with self.lock:
+                if self.studio is not None:
+                    self.studio.tick()
                 if not self.paused:
                     target = self._sim0 + (time.perf_counter() - self._wall0) * self.rtf
                     lag = target - self.arm.t
@@ -278,7 +316,7 @@ class Sim:
                 })
             tcp = a.tcp_world()
             rows = [row for sq, row in self.hist if sq > since]
-            return {
+            result = {
                 "t": round(a.t, 4), "paused": self.paused, "rtf": self.rtf,
                 "supply_v": round(a.supply_v, 2),
                 "total_current": round(sum(abs(s.current) for s in a.servos), 3),
@@ -294,6 +332,14 @@ class Sim:
                 "thermal_seq": self.thermal_seq,
                 "thermal_hist": [row for sq, row in self.thermal_hist if sq > since_thermal],
             }
+            if self.studio is not None:
+                result["twin"] = self.studio.snapshot()
+                hw = result["twin"]["hardware"]
+                angles = [hw["joints"].get(n, {}).get("q") for n in JOINTS]
+                fresh = hw["connected"] and hw["age_s"] is not None and hw["age_s"] <= 0.5
+                result["measured_bodies"] = (self.pose_bodies(angles[:5], angles[5])
+                                             if fresh and all(v is not None for v in angles) else None)
+            return result
 
     def analysis(self, joint: str) -> dict:
         if joint not in JOINTS:
@@ -370,7 +416,8 @@ class Sim:
 
 SIM: Sim = None  # set in main()
 MESH_CACHE: dict = {}
-CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
+CTYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+          ".css": "text/css; charset=utf-8"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -395,9 +442,14 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             return self._send(200, UI_HTML.read_bytes(), CTYPES[".html"])
         if path == "/api/state":
-            since = int(parse_qs(u.query).get("since", ["0"])[0] or 0)
-            since_thermal = int(parse_qs(u.query).get("since_thermal", ["0"])[0] or 0)
-            return self._json(SIM.state(since, since_thermal))
+            try:
+                since = int(parse_qs(u.query).get("since", ["0"])[0] or 0)
+                since_thermal = int(parse_qs(u.query).get("since_thermal", ["0"])[0] or 0)
+                return self._json(SIM.state(since, since_thermal))
+            except ValueError as e:
+                return self._json({"ok": False, "error": str(e)}, 400)
+        if path == "/api/twin/state":
+            return self._json(SIM.studio.snapshot())
         if path == "/api/analysis":
             try:
                 return self._json(SIM.analysis(parse_qs(u.query).get("joint", [""])[0]))
@@ -424,31 +476,58 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/cmd":
+        path = urlparse(self.path).path
+        if path not in ("/api/cmd", "/api/twin/cmd"):
             return self._json({"error": "not found"}, 404)
+        # Prevent a page on another origin from driving a local robot. No CORS
+        # headers are emitted, and requests with a foreign Origin are rejected
+        # even if they use a safelisted Content-Type such as text/plain.
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host", "")
+        if (self.headers.get("Sec-Fetch-Site") == "cross-site" or
+                (origin and urlparse(origin).netloc != host)):
+            return self._json({"ok": False, "error": "別サイトからの操作を拒否しました"}, 403)
+        if SIM.studio.hardware.snapshot()["mode"] != "off":
+            if urlparse("//" + host).hostname not in ("127.0.0.1", "localhost", "::1"):
+                return self._json({"ok": False, "error": "実機操作はローカル画面から行ってください"}, 403)
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= 262144:
+                raise ValueError("操作データの大きさが正しくありません")
             cmd = json.loads(self.rfile.read(n) or b"{}")
-            op = cmd.get("op")
-            if op == "goal":
-                SIM.set_goals(cmd.get("goals") or {})
-            elif op == "torque":
-                SIM.set_torque(bool(cmd.get("on")))
-            elif op == "regs":
-                SIM.set_regs(cmd.get("regs") or {}, cmd.get("joint"))
-            elif op == "motor":
-                SIM.set_motor(cmd.get("joint"), cmd.get("params") or {})
-            elif op == "world":
-                SIM.set_world(cmd.get("payload_kg"), cmd.get("floor"), cmd.get("ambient_c"))
-            elif op == "run":
-                SIM.set_run(cmd.get("paused"), cmd.get("rtf"))
-            elif op == "reset":
-                SIM.reset(cmd.get("pose"))
-            else:
-                return self._json({"ok": False, "error": f"unknown op {op!r}"}, 400)
-            return self._json({"ok": True})
+            if not isinstance(cmd, dict):
+                raise ValueError("操作をオブジェクトで指定してください")
+            if path == "/api/twin/cmd":
+                return self._json(SIM.studio.command(cmd))
+            with SIM.lock:
+                return self._sim_command(cmd)
         except Exception as e:  # report, keep serving
             return self._json({"ok": False, "error": str(e)}, 400)
+
+    def _sim_command(self, cmd):
+        SIM.studio.assert_owner(cmd.get("client_id"))
+        op = cmd.get("op")
+        if op != "goal":
+            SIM.studio.assert_physics_editable()
+        if op == "goal":
+            SIM.studio.stop_playback("手動で目標を変更しました")
+            SIM.set_goals(cmd.get("goals") or {})
+        elif op == "torque":
+            SIM.set_torque(bool(cmd.get("on")))
+        elif op == "regs":
+            SIM.set_regs(cmd.get("regs") or {}, cmd.get("joint"))
+        elif op == "motor":
+            SIM.set_motor(cmd.get("joint"), cmd.get("params") or {})
+        elif op == "world":
+            SIM.set_world(cmd.get("payload_kg"), cmd.get("floor"), cmd.get("ambient_c"))
+        elif op == "run":
+            SIM.set_run(cmd.get("paused"), cmd.get("rtf"))
+        elif op == "reset":
+            SIM.studio.stop_playback("仮想をリセットしました")
+            SIM.reset(cmd.get("pose"))
+        else:
+            return self._json({"ok": False, "error": f"unknown op {op!r}"}, 400)
+        return self._json({"ok": True})
 
 
 def main():
@@ -456,12 +535,30 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--port", type=int, default=8025)
     ap.add_argument("--bind", default="127.0.0.1")
+    ap.add_argument("--hardware", choices=("off", "mock", "real"), default="off",
+                    help="opt-in hardware link; connection never starts motion")
+    ap.add_argument("--hardware-port", default="auto", help="SO-101 follower port (auto detects CH343)")
+    ap.add_argument("--motion-dir", type=pathlib.Path, default=HERE.parent / "data" / "so101_motions")
     args = ap.parse_args()
+    if args.hardware != "off" and args.bind not in ("localhost", "127.0.0.1", "::1"):
+        ap.error("hardware link requires a loopback bind")
+    from robots.so101.twin_link import HardwareLink
     SIM = Sim()
-    threading.Thread(target=SIM.run_forever, daemon=True).start()
+    link = HardwareLink(mode=args.hardware, port=args.hardware_port)
+    SIM.studio = TwinStudio(SIM, link, args.motion_dir)
+    physics = threading.Thread(target=SIM.run_forever, daemon=True)
+    physics.start()
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
-    print(f"SO-101 simulator: http://localhost:{args.port}/", flush=True)
-    srv.serve_forever()
+    print(f"SO-101 twin: http://localhost:{args.port}/ (hardware={args.hardware})", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        SIM.stopping.set()
+        physics.join(timeout=2)
+        link.close()
+        srv.server_close()
 
 
 if __name__ == "__main__":
