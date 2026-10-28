@@ -1,8 +1,9 @@
 ---
+name: quest-reload
 description: ui.html/サーバ修正を Quest に正しく反映（VR終了→CDP その場リロード→recorder再注入）。タブ増殖させない
 ---
 
-Quest WebXR に修正を反映する。**`adb am start VIEW` は使わない**（新タブ増殖→jank）。詳細: [docs/QUEST_DEV.md](../../docs/QUEST_DEV.md)、[memory](../memory/feedback_quest_reload_protocol.md)。
+Quest WebXR に修正を反映する。**`adb am start VIEW` は使わない**（新タブ増殖→jank）。詳細: [docs/QUEST_DEV.md](../../../docs/QUEST_DEV.md)、[memory](../../memory/feedback_quest_reload_protocol.md)。
 
 手順（この順で実行する）:
 

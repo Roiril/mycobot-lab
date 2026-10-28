@@ -1,4 +1,5 @@
 ---
+name: check
 description: アームの接続状態と角度を確認
 ---
 

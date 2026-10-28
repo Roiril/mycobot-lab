@@ -1,4 +1,5 @@
 ---
+name: move
 description: 基本動作デモを実行
 ---
 

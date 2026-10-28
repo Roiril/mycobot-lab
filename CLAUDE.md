@@ -100,10 +100,12 @@ LAN 公開する場合は `--bind 0.0.0.0 --token <secret>` 必須。
 - 端的・論理的・必要最低限。
 - ハードを動かす操作の前に、想定の動き（移動先・速度・所要時間）を 1 行で宣言してから実行。
 
-## Claude Code ハーネス (.claude/)
+## ハーネス (.claude/) — Claude Code と Codex の共通の正本
+
+Codex もこの CLAUDE.md と `.claude/` を読む（ルートの AGENTS.md は手で書かない。Codex の SessionStart hook が CLAUDE.md・常時 rules・MEMORY.md から組み立てる生成物で、git 管理外。`.agents/skills` は `.claude/skills` への junction で、Codex の SessionStart hook が作る）。知見はどちらのエージェントからも `.claude/` へ書く。
 
 - **[memory/](.claude/memory/)** — 自動メモリ
-- **[commands/](.claude/commands/)** — プロジェクト固有スラッシュコマンド
+- **[skills/](.claude/skills/)** — プロジェクト固有スキル（`/check` `/move` `/quest-reload` もここ。Codex では `$名前`）
 - **[hooks/](.claude/hooks/)** — プロジェクト固有 hook
 - **[settings.json](.claude/settings.json)** — 権限・hook
 - **[settings.local.json](.claude/settings.local.json)** — ローカル許可（コミット対象外）

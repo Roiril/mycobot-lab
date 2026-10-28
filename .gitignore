@@ -50,3 +50,6 @@ hardware/so101_print/Individual/
 
 # セッション中の一時プレビュー画像
 src/so101_preview_shubie.png
+
+# Codex 用の junction（.agents/skills -> .claude/skills）。Codex の SessionStart hook が作る
+.agents/
